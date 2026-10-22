@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runemark"
+version = "0.2.0"
+description = "Tag MP4 and MKV videos, choose their thumbnails, and keep Explorer's Tags in sync"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Chris Bartlett" }]
+readme = "README.md"
+dependencies = [
+    "PySide6-Essentials==6.12.0",
+    "PySide6-Addons==6.12.0",
+    "mutagen==1.48.1",
+    "Pillow==13.0.0",
+    "Send2Trash==2.1.0",
+    "pywin32==312; sys_platform == 'win32'",
+]
+
+[project.urls]
+Homepage = "https://github.com/crbartlett84/runemark"
+Issues = "https://github.com/crbartlett84/runemark/issues"
+Changelog = "https://github.com/crbartlett84/runemark/blob/main/CHANGELOG.md"
+
+[project.gui-scripts]
+runemark = "runemark.app:main"
+
+[tool.setuptools.packages.find]
+include = ["runemark*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

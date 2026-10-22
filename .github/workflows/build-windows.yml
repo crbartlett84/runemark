@@ -1,0 +1,81 @@
+name: Build for Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]          # pushing a tag like v0.2.0 publishes a release with the zip
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Get FFmpeg
+        shell: pwsh
+        run: |
+          ./packaging/get-ffmpeg.ps1
+          "$PWD\vendor\ffmpeg" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Self-test from source (Windows property system)
+        continue-on-error: true
+        run: python -m runemark --self-test selftest-source.txt
+
+      - name: Build
+        run: python -m PyInstaller packaging/runemark.spec --noconfirm --distpath dist --workpath build
+
+      - name: Self-test of the built app
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Runemark\Runemark.exe" -ArgumentList "--self-test", "$PWD\selftest-exe.txt" -Wait -PassThru
+          Get-Content selftest-exe.txt
+          exit $p.ExitCode
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-reports
+          path: selftest-*.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Runemark-win64
+          path: dist/Runemark/
+
+      - name: Zip the app
+        shell: pwsh
+        run: |
+          $v = (python -c "import runemark; print(runemark.__version__)").Trim()
+          $zip = "Runemark-$v-win64.zip"
+          Compress-Archive -Path dist\Runemark\* -DestinationPath $zip
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -ne "v$env:VERSION") { throw "Tag $tag doesn't match the app version $env:VERSION (runemark/__init__.py)" }
+          python packaging/release_notes.py $env:VERSION > release-notes.md
+          gh release create $tag $env:ZIP --title "Runemark $env:VERSION" --notes-file release-notes.md

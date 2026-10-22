@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+vendor/
+.pytest_cache/
+*.runemark-tmp.*
+build-log.txt
+
+# local working files
+samples/
+Runemark-src.zip
+portable-data-kept/
+Runemark data/
+Runemark-portable.txt
+selftest*.txt
+release-notes.md
