@@ -4,16 +4,26 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+### Added
+- **Undo.** Runemark remembers each file's tags, genre, title, year, description and rating from before every save (the last 10 per file). **More → Undo last save…** steps a file back one save at a time; **Library → More → Undo last bulk change…** reverts a whole bulk change, leaving alone any file you've saved again since. Thumbnails and chapters aren't part of undo.
+- **Save and next** (Ctrl+Enter) saves if there's anything to save and opens the next file in the list.
+- **Copy and paste tags** (Ctrl+Shift+C / Ctrl+Shift+V). Saving a file also makes its tags ready to paste, so giving the next file the same tags is one key. Pasting adds tags; it doesn't remove any.
+- **Library:** add several tags at once (separated by commas); **Enter** opens, **0–5** rates and **T** adds tags to the selected files; the Library reopens with your last search and filter; **Stop scan** stops a scan and keeps what it has read.
+- **Updating files after renaming or merging a tag can be cancelled**, and the report lists the files it didn't reach.
+- **Leftover working files from an interrupted save or conversion** (a crash, power cut or forced close) are found when the video opens, with an offer to delete them.
+- **Unexpected errors are written to the log and shown**, instead of disappearing in the packaged app.
+
+### Changed
+- **The Library is much faster with big collections.** Typing a search no longer rebuilds the whole list on every key (with 5,000 videos, from about 180 ms per key to under 3 ms), and scans read each MP4 twice instead of four times and save to the database in batches (about 5× faster here; more on network shares).
+- Sorting the Library puts blanks (no year, no rating, …) last in both directions, so "highest rated first" starts with five stars.
+
 ### Fixed
 - **Converting an MKV on a network share or a USB drive no longer deletes the original.** Those drives have no Recycle Bin, and Windows deletes instead of recycling there. Runemark now keeps the MKV and tells you.
 - **Saving no longer cuts a full date down to the year.** A date such as `2019-07-14T10:00:00Z` is kept unless you change the year. This also applied to bulk rating changes in the Library.
 - **Saving no longer overwrites a separate comment.** Explorer's Comments is only updated when it was empty or matched the description.
 - **Read-only videos fail straight away with a clear message**, instead of retrying and leaving a full-size working copy behind. Working copies no longer inherit the Read-only flag.
 - **Backups in folders whose names contain `#`, `?` or `%`** can be checked and restored.
-
-### Added
-- **Leftover working files from an interrupted save or conversion** (a crash, power cut or forced close) are found when the video opens, with an offer to delete them.
-- **Unexpected errors are written to the log and shown**, instead of disappearing in the packaged app.
+- Closing the Library during a scan stops the scan, instead of leaving it running against the closed window.
 
 ## [0.2.0] - 2026-10-22
 
