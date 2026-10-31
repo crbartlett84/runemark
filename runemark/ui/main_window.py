@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.doc: Document | None = None
         self.queue: list[Path] = []
         self._busy = False
+        self._tag_clipboard: list[str] = []   # Copy tags, or the last saved file's tags; Paste tags adds them
         self._open_token = 0
         self._suggest_job = None
         self.library_window = None
@@ -154,7 +155,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.dirty_dot)
         row.addStretch(0)
         self.save_button = text_button("Save", "save", primary=True)
-        self.save_button.setToolTip("Write tags and thumbnail to the file (Ctrl+S)")
+        self.save_button.setToolTip("Write tags and thumbnail to the file (Ctrl+S)\n"
+                                    "Save and go to the next file: Ctrl+Enter\n"
+                                    "Copy tags: Ctrl+Shift+C · Paste tags: Ctrl+Shift+V")
         self.save_button.clicked.connect(lambda: self.save())
         row.addWidget(self.save_button)
         for button in (self.open_button, self.library_button, self.prev_file, self.next_file, self.save_button):
@@ -279,6 +282,11 @@ class MainWindow(QMainWindow):
         self.act_about = action("About Runemark", self.about, None, "info")
         action("Previous file", lambda: self._move_in_queue(-1), "Ctrl+PgUp")
         action("Next file", lambda: self._move_in_queue(1), "Ctrl+PgDown")
+        self.act_save_next = action("Save and next file", self.save_and_next, "Ctrl+Return")
+        action("Save and next file", self.save_and_next, "Ctrl+Enter")          # the keypad's Enter too
+        self.act_copy_tags = action("Copy tags", self.copy_tags, "Ctrl+Shift+C")
+        self.act_paste_tags = action("Paste tags (add the copied or last saved file's tags)",
+                                     self.paste_tags, "Ctrl+Shift+V")
         action("Focus tag box", lambda: (self.tabs.setCurrentWidget(self.tag_editor), self.tag_editor.input.setFocus()),
                "Ctrl+L")
         self.recent_menu = QMenu("Open recent", self)
@@ -504,6 +512,46 @@ class MainWindow(QMainWindow):
         if self.doc is not None:
             current = next((i for i, p in enumerate(self.queue) if file_key(p) == file_key(self.doc.path)), 0)
         self.open_file(self.queue[(current + step) % len(self.queue)])
+
+    # ================================================================ fast tagging
+    def save_and_next(self):
+        """Save if there's anything to save, then open the next file in the list."""
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        if len(self.queue) < 2:
+            if doc.dirty():
+                self.save()
+            self.toast("This is the only file in the list: open a folder or several files to step through them.")
+            return
+        if doc.dirty():
+            self.save(after=lambda: self._move_in_queue(1))
+        else:
+            self._move_in_queue(1)
+
+    def copy_tags(self):
+        doc = self.doc
+        if doc is None:
+            return
+        self._tag_clipboard = list(doc.tags)
+        QApplication.clipboard().setText("; ".join(doc.tags))
+        self.set_status(f"Copied {len(doc.tags)} tag(s). Ctrl+Shift+V adds them to another file.")
+
+    def paste_tags(self):
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        if not self._tag_clipboard:
+            self.toast("Nothing to paste yet: copy tags (Ctrl+Shift+C) or save a file first.")
+            return
+        merged = merge_unique(doc.tags, [self.db.canonical(t) for t in self._tag_clipboard])
+        added = len(merged) - len(doc.tags)
+        if not added:
+            self.set_status("This file already has all of those tags")
+            return
+        self.tag_editor.set_tags(merged)
+        self._tags_edited(merged)
+        self.set_status(f"Added {added} tag(s). Save to write them (Ctrl+S, or Ctrl+Enter to save and go on).")
 
     def _fill_recent(self):
         self.recent_menu.clear()
@@ -834,6 +882,7 @@ class MainWindow(QMainWindow):
             self._busy = False
             dialog.finish()
             self.db.remember_file(doc.path, keywords)
+            self._tag_clipboard = list(doc.tags)
             if outcome.problems:
                 QMessageBox.warning(self, "Saved, with warnings",
                                     "The file was saved, but some things didn't read back as expected:\n\n• "
@@ -879,6 +928,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != ConvertDialog.DialogCode.Accepted:
             return
         keywords, genre = self._fields(doc.tags, doc.state.genre)
+        tags_saved = list(doc.tags)
         meta = VideoMeta(**vars(doc.meta))
         if doc.cover is UNCHANGED:
             cover = doc.state.cover if doc.state.cover else UNCHANGED
@@ -921,6 +971,7 @@ class MainWindow(QMainWindow):
             final, sidecars, problems, recycle_error = result
             self.db.move_file(source, final)
             self.db.remember_file(final, keywords)
+            self._tag_clipboard = list(tags_saved)
             self._library_saved(final)
             self.queue = [final if file_key(p) == file_key(source) else p for p in self.queue]
             notes = []

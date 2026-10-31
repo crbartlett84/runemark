@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QStringListModel, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout)
@@ -165,7 +166,28 @@ class LibraryWindow(QDialog):
             bottom.addWidget(b)
         layout.addLayout(bottom)
         self._fill_saved()
+        if settings.library_last_search:
+            self._set_search(L.Search.from_dict(settings.library_last_search))
+        self._add_shortcuts()
         self.refresh()
+
+    def _add_shortcuts(self):
+        """Keys that act on the selected rows while the list has focus (not while typing in the search boxes)."""
+        def key(sequence, slot):
+            sc = QShortcut(QKeySequence(sequence), self.table)
+            sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+            sc.activated.connect(slot)
+            return sc
+        for n in range(6):
+            key(str(n), lambda n=n: self._rate_selected(n))
+        key(Qt.Key.Key_Return, lambda: self._open())
+        key(Qt.Key.Key_Enter, lambda: self._open())
+        key("T", lambda: self._bulk_add())
+        self.table.setToolTip("Enter opens · 0-5 rates · T adds tags (to the selected files)")
+
+    def _rate_selected(self, stars_: int):
+        if self.selected_paths():
+            self._run_bulk(L.BulkChange(rating=stars_))
 
     # ---------------------------------------------------------------- data
     def refresh(self):
@@ -413,12 +435,14 @@ class LibraryWindow(QDialog):
             self.refresh()
 
     def _bulk_add(self):
+        if not self.selected_paths():
+            return
         names = [t.name for t in self.db.tags()]
-        name, ok = QInputDialog.getItem(self, "Add tag", f"Tag to add to {len(self.selected_paths())} file(s):",
-                                        names, 0, True)
-        name = " ".join((name or "").split())
-        if ok and name:
-            self._run_bulk(L.BulkChange(add=[self.db.canonical(name)]))
+        text, ok = QInputDialog.getItem(self, "Add tags", f"Tags to add to {len(self.selected_paths())} file(s), "
+                                        "separated by commas:", names, 0, True)
+        tags = L.split_tag_input(text or "", names)
+        if ok and tags:
+            self._run_bulk(L.BulkChange(add=[self.db.canonical(t) for t in tags]))
 
     def _bulk_remove(self):
         paths = {str(p).casefold() for p in self.selected_paths()}
@@ -514,6 +538,7 @@ class LibraryWindow(QDialog):
 
     def closeEvent(self, event):  # noqa: N802
         self._closing = True
+        self.settings.library_last_search = self.search.to_dict()
         if self._scan_job is not None:
             self._scan_job.cancel.set()   # it finishes the current file and stops; its callbacks see _closing
         self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()

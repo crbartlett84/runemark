@@ -31,6 +31,7 @@ class Settings:
     library_folders: list[str] = field(default_factory=list)
     saved_searches: dict = field(default_factory=dict)   # name -> {"tags": [...], "text": "", "filter": ""}
     library_geometry: str = ""
+    library_last_search: dict = field(default_factory=dict)   # the Library reopens with this search/filter
     suggestions_count: int = 8
 
     @classmethod

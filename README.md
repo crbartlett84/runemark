@@ -88,7 +88,8 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **Search** by file name or title, and add tags under **Must have tag…**. Every tag you add must match.
 - **Filters** show videos with no tags, no thumbnail, no rating, MKVs that aren't converted yet, or files that have moved or been deleted.
 - **Saved searches** keep a search under a name.
-- Select several videos and use **Add tag…**, **Remove tag…** or **Rate…**. Each file is saved and checked like a normal save. MKVs are skipped, since they need converting first.
+- Select several videos and use **Add tag…** (type several, separated by commas), **Remove tag…** or **Rate…**. Each file is saved and checked like a normal save. MKVs are skipped, since they need converting first.
+- The Library reopens with the search and filter you last used. A scan can be stopped with **Stop scan**; what it has read so far is kept.
 - **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
 
@@ -120,12 +121,17 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | M | Add a chapter at this frame |
 | Ctrl+B | Library |
 | Ctrl+S | Save |
+| Ctrl+Enter | Save and go to the next file |
+| Ctrl+Shift+C | Copy this file's tags |
+| Ctrl+Shift+V | Add the copied tags (or the last saved file's tags) to this file |
 | Ctrl+O | Open |
 | Ctrl+L | Jump to the tag box |
 | Ctrl+D | Tag database |
 | Ctrl+PgUp / PgDn | Previous / next open file |
 
 You can open several files at once (or drop them on the window). Move between them with the arrows next to the file name.
+
+In the Library list: **Enter** opens the selected files, **0–5** sets their rating and **T** adds tags.
 
 ## Safety
 

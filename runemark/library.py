@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +131,28 @@ class ScanResult:
     missing: int = 0
     problems: list[str] = field(default_factory=list)
     stopped: bool = False        # cancelled partway; files already read are kept
+
+
+def split_tag_input(text: str, known: list[str] | None = None) -> list[str]:
+    """Tags typed into one box: "Lake, Summer; Aubree" -> ["Lake", "Summer", "Aubree"].
+
+    Commas and semicolons separate tags, except that text matching a known tag exactly stays whole
+    (so a tag that really contains a comma, like "Halifax, NS", still works). Duplicates are dropped."""
+    def clean(s: str) -> str:
+        return " ".join(s.split())
+    known_folded = {clean(k).casefold(): clean(k) for k in (known or [])}
+    whole = clean(text)
+    if not whole:
+        return []
+    if whole.casefold() in known_folded:
+        return [known_folded[whole.casefold()]]
+    out, seen = [], set()
+    for part in re.split(r"[;,]", text):
+        name = clean(part)
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(known_folded.get(name.casefold(), name))
+    return out
 
 
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
