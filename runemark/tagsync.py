@@ -7,9 +7,11 @@ For MP4 the same tag list is written to:
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import shutil
+import stat as stat_mod
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,7 +187,58 @@ def copy_with_progress(src: Path, dst: Path, progress: Progress | None = None, l
                 progress(int(done * 100 / total), f"{label}… {done * 100 // total}%")
         fout.flush()
         os.fsync(fout.fileno())
-    shutil.copystat(src, dst)
+    st = os.stat(src)
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))  # times only: copystat would copy Read-only too
+
+
+LEFTOVER_MIN_AGE_S = 10 * 60   # younger working files may belong to a save that's still running
+
+
+def ensure_writable(path: Path) -> None:
+    """Fail early, with a clear message, when the video can't be written (Windows' Read-only attribute
+    or no permission). Otherwise the save retries for seconds and may strand a full-size working copy."""
+    if not os.access(path, os.W_OK):
+        raise SaveError(f"{path.name} is read-only, so Runemark can't save to it. In Explorer, right-click it, "
+                        "choose Properties and untick Read-only (or check you have permission to change it), "
+                        "then save again.")
+
+
+def remove_file(path: Path) -> bool:
+    """Delete a working file, clearing the Read-only attribute first if it has one. False if it stays."""
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        try:
+            os.chmod(path, stat_mod.S_IWRITE | stat_mod.S_IREAD)
+            path.unlink()
+            return True
+        except OSError:
+            pass
+    except OSError:
+        pass
+    log.warning("couldn't remove %s", path)
+    return False
+
+
+def leftover_temp_files(path: str | os.PathLike, *, min_age_s: float = LEFTOVER_MIN_AGE_S) -> list[Path]:
+    """Working files an interrupted save or conversion left beside `path` (<name>.runemark-*).
+    Only ones older than `min_age_s`, so a save still in progress elsewhere isn't offered for deletion."""
+    path = Path(path)
+    cutoff = time.time() - min_age_s
+    found = []
+    try:
+        for p in path.parent.glob(glob.escape(path.stem) + ".runemark-*"):
+            try:
+                if p.is_file() and p != path and p.stat().st_mtime < cutoff:
+                    found.append(p)
+            except OSError:
+                continue
+    except OSError:
+        return []
+    return sorted(found)
 
 
 def free_space_ok(folder: Path, needed: int) -> bool:
@@ -257,6 +310,7 @@ def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], 
     path = Path(path)
     if container_of(path) != "mp4":
         raise SaveError("Only MP4 files can be saved directly; MKV files are converted first.")
+    ensure_writable(path)
     stat = path.stat()
     growth = estimate_growth(path, keywords=keywords, genre=genre, cover=cover, meta=meta)
     use_copy = edit_moves_media(path, growth)
@@ -288,10 +342,7 @@ def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], 
             tmp = None
     finally:
         if tmp is not None and tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                log.warning("couldn't remove %s", tmp)
+            remove_file(tmp)
     if preserve_mtime:
         try:
             os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
@@ -314,6 +365,7 @@ def save_mp4_with_chapters(path: str | os.PathLike, info: MediaInfo, marks, *, k
     path = Path(path)
     if container_of(path) != "mp4":
         raise SaveError("Chapters can only be written to MP4 files; MKV files are converted first.")
+    ensure_writable(path)
     stat = path.stat()
     if not free_space_ok(path.parent, stat.st_size):
         raise SaveError("Not enough free disk space to write the chapters: Runemark needs room for a "
@@ -326,11 +378,8 @@ def save_mp4_with_chapters(path: str | os.PathLike, info: MediaInfo, marks, *, k
             progress(-1, "Replacing the original…")
         retry(lambda: os.replace(tmp, path))
     except BaseException:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            log.warning("couldn't remove %s", tmp)
+        if tmp.exists():
+            remove_file(tmp)
         raise
     if preserve_mtime:
         try:

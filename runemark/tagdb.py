@@ -72,6 +72,18 @@ class FileRecord:
     saved_at: str | None
 
 
+def _read_only_uri(path: str | os.PathLike) -> str:
+    """SQLite URI that opens `path` read-only. Characters like # ? % and spaces are escaped (unescaped,
+    SQLite reads "#1" as a fragment and opens the wrong file). UNC paths keep an empty authority."""
+    from urllib.parse import quote
+    p = Path(path).resolve().as_posix()          # /home/x, C:/x or //server/share/x
+    if p.startswith("//"):
+        p = "//" + p                             # file:////server/share/x
+    elif not p.startswith("/"):
+        p = "/" + p                              # file:///C:/x
+    return "file:" + quote(p, safe="/:") + "?mode=ro"
+
+
 class TagDBError(Exception):
     pass
 
@@ -573,7 +585,7 @@ class TagDB:
     def check_backup(path: str | os.PathLike) -> dict:
         """Counts from a backup file, or TagDBError if it isn't a Runemark tag database."""
         try:
-            conn = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)
+            conn = sqlite3.connect(_read_only_uri(path), uri=True)
         except sqlite3.Error as exc:
             raise TagDBError(f"Couldn't open that file: {exc}") from exc
         try:
@@ -591,7 +603,7 @@ class TagDB:
     def restore_from(self, path: str | os.PathLike) -> None:
         """Replace everything in this database with a backup's contents."""
         self.check_backup(path)
-        source = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)
+        source = sqlite3.connect(_read_only_uri(path), uri=True)
         try:
             source.backup(self.conn)
         finally:

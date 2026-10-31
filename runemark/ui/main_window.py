@@ -17,12 +17,12 @@ from ..media import chapters as chapter_io
 from ..media import convert as C
 from ..media import frames, suggest
 from ..media.mp4meta import UNCHANGED, VideoMeta
-from ..media.probe import MediaInfo, VIDEO_EXTENSIONS, describe, fmt_duration, frame_rate_mode, probe
+from ..media.probe import MediaInfo, VIDEO_EXTENSIONS, describe, fmt_duration, fmt_size, frame_rate_mode, probe
 from ..paths import log_dir
 from ..settings import Settings
 from ..tagdb import TagDB, file_key
-from ..tagsync import (FileState, merge_unique, read_state, route_fields, same_tags, save_mp4,
-                       save_mp4_with_chapters)
+from ..tagsync import (FileState, leftover_temp_files, merge_unique, read_state, remove_file, route_fields,
+                       same_tags, save_mp4, save_mp4_with_chapters)
 from . import theme, workers
 from .dialogs import ConvertDialog, ProgressDialog, SettingsDialog, TextReportDialog
 from .chapters_panel import ChaptersPanel
@@ -390,6 +390,7 @@ class MainWindow(QMainWindow):
             self.doc = Document(path, info, state, self.db)
             self._show_document(position_ms)
             self.set_status(status or f"Opened {path.name}")
+            QTimer.singleShot(0, lambda: self._offer_leftover_cleanup(path))
 
         def failed(exc, _tb):
             if token != self._open_token:
@@ -401,6 +402,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Open", f"Couldn't open {path.name}:\n\n{exc}")
 
         workers.start(work, on_done=done, on_error=failed)
+
+    def _offer_leftover_cleanup(self, path: Path):
+        """A crash or power cut mid-save leaves a near-complete working copy (<name>.runemark-*) beside the
+        video. The Library hides those, so offer to delete them here, where the user is looking at the file."""
+        if self._busy:
+            return
+        leftovers = leftover_temp_files(path)
+        if not leftovers:
+            return
+        total = 0
+        for p in leftovers:
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+        names = "\n• ".join(p.name for p in leftovers)
+        answer = QMessageBox.question(
+            self, "Leftover working files",
+            f"Runemark found {len(leftovers)} working file(s) beside {path.name}, left by a save or conversion "
+            f"that didn't finish (a crash, power cut or forced close). They're incomplete copies taking "
+            f"{fmt_size(total)}:\n\n• {names}\n\nDelete them? The video itself isn't touched.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        kept = [p.name for p in leftovers if not remove_file(p)]
+        if kept:
+            QMessageBox.warning(self, "Leftover working files",
+                                "Couldn't delete:\n• " + "\n• ".join(kept) + "\n\nThey may be open in another program.")
+        else:
+            self.set_status(f"Deleted {len(leftovers)} leftover working file(s), {fmt_size(total)}")
 
     def _show_document(self, position_ms: int = 0):
         doc = self.doc

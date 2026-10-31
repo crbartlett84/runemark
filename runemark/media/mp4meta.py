@@ -164,10 +164,35 @@ def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[
             del tags[COVER_KEY]
     if isinstance(meta, VideoMeta):
         _set_text(tags, TITLE_KEY, meta.title)
-        _set_text(tags, YEAR_KEY, str(meta.year) if meta.year else "")
-        for key in DESCRIPTION_KEYS:
-            _set_text(tags, key, meta.description)
+        _write_year(tags, meta.year)
+        _write_description(tags, meta.description)
     mp4.save(padding=_padding_func(min_padding, ensure_padding))
+
+
+def _first_text(tags, key: str) -> str:
+    return str(tags[key][0]) if tags.get(key) else ""
+
+
+def _write_year(tags, year: int | None) -> None:
+    """©day often holds a full date ("2019-07-14T10:00:00Z"). Runemark only edits the year,
+    so keep the original value when its year is unchanged instead of cutting it down to "2019"."""
+    current = _first_text(tags, YEAR_KEY)
+    if year and current and parse_year(current) == year:
+        return
+    _set_text(tags, YEAR_KEY, str(year) if year else "")
+
+
+def _write_description(tags, description: str) -> None:
+    """desc is what Runemark shows and edits; ©cmt (Explorer's Comments) may hold a separate comment.
+    Only touch ©cmt when it was empty or mirrored the description, so a real comment isn't overwritten."""
+    desc_key, cmt_key = DESCRIPTION_KEYS
+    old_desc, old_cmt = _first_text(tags, desc_key), _first_text(tags, cmt_key)
+    shown = old_desc or old_cmt              # what read_mp4_tags reports as the description
+    if (description or "").strip() == shown.strip():
+        return                               # unchanged: leave both exactly as they were
+    _set_text(tags, desc_key, description)
+    if not old_cmt.strip() or old_cmt.strip() == shown.strip():
+        _set_text(tags, cmt_key, description)
 
 
 def _set_text(tags, key: str, value: str) -> None:

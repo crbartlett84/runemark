@@ -176,8 +176,42 @@ def notify_changed(path: str | os.PathLike) -> None:
         log.info("SHChangeNotify failed: %s", exc)
 
 
+class NoRecycleBin(OSError):
+    """The file's drive has no Recycle Bin, so 'recycling' would delete it for good."""
+
+
+DRIVE_FIXED = 3
+
+
+def has_recycle_bin(path: str | os.PathLike) -> bool:
+    """True when deleting from this location goes to the Recycle Bin.
+
+    Windows only recycles on local fixed drives. Network shares (UNC paths and mapped drives),
+    USB sticks and card readers have no Recycle Bin: send2trash would silently delete the file
+    (it asks the shell to "recycle if possible", which falls back to deleting)."""
+    if not IS_WINDOWS:
+        return True  # desktop trash (freedesktop / macOS) handles any mounted volume
+    import ntpath  # Windows path rules (also what os.path is on Windows)
+    full = ntpath.abspath(os.fspath(path))
+    if full.startswith(("\\\\", "//")):
+        return False  # \\server\share\...
+    drive = ntpath.splitdrive(full)[0]
+    if len(drive) != 2 or drive[1] != ":":
+        return False  # a UNC share, or something we can't classify: no Recycle Bin
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == DRIVE_FIXED
+    except Exception as exc:  # noqa: BLE001
+        log.info("GetDriveTypeW failed for %s: %s", drive, exc)
+        return False  # unsure: keep the file rather than risk deleting it
+
+
 def recycle(path: str | os.PathLike) -> None:
-    """Send a file to the Recycle Bin (the desktop trash on other systems)."""
+    """Send a file to the Recycle Bin (the desktop trash on other systems).
+
+    Raises NoRecycleBin instead of deleting when the drive has no Recycle Bin; callers keep the file."""
+    if not has_recycle_bin(path):
+        raise NoRecycleBin("this drive has no Recycle Bin, so Runemark kept the file instead of deleting it")
     from send2trash import send2trash
     send2trash(str(path))
 

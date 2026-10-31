@@ -36,6 +36,40 @@ def _headless_self_test(target: str) -> int:
     return 1 if failed else 0
 
 
+def install_excepthook(show=None) -> None:
+    """Log any error that escapes a Qt callback, and tell the user, instead of losing it.
+
+    In the packaged app there's no console, so without this an exception in a button handler
+    or a background job's callback disappears and the app just seems to ignore the click."""
+    state = {"showing": False}
+
+    def default_show(exc: BaseException) -> None:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        if QApplication.instance() is None:
+            return
+        QMessageBox.critical(None, APP_NAME,
+                             f"Something went wrong:\n\n{type(exc).__name__}: {exc}\n\n"
+                             f"The details are in the log, in {log_dir()}. Your files weren't changed "
+                             "by this error; if a save was running, check its result before carrying on.")
+
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        log.error("Unhandled error", exc_info=(exc_type, exc, tb))
+        if state["showing"]:
+            return  # one dialog at a time: a failing paint event shouldn't stack hundreds
+        state["showing"] = True
+        try:
+            (show or default_show)(exc)
+        except Exception:  # noqa: BLE001
+            log.exception("couldn't show the error dialog")
+        finally:
+            state["showing"] = False
+
+    sys.excepthook = hook
+
+
 def _daily_backup(db, settings) -> None:
     from .datastore import daily_backup
     try:
@@ -60,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName("")
+    install_excepthook()
 
     from .settings import Settings
     from .tagdb import TagDB

@@ -61,7 +61,7 @@ Windows can't edit tags in MKV files, and Windows 11 doesn't use an MKV's embedd
    - Fonts are left out. An MKV cover image becomes the MP4 thumbnail unless you pick a frame.
    - Chapters are kept. Any that run past the end of the video are trimmed or left out, because in an MP4 they'd make Windows and media servers show the wrong length.
 2. Runemark converts to a temporary file, checks that the length and tracks match, writes your tags and thumbnail, then renames it to `.mp4`.
-3. **Only then does the original MKV go to the Recycle Bin**, so you can restore it.
+3. **Only then does the original MKV go to the Recycle Bin**, so you can restore it. On a drive with no Recycle Bin (a network share, a USB stick or a card reader) Runemark keeps the MKV and tells you, rather than deleting it.
 
 MKVs with VP8, Theora or VC-1 video can't go into MP4 without re-encoding the picture, so Runemark says so and leaves them alone.
 
@@ -130,7 +130,7 @@ You can open several files at once (or drop them on the window). Move between th
 ## Safety
 
 - The video and audio data are never re-encoded. MP4 tag edits change only the tag area: when the file's index sits at the end there is room to grow in place, and otherwise Runemark works on a copy and swaps it in when done. Every save reads the tags back and reports any mismatch.
-- Conversions never touch the MKV until the new MP4 has been checked, and the MKV goes to the Recycle Bin, not straight to deletion.
+- Conversions never touch the MKV until the new MP4 has been checked, and the MKV goes to the Recycle Bin, not straight to deletion. Where there is no Recycle Bin (network and removable drives), the MKV is kept.
 - Logs: `%APPDATA%\Runemark\logs`. Tag database and settings: `%APPDATA%\Runemark` (or "Runemark data" beside the app in portable mode).
 
 ## Limitations

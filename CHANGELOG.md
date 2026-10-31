@@ -2,6 +2,19 @@
 
 All notable changes to Runemark. Versions follow [semantic versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+- **Converting an MKV on a network share or a USB drive no longer deletes the original.** Those drives have no Recycle Bin, and Windows deletes instead of recycling there. Runemark now keeps the MKV and tells you.
+- **Saving no longer cuts a full date down to the year.** A date such as `2019-07-14T10:00:00Z` is kept unless you change the year. This also applied to bulk rating changes in the Library.
+- **Saving no longer overwrites a separate comment.** Explorer's Comments is only updated when it was empty or matched the description.
+- **Read-only videos fail straight away with a clear message**, instead of retrying and leaving a full-size working copy behind. Working copies no longer inherit the Read-only flag.
+- **Backups in folders whose names contain `#`, `?` or `%`** can be checked and restored.
+
+### Added
+- **Leftover working files from an interrupted save or conversion** (a crash, power cut or forced close) are found when the video opens, with an offer to delete them.
+- **Unexpected errors are written to the log and shown**, instead of disappearing in the packaged app.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added
