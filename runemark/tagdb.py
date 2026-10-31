@@ -13,7 +13,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+HISTORY_KEEP = 10      # earlier states remembered per file, for undo
 MAX_NAME = 100
 
 SCHEMA = """
@@ -46,6 +47,24 @@ CREATE TABLE IF NOT EXISTS file_tags(
 CREATE INDEX IF NOT EXISTS idx_file_tags_name ON file_tags(tag_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
 CREATE INDEX IF NOT EXISTS idx_tags_category ON tags(category_id);
+-- Schema 3: a file's tags, genre and details as they were BEFORE each save, for undo (last HISTORY_KEEP per file).
+-- batch groups the files of one bulk change. No cover or chapters: those live only in the video.
+CREATE TABLE IF NOT EXISTS file_history(
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    saved_at TEXT NOT NULL,
+    batch TEXT,
+    label TEXT NOT NULL DEFAULT '',
+    keywords TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    year INTEGER,
+    description TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_history_key ON file_history(key, id);
+CREATE INDEX IF NOT EXISTS idx_history_batch ON file_history(batch);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -96,6 +115,33 @@ class DuplicateName(TagDBError):
     def __init__(self, message: str, existing_id: int | None = None):
         super().__init__(message)
         self.existing_id = existing_id
+
+
+@dataclass
+class HistoryEntry:
+    """What a file looked like before one save."""
+    id: int
+    path: str
+    saved_at: str
+    batch: str | None
+    label: str
+    keywords: list
+    genre: list
+    title: str
+    year: int | None
+    description: str
+    rating: int
+
+    def summary(self) -> str:
+        bits = ["; ".join(self.keywords + [g for g in self.genre if g.casefold() not in
+                                            {k.casefold() for k in self.keywords}]) or "no tags"]
+        if self.title:
+            bits.append(f"title “{self.title}”")
+        if self.year:
+            bits.append(str(self.year))
+        if self.rating:
+            bits.append("★" * self.rating)
+        return " · ".join(bits)
 
 
 @dataclass(frozen=True)
@@ -404,7 +450,56 @@ class TagDB:
         self.conn.execute("DELETE FROM files WHERE key = ?", (file_key(path),))
         self.conn.commit()
 
+    # ------------------------------------------------------------------ history (undo)
+    def record_history(self, path: str | os.PathLike, *, keywords: list[str], genre: list[str], title: str = "",
+                       year: int | None = None, description: str = "", rating: int = 0, label: str = "",
+                       batch: str | None = None) -> None:
+        """Remember a file's state from just before a save. Keeps the newest HISTORY_KEEP per file."""
+        key = file_key(path)
+        self.conn.execute(
+            "INSERT INTO file_history(key, path, saved_at, batch, label, keywords, genre, title, year, description,"
+            " rating) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (key, str(path), _now(), batch, label, json.dumps(list(keywords)), json.dumps(list(genre)),
+             title or "", year, description or "", int(rating or 0)))
+        self.conn.execute(
+            "DELETE FROM file_history WHERE key = ? AND id NOT IN "
+            "(SELECT id FROM file_history WHERE key = ? ORDER BY id DESC LIMIT ?)", (key, key, HISTORY_KEEP))
+        self.conn.commit()
+
+    @staticmethod
+    def _history_entry(row) -> HistoryEntry:
+        return HistoryEntry(row["id"], row["path"], row["saved_at"], row["batch"], row["label"],
+                            json.loads(row["keywords"]), json.loads(row["genre"]), row["title"], row["year"],
+                            row["description"], row["rating"])
+
+    def history(self, path: str | os.PathLike) -> list[HistoryEntry]:
+        """Earlier states of a file, newest first."""
+        rows = self.conn.execute("SELECT * FROM file_history WHERE key = ? ORDER BY id DESC",
+                                 (file_key(path),)).fetchall()
+        return [self._history_entry(r) for r in rows]
+
+    def last_batch(self) -> list[HistoryEntry]:
+        """The entries of the most recent bulk change (empty if there's none)."""
+        row = self.conn.execute("SELECT batch FROM file_history WHERE batch IS NOT NULL ORDER BY id DESC LIMIT 1"
+                                ).fetchone()
+        if row is None:
+            return []
+        rows = self.conn.execute("SELECT * FROM file_history WHERE batch = ? ORDER BY id", (row["batch"],)).fetchall()
+        return [self._history_entry(r) for r in rows]
+
+    def changed_since(self, entry: HistoryEntry) -> bool:
+        """True when the file was saved again after this entry was recorded."""
+        row = self.conn.execute("SELECT 1 FROM file_history WHERE key = ? AND id > ? LIMIT 1",
+                                (file_key(entry.path), entry.id)).fetchone()
+        return row is not None
+
+    def drop_history(self, entry_id: int) -> None:
+        self.conn.execute("DELETE FROM file_history WHERE id = ?", (entry_id,))
+        self.conn.commit()
+
     def move_file(self, old: str | os.PathLike, new: str | os.PathLike) -> None:
+        self.conn.execute("UPDATE file_history SET key = ?, path = ? WHERE key = ?",
+                          (file_key(new), str(new), file_key(old)))
         row = self.conn.execute("SELECT id FROM files WHERE key = ?", (file_key(old),)).fetchone()
         if not row:
             return

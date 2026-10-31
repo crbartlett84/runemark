@@ -93,6 +93,14 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
 
+## Undo
+
+Runemark remembers each file's tags, genre, title, year, description and rating from just before every save (the last 10 saves per file, in the tag database).
+
+- **More → Undo last save…** puts the open file back one save. Use it again to go further back.
+- **Library → More → Undo last bulk change…** reverts every file of the last bulk change (add or remove tags, set a rating, or updating files after renaming or merging a tag). Files you've saved again since are left alone, so a later edit is never lost.
+- Thumbnails and chapters aren't part of undo: they live only in the video file.
+
 ## The tag database
 
 **Manage…** (Ctrl+D) opens the database:

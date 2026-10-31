@@ -159,6 +159,8 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Export for Jellyfin / Kodi (.nfo)…", self._export_nfo)
         more_menu.addAction("Show in File Explorer", self._reveal)
         more_menu.addSeparator()
+        more_menu.addAction("Undo last bulk change…", self._undo_bulk)
+        more_menu.addSeparator()
         more_menu.addAction("Read every file again", lambda: self.scan(rescan_all=True))
         more_menu.addAction("Remove selected from the library (files aren't touched)", self._forget)
         more.setMenu(more_menu)
@@ -460,6 +462,58 @@ class LibraryWindow(QDialog):
                                           options, 0, False)
         if ok:
             self._run_bulk(L.BulkChange(rating=options.index(choice)))
+
+    def _undo_bulk(self):
+        entries = self.db.last_batch()
+        if not entries:
+            QMessageBox.information(self, "Undo last bulk change", "There's no bulk change to undo. Runemark "
+                                    "remembers them from version 0.3.0 on.")
+            return
+        first = entries[0]
+        when = first.saved_at.replace("T", " ")[:16]
+        later = [e for e in entries if self.db.changed_since(e)]
+        text = (f"Undo “{first.label}” from {when} on {len(entries)} file(s)?\n\n"
+                "Each file's tags, genre and details go back to how they were just before it. "
+                "Thumbnails and chapters aren't changed.")
+        if later:
+            text += (f"\n\n{len(later)} of them were changed again since, so they'll be left as they are "
+                     "(open one and use Undo last save to step back).")
+        if QMessageBox.question(self, "Undo last bulk change", text) != QMessageBox.StandardButton.Yes:
+            return
+        paths = [Path(e.path) for e in entries]
+        self.host.release_for(paths, lambda: self._start_undo(entries, paths))
+
+    def _start_undo(self, entries, paths: list[Path]):
+        dialog = ProgressDialog("Undoing", cancellable=True, parent=self)
+        mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
+
+        def work(job):
+            db = self.db_for_thread()
+            try:
+                return L.undo_batch(db, entries, explorer_mode=mode, preserve_mtime=preserve,
+                                    progress=job.report, cancel=job.cancel)
+            finally:
+                db.close()
+
+        def done(problems):
+            dialog.finish()
+            if self._closing:
+                return
+            self.refresh()
+            self.host.files_changed(paths)
+            undone = len(entries) - len(problems)
+            self.count.setText(self.count.text() + f"   (undid {undone} of {len(entries)})")
+            if problems:
+                TextReportDialog("Some files weren't changed back",
+                                 "\n".join(f"{p.name}: {why}" for p, why in problems), self).exec()
+
+        def failed(exc, _tb):
+            dialog.finish()
+            QMessageBox.critical(self, "Undo", str(exc))
+
+        job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+        dialog.cancelRequested.connect(job.cancel.set)
+        dialog.show()
 
     def _run_bulk(self, change: L.BulkChange):
         paths = self.selected_paths()

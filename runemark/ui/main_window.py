@@ -284,6 +284,7 @@ class MainWindow(QMainWindow):
         action("Next file", lambda: self._move_in_queue(1), "Ctrl+PgDown")
         self.act_save_next = action("Save and next file", self.save_and_next, "Ctrl+Return")
         action("Save and next file", self.save_and_next, "Ctrl+Enter")          # the keypad's Enter too
+        self.act_undo_save = action("Undo last save…", self.undo_last_save, None, "revert")  # no Ctrl+Z: text boxes need it
         self.act_copy_tags = action("Copy tags", self.copy_tags, "Ctrl+Shift+C")
         self.act_paste_tags = action("Paste tags (add the copied or last saved file's tags)",
                                      self.paste_tags, "Ctrl+Shift+V")
@@ -293,6 +294,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction(self.act_open)
         menu.addMenu(self.recent_menu)
+        menu.addSeparator()
+        menu.addAction(self.act_undo_save)
         menu.addSeparator()
         menu.addAction(self.act_library)
         menu.addAction(self.act_manage)
@@ -512,6 +515,63 @@ class MainWindow(QMainWindow):
         if self.doc is not None:
             current = next((i for i, p in enumerate(self.queue) if file_key(p) == file_key(self.doc.path)), 0)
         self.open_file(self.queue[(current + step) % len(self.queue)])
+
+    # ================================================================ undo
+    def undo_last_save(self):
+        """Put the open file's tags, genre and details back to how they were before its last save."""
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        history = self.db.history(doc.path)
+        if not history:
+            self.toast("Nothing to undo for this file: Runemark keeps the last 10 saves, from version 0.3.0 on.")
+            return
+        entry = history[0]
+        when = entry.saved_at.replace("T", " ")[:16]
+        text = (f"Put {doc.path.name} back to how it was before the save on {when} ({entry.label or 'saved'})?\n\n"
+                f"Tags and details then: {entry.summary()}\n\n"
+                "The thumbnail and chapters aren't changed."
+                + (f"\n\n{len(history) - 1} earlier step(s) can be undone after this." if len(history) > 1 else ""))
+        if doc.dirty():
+            text += "\n\nYour unsaved changes to this file will be discarded."
+        if QMessageBox.question(self, "Undo last save", text) != QMessageBox.StandardButton.Yes:
+            return
+        doc.discard()
+        position = 0
+        self._busy = True
+        dialog = ProgressDialog("Undoing", parent=self)
+        mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
+
+        def work(job):
+            db = TagDB(self.db.path)          # SQLite connections belong to one thread
+            try:
+                job.report(-1, f"Writing {doc.path.name}…")
+                return library.revert_file(db, entry, explorer_mode=mode, preserve_mtime=preserve)
+            finally:
+                db.close()
+
+        def done(outcome):
+            self._busy = False
+            dialog.finish()
+            if outcome.problems:
+                QMessageBox.warning(self, "Undone, with warnings", "• " + "\n• ".join(outcome.problems))
+            self._library_saved(doc.path)
+            message = f"Undid the last save of {doc.path.name}"
+            self._load(doc.path, position, status=message)
+
+        def failed(exc, _tb):
+            self._busy = False
+            dialog.finish()
+            QMessageBox.critical(self, "Undo", f"Couldn't undo:\n\n{exc}\n\nThe file is unchanged.")
+            self.player.load(doc.path, doc.info, position)
+
+        def begin(pos):
+            nonlocal position
+            position = pos
+            workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+
+        dialog.show()
+        self._release_then(begin)
 
     # ================================================================ fast tagging
     def save_and_next(self):
@@ -881,6 +941,7 @@ class MainWindow(QMainWindow):
         def done(outcome):
             self._busy = False
             dialog.finish()
+            self.db.record_history(doc.path, **library.history_fields(doc.state), label="Saved in the editor")
             self.db.remember_file(doc.path, keywords)
             self._tag_clipboard = list(doc.tags)
             if outcome.problems:
@@ -970,6 +1031,7 @@ class MainWindow(QMainWindow):
             progress.finish()
             final, sidecars, problems, recycle_error = result
             self.db.move_file(source, final)
+            self.db.record_history(final, **library.history_fields(doc.state), label="Converted from MKV")
             self.db.remember_file(final, keywords)
             self._tag_clipboard = list(tags_saved)
             self._library_saved(final)
@@ -1046,6 +1108,10 @@ class MainWindow(QMainWindow):
         mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
         self._busy = True
 
+        before: dict[str, FileState] = {}     # each file's state before the update, for undo
+        batch = library.new_batch_id()
+        label = "Tag database: " + "; ".join(c.description for c in changes if c.description)
+
         def work(job):
             results, skipped = [], []
             items = list(files.values())
@@ -1069,6 +1135,7 @@ class MainWindow(QMainWindow):
                     outcome = save_mp4(path, keywords=keywords, genre=genre, explorer_mode=mode,
                                        preserve_mtime=preserve)
                     results.append((path, keywords, "; ".join(outcome.problems)))
+                    before[file_key(path)] = state
                 except Exception as exc:  # noqa: BLE001
                     results.append((path, None, str(exc)))
             return results, skipped
@@ -1080,6 +1147,9 @@ class MainWindow(QMainWindow):
             failures = []
             for path, keywords, problem in results:
                 if keywords is not None:
+                    state = before.get(file_key(path))
+                    if state is not None:
+                        self.db.record_history(path, **library.history_fields(state), label=label, batch=batch)
                     self.db.remember_file(path, keywords)
                 if problem:
                     failures.append(f"{path.name}: {problem}")

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -232,6 +233,7 @@ def apply_bulk(db: TagDB, paths: list[Path], change: BulkChange, *, explorer_mod
     is_known = lambda n: n.casefold() in tags_by_name  # noqa: E731
     remove = {r.casefold() for r in change.remove}
     problems: list[tuple[Path, str]] = []
+    batch = new_batch_id()
     for n, path in enumerate(paths):
         if cancel is not None and cancel.is_set():
             problems.append((path, "cancelled before this file"))
@@ -252,8 +254,60 @@ def apply_bulk(db: TagDB, paths: list[Path], change: BulkChange, *, explorer_mod
             kwargs = {"meta": meta} if meta is not None else {}
             outcome = save_mp4(path, keywords=keywords, genre=genre, explorer_mode=explorer_mode,
                                preserve_mtime=preserve_mtime, **kwargs)
+            db.record_history(path, **history_fields(state), label=f"Library: {change.describe()}", batch=batch)
             db.remember_file(path, keywords)
             reindex(db, path)
+            if outcome.problems:
+                problems.append((path, "; ".join(outcome.problems)))
+        except Exception as exc:  # noqa: BLE001
+            problems.append((path, str(exc)))
+    return problems
+
+
+# ------------------------------------------------------------------ undo
+def history_fields(state) -> dict:
+    """What record_history needs from a FileState read before a save."""
+    return {"keywords": merge_unique(state.keywords, state.explorer or []), "genre": list(state.genre),
+            "title": state.meta.title, "year": state.meta.year, "description": state.meta.description,
+            "rating": state.meta.rating or 0}
+
+
+def new_batch_id() -> str:
+    return uuid.uuid4().hex
+
+
+def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False):
+    """Put a file's tags, genre and details back to a history entry, then forget that entry
+    (so the next undo goes one step further back). Cover and chapters aren't part of history."""
+    path = Path(entry.path)
+    if not path.exists():
+        raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
+    outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
+                       preserve_mtime=preserve_mtime,
+                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating))
+    db.remember_file(path, entry.keywords)
+    reindex(db, path)
+    db.drop_history(entry.id)
+    return outcome
+
+
+def undo_batch(db: TagDB, entries, *, explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False,
+               progress: Progress | None = None, cancel: threading.Event | None = None) -> list[tuple[Path, str]]:
+    """Revert every file of one bulk change. A file saved again since then is skipped, so a later edit is
+    never thrown away; it can still be undone step by step from the editor."""
+    problems: list[tuple[Path, str]] = []
+    for n, entry in enumerate(entries):
+        path = Path(entry.path)
+        if cancel is not None and cancel.is_set():
+            problems.append((path, "stopped before this file; undo again to finish"))
+            continue
+        if progress:
+            progress(int(n * 100 / max(1, len(entries))), f"Undoing {path.name}…")
+        if db.changed_since(entry):
+            problems.append((path, "changed again since; open it and use Undo last save to step back"))
+            continue
+        try:
+            outcome = revert_file(db, entry, explorer_mode=explorer_mode, preserve_mtime=preserve_mtime)
             if outcome.problems:
                 problems.append((path, "; ".join(outcome.problems)))
         except Exception as exc:  # noqa: BLE001
