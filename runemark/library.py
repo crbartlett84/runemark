@@ -213,6 +213,11 @@ def reindex(db: TagDB, path: str | os.PathLike) -> None:
 
 
 # ------------------------------------------------------------------ changing many files
+def sentence_case(text: str) -> str:
+    """Capitalise the first letter only. str.capitalize() lower-cases the rest, turning "add Lake" into "Add lake"."""
+    return text[:1].upper() + text[1:]
+
+
 @dataclass
 class BulkChange:
     add: list[str] = field(default_factory=list)

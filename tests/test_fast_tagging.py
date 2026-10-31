@@ -154,3 +154,9 @@ def test_save_and_next_without_changes_just_moves(tmp_path, media, qapp):
     finally:
         win.close()
         db.close()
+
+
+def test_bulk_prompt_keeps_tag_case():
+    change = L.BulkChange(add=["Lake", "Summer", "NS"])
+    assert L.sentence_case(change.describe()) == "Add Lake, Summer, NS"
+    assert L.sentence_case("") == ""

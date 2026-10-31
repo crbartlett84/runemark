@@ -24,6 +24,7 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 - **Read-only videos fail straight away with a clear message**, instead of retrying and leaving a full-size working copy behind. Working copies no longer inherit the Read-only flag.
 - **Backups in folders whose names contain `#`, `?` or `%`** can be checked and restored.
 - Closing the Library during a scan stops the scan, instead of leaving it running against the closed window.
+- The Library's "Change files" prompt shows tag names as you typed them ("Add Lake, Summer"), not lower-cased.
 
 ## [0.2.0] - 2026-10-22
 

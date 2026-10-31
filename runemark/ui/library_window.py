@@ -482,7 +482,7 @@ class LibraryWindow(QDialog):
             return
         mkv = [p for p in paths if p.suffix.lower() == ".mkv"]
         if len(paths) > 1:
-            answer = QMessageBox.question(self, "Change files", f"{change.describe().capitalize()} on "
+            answer = QMessageBox.question(self, "Change files", f"{L.sentence_case(change.describe())} on "
                                           f"{len(paths)} file(s)?" + (f"\n\n{len(mkv)} MKV file(s) will be "
                                           "skipped: open and save them to convert them to MP4 first." if mkv else ""))
             if answer != QMessageBox.StandardButton.Yes:
