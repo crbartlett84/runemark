@@ -96,8 +96,9 @@ def _is_keywords_key(key: str) -> bool:
     return key.startswith("----:") and key.rsplit(":", 1)[-1].casefold() == "keywords"
 
 
-def read_mp4_tags(path: str | os.PathLike) -> Mp4Tags:
-    mp4 = MP4(path)
+def read_mp4_tags(path: str | os.PathLike, mp4: MP4 | None = None) -> Mp4Tags:
+    """Pass an already-parsed `mp4` to avoid reading the file again (the library scan does)."""
+    mp4 = mp4 if mp4 is not None else MP4(path)
     tags = mp4.tags or {}
     keywords: list[str] = []
     for key in tags.keys():

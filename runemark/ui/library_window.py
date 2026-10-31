@@ -3,40 +3,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QStringListModel, Qt, Signal
+from PySide6.QtCore import QByteArray, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout)
+                               QTableView, QToolButton, QVBoxLayout)
 
 from .. import library as L
-from ..media.probe import fmt_duration
 from ..tagdb import FileRecord, TagDB
 from . import theme, workers
 from .dialogs import ProgressDialog, TextReportDialog
+from .library_model import COLUMNS, PATH_ROLE, LibraryModel, stars  # noqa: F401 (stars: kept for importers)
 from .widgets import Chip, ChipArea, text_button
-
-COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder"]
-
-
-class _SortItem(QTableWidgetItem):
-    """Sorts by a hidden key (numbers, blanks last) instead of the shown text."""
-
-    def __init__(self, text: str, key):
-        super().__init__(text)
-        self.key = key
-
-    def __lt__(self, other):  # noqa: D105
-        if isinstance(other, _SortItem):
-            a, b = self.key, other.key
-            if a is None or b is None:
-                return b is None and a is not None
-            return a < b
-        return super().__lt__(other)
-
-
-def stars(n: int) -> str:
-    return "★" * n + "☆" * (5 - n) if n else ""
 
 
 class LibraryWindow(QDialog):
@@ -105,8 +83,9 @@ class LibraryWindow(QDialog):
         layout.addLayout(chips_row)
 
         # ---- table
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.model = LibraryModel(self)
+        self.table = QTableView()
+        self.table.setModel(self.model)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -118,8 +97,14 @@ class LibraryWindow(QDialog):
         header.setStretchLastSection(True)
         for col, width in enumerate((260, 180, 56, 92, 260, 84, 72)):
             self.table.setColumnWidth(col, width)
-        self.table.itemDoubleClicked.connect(lambda *_: self._open())
-        self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.doubleClicked.connect(lambda *_: self._open())
+        self.table.selectionModel().selectionChanged.connect(lambda *_: self._selection_changed())
+        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        # typing in the search box waits for a short pause, so a fast typist doesn't trigger a search per key
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._apply)
         layout.addWidget(self.table, 1)
 
         self.empty = QLabel("")
@@ -198,34 +183,10 @@ class LibraryWindow(QDialog):
         self._apply()
 
     def _apply(self):
+        self._search_timer.stop()
         shown = [r for r in self.records if L.matches(r, self.search)]
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(shown))
-        faint = theme.current().faint
-        for row, rec in enumerate(shown):
-            path = Path(rec.path)
-            cells = [
-                _SortItem(path.name, path.name.casefold()),
-                _SortItem(rec.title, rec.title.casefold() or None),
-                _SortItem(str(rec.year or ""), rec.year),
-                _SortItem(stars(rec.rating), rec.rating or None),
-                _SortItem("; ".join(rec.tags), len(rec.tags) or None),
-                _SortItem("Yes" if rec.has_cover else "—", int(rec.has_cover)),
-                _SortItem(fmt_duration(rec.duration) if rec.duration else "", rec.duration),
-                _SortItem(str(path.parent), str(path.parent).casefold()),
-            ]
-            cells[0].setData(Qt.ItemDataRole.UserRole, rec.path)
-            cells[0].setToolTip(rec.path)
-            cells[4].setToolTip("\n".join(rec.tags))
-            if rec.missing:
-                for cell in cells:
-                    cell.setForeground(_color(faint))
-                cells[0].setToolTip(f"{rec.path}\nNot found: moved, renamed or deleted?")
-            elif rec.container == "mkv":
-                cells[0].setToolTip(f"{rec.path}\nMKV: open it and save to convert it to MP4")
-            for col, cell in enumerate(cells):
-                self.table.setItem(row, col, cell)
-        self.table.setSortingEnabled(True)
+        self.model.faint = _color(theme.current().faint)
+        self.model.set_records(shown)
         total = len(self.records)
         self.count.setText(f"{len(shown)} of {total} video{'s' if total != 1 else ''}")
         if not total:
@@ -240,8 +201,8 @@ class LibraryWindow(QDialog):
         self._selection_changed()
 
     def selected_paths(self) -> list[Path]:
-        rows = sorted({i.row() for i in self.table.selectedIndexes()})
-        return [Path(self.table.item(r, 0).data(Qt.ItemDataRole.UserRole)) for r in rows if self.table.item(r, 0)]
+        rows = sorted(i.row() for i in self.table.selectionModel().selectedRows())
+        return [Path(self.model.record(r).path) for r in rows if r < self.model.rowCount()]
 
     def _selection_changed(self):
         n = len(self.selected_paths())
@@ -251,7 +212,7 @@ class LibraryWindow(QDialog):
     # ---------------------------------------------------------------- search
     def _text_changed(self, text: str):
         self.search.text = text
-        self._apply()
+        self._search_timer.start()          # restarts on every key; _apply runs after the pause
 
     def _filter_changed(self, *_):
         self.search.filter = self.filter.currentData()

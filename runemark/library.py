@@ -99,21 +99,18 @@ def read_for_index(path: Path) -> dict:
     """What the library shows for one file. Quick for MP4 (no FFmpeg)."""
     ext = path.suffix.lower()
     if ext in MP4_EXTENSIONS:
-        tags = read_mp4_tags(path)
+        # Two reads per file (one mutagen parse for tags + length, one for Explorer's Xtra box), not four:
+        # on a network share each read is a round trip.
+        from mutagen.mp4 import MP4
+        mp4 = MP4(path)
+        tags = read_mp4_tags(path, mp4)
+        duration = getattr(mp4.info, "length", None)
         try:
-            explorer_tags = xtra.read_category(path)
+            payload = xtra.read_payload(path)
+            explorer_tags = xtra.category_from_payload(payload)
+            rating = value_to_stars(xtra.rating_from_payload(payload))
         except Exception:  # noqa: BLE001
-            explorer_tags = []
-        try:
-            rating = value_to_stars(xtra.read_rating(path))
-        except Exception:  # noqa: BLE001
-            rating = 0
-        duration = None
-        try:
-            from mutagen.mp4 import MP4
-            duration = MP4(path).info.length
-        except Exception:  # noqa: BLE001
-            pass
+            explorer_tags, rating = [], 0
         return dict(container="mp4", tags=merge_unique(tags.keywords, explorer_tags, tags.genre),
                     title=tags.title, year=tags.year, rating=rating, has_cover=bool(tags.cover),
                     duration=duration, genre=tags.genre)
@@ -132,6 +129,9 @@ class ScanResult:
     missing: int = 0
     problems: list[str] = field(default_factory=list)
     stopped: bool = False        # cancelled partway; files already read are kept
+
+
+SCAN_COMMIT_EVERY = 200
 
 
 def split_tag_input(text: str, known: list[str] | None = None) -> list[str]:
@@ -169,6 +169,8 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
         paths.setdefault(file_key(record.path), Path(record.path))
     result.found = len(paths)
     items = list(paths.values())
+    indexed = db.index_states()                     # one query instead of one per file
+    pending = 0
     for n, path in enumerate(items):
         if cancel is not None and cancel.is_set():
             result.stopped = True
@@ -178,19 +180,25 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
         try:
             stat = path.stat()
         except OSError:
-            db.mark_missing(path, True)
+            db.mark_missing(path, True, commit=False)
             result.missing += 1
+            pending += 1
             continue
-        known = db.index_state(path)
+        known = indexed.get(file_key(path))
         if not rescan_all and known is not None and known[0] == stat.st_size and known[1] == stat.st_mtime:
             continue
         try:
             data = read_for_index(path)
-            db.index_file(path, size=stat.st_size, mtime=stat.st_mtime, **data)
+            db.index_file(path, size=stat.st_size, mtime=stat.st_mtime, commit=False, **data)
             result.read += 1
+            pending += 1
         except Exception as exc:  # noqa: BLE001
             result.problems.append(f"{path.name}: {exc}")
             log.info("library: couldn't read %s: %s", path, exc)
+        if pending >= SCAN_COMMIT_EVERY:
+            db.commit()                             # batches keep a stopped or crashed scan's work, cheaply
+            pending = 0
+    db.commit()
     return result
 
 

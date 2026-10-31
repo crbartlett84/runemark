@@ -542,7 +542,7 @@ class TagDB:
     def index_file(self, path: str | os.PathLike, *, tags: list[str], container: str, title: str = "",
                    year: int | None = None, rating: int = 0, has_cover: bool = False,
                    duration: float | None = None, genre: list[str] | None = None,
-                   size: int | None = None, mtime: float | None = None) -> None:
+                   size: int | None = None, mtime: float | None = None, commit: bool = True) -> None:
         """Record what a file holds (from a library scan)."""
         key = file_key(path)
         row = self.conn.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
@@ -561,11 +561,22 @@ class TagDB:
             file_id = cur.lastrowid
         self.conn.executemany("INSERT OR IGNORE INTO file_tags(file_id, tag_name) VALUES(?, ?)",
                               [(file_id, t) for t in tags])
+        if commit:
+            self.conn.commit()
+
+    def mark_missing(self, path: str | os.PathLike, missing: bool = True, commit: bool = True) -> None:
+        self.conn.execute("UPDATE files SET missing = ? WHERE key = ?", (int(missing), file_key(path)))
+        if commit:
+            self.conn.commit()
+
+    def commit(self) -> None:
         self.conn.commit()
 
-    def mark_missing(self, path: str | os.PathLike, missing: bool = True) -> None:
-        self.conn.execute("UPDATE files SET missing = ? WHERE key = ?", (int(missing), file_key(path)))
-        self.conn.commit()
+    def index_states(self) -> dict[str, tuple[int | None, float | None]]:
+        """{file key: (size, mtime) when last read} for every indexed file, in one query."""
+        rows = self.conn.execute("SELECT key, indexed_size, indexed_mtime FROM files "
+                                 "WHERE indexed_mtime IS NOT NULL").fetchall()
+        return {r["key"]: (r["indexed_size"], r["indexed_mtime"]) for r in rows}
 
     def forget_folder(self, folder: str | os.PathLike) -> int:
         """Drop every file under `folder` from the library (the files themselves aren't touched)."""
