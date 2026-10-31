@@ -129,6 +129,7 @@ class ScanResult:
     read: int = 0
     missing: int = 0
     problems: list[str] = field(default_factory=list)
+    stopped: bool = False        # cancelled partway; files already read are kept
 
 
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
@@ -137,12 +138,16 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
     if progress:
         progress(-1, "Looking for videos…")
     paths = {file_key(p): p for p in find_videos(folders, cancel)}
+    if cancel is not None and cancel.is_set():
+        result.stopped = True
+        return result
     for record in db.library():                     # files saved by Runemark outside the folders
         paths.setdefault(file_key(record.path), Path(record.path))
     result.found = len(paths)
     items = list(paths.values())
     for n, path in enumerate(items):
         if cancel is not None and cancel.is_set():
+            result.stopped = True
             break
         if progress and (n % 5 == 0 or n == len(items) - 1):
             progress(int(n * 100 / max(1, len(items))), f"Reading {path.name}…")

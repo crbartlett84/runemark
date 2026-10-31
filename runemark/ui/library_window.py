@@ -49,6 +49,7 @@ class LibraryWindow(QDialog):
         self.search = L.Search()
         self.records: list[FileRecord] = []
         self._scan_job = None
+        self._closing = False        # set on close: late callbacks from a background scan must not touch the window
         self.setWindowTitle("Library — Runemark")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -136,7 +137,7 @@ class LibraryWindow(QDialog):
         self.folders_menu.aboutToShow.connect(self._fill_folders_menu)
         self.folders_button.setMenu(self.folders_menu)
         self.scan_button = text_button("Scan for changes", "sync")
-        self.scan_button.clicked.connect(lambda: self.scan())
+        self.scan_button.clicked.connect(self._scan_clicked)
         self.count = QLabel("")
         self.count.setObjectName("Faint")
         bottom.addWidget(self.folders_button)
@@ -324,31 +325,54 @@ class LibraryWindow(QDialog):
         self.db.forget_folder(folder)
         self.refresh()
 
+    def _scan_clicked(self):
+        if self._scan_job is not None:
+            self.stop_scan()
+        else:
+            self.scan()
+
+    def stop_scan(self):
+        """Ask a running scan to stop after the file it's reading. What it has read so far is kept."""
+        if self._scan_job is not None:
+            self._scan_job.cancel.set()
+            self.scan_button.setEnabled(False)
+            self.count.setText("Stopping the scan…")
+
+    def _scan_finished_ui(self):
+        self._scan_job = None
+        self.scan_button.setText("Scan for changes")
+        self.scan_button.setEnabled(True)
+
     def scan(self, rescan_all: bool = False):
         if self._scan_job is not None:
             return
         folders = list(self.settings.library_folders)
-        self.scan_button.setEnabled(False)
+        self.scan_button.setText("Stop scan")
         self.count.setText("Scanning…")
 
         def done(result: L.ScanResult):
-            self._scan_job = None
-            self.scan_button.setEnabled(True)
+            if self._closing:
+                return
+            self._scan_finished_ui()
             self.refresh()
             note = f"{result.found} videos · {result.read} read"
             if result.missing:
                 note += f" · {result.missing} missing"
+            if result.stopped:
+                note += " · stopped early: scan again to finish"
             self.count.setText(self.count.text() + f"   (scan: {note})")
             if result.problems:
                 TextReportDialog("Some files couldn't be read", "\n".join(result.problems), self).show()
 
         def failed(exc, _tb):
-            self._scan_job = None
-            self.scan_button.setEnabled(True)
+            if self._closing:
+                return
+            self._scan_finished_ui()
             QMessageBox.warning(self, "Library", f"The scan stopped: {exc}")
 
         def progress(_percent, message):
-            self.count.setText(message)
+            if not self._closing and self._scan_job is not None and not self._scan_job.cancel.is_set():
+                self.count.setText(message)
 
         def work(job):
             db = self.db_for_thread()
@@ -489,6 +513,9 @@ class LibraryWindow(QDialog):
                                 + ("\n\n" + "\n".join(problems) if problems else ""))
 
     def closeEvent(self, event):  # noqa: N802
+        self._closing = True
+        if self._scan_job is not None:
+            self._scan_job.cancel.set()   # it finishes the current file and stops; its callbacks see _closing
         self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.settings.save()
         super().closeEvent(event)

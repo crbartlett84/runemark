@@ -991,14 +991,17 @@ class MainWindow(QMainWindow):
         canonical = {t.name.casefold(): t.name for t in self.db.tags()}
         reload_open = doc is not None and doc_key in files
         position = 0
-        dialog = ProgressDialog("Updating files", parent=self)
+        dialog = ProgressDialog("Updating files", cancellable=True, parent=self)
         mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
         self._busy = True
 
         def work(job):
-            results = []
+            results, skipped = [], []
             items = list(files.values())
             for n, path in enumerate(items):
+                if job.cancel.is_set():          # stop between files, never halfway through one
+                    skipped = items[n:]
+                    break
                 job.report(int(n * 100 / len(items)), f"Updating {path.name}…")
                 if not path.exists():
                     results.append((path, None, "file not found (moved or deleted?)"))
@@ -1017,9 +1020,10 @@ class MainWindow(QMainWindow):
                     results.append((path, keywords, "; ".join(outcome.problems)))
                 except Exception as exc:  # noqa: BLE001
                     results.append((path, None, str(exc)))
-            return results
+            return results, skipped
 
-        def done(results):
+        def done(outcome):
+            results, skipped = outcome
             self._busy = False
             dialog.finish()
             failures = []
@@ -1030,9 +1034,16 @@ class MainWindow(QMainWindow):
                     failures.append(f"{path.name}: {problem}")
             self._library_saved(*[path for path, keywords, _ in results if keywords is not None])
             updated = sum(1 for _, k, p in results if k is not None and not p)
-            self.set_status(f"Updated {updated} of {len(results)} file(s)")
+            total = len(results) + len(skipped)
+            self.set_status(f"Updated {updated} of {total} file(s)" + (" (stopped)" if skipped else ""))
+            if skipped:
+                failures.append("")
+                failures.append(f"Stopped before these {len(skipped)} file(s); they still have the old tags. "
+                                "Their tags are listed in the Library, where you can update them later:")
+                failures.extend(f"• {p.name}" for p in skipped)
             if failures:
-                TextReportDialog("Some files weren't updated", "\n".join(failures), self).exec()
+                title = "Stopped" if skipped else "Some files weren't updated"
+                TextReportDialog(title, "\n".join(failures).strip(), self).exec()
             if reload_open and doc is not None:
                 self._load(doc.path, position)
 
@@ -1046,7 +1057,8 @@ class MainWindow(QMainWindow):
         def begin(pos):
             nonlocal position
             position = pos
-            workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+            job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+            dialog.cancelRequested.connect(job.cancel.set)
 
         dialog.show()
         if reload_open:
