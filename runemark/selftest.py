@@ -42,6 +42,7 @@ def run(progress: Callable[[int, str], None] | None = None) -> list[Check]:
         ("Thumbnail suggestions", _suggestions),
         ("MKV to MP4 conversion", _convert),
         ("Tag database", _database),
+        ("People (data block, profile tags, rebuild from the file)", _people),
         ("Recycle Bin support", _recycle),
     ]
     with tempfile.TemporaryDirectory(prefix="runemark-selftest-") as tmp:
@@ -233,6 +234,34 @@ def _database(ctx):
     finally:
         db.close()
     return ok, f"import added {cats} categories and {tags} tag(s)"
+
+
+def _people(ctx):
+    from . import library, people
+    path = ctx["dir"] / "people.mp4"
+    path.write_bytes(_make_mp4(ctx).read_bytes())
+    save_mp4(path, keywords=["Hand Tag"], genre=[], meta=mp4meta.VideoMeta("", 2020, "", 0))
+    db = TagDB(ctx["dir"] / "people.db")
+    fresh = TagDB(ctx["dir"] / "people-fresh.db")
+    try:
+        attr = db.add_attribute("Hair")
+        person = db.add_person("Test Person", ["Tester"])
+        db.add_person_value(person.id, attr.id, "Red", tag="Red hair")
+        problems = people.save_people(db, path, [(db.person(person.id), [])], label="self-test")
+        state = read_state(path)
+        library.scan(fresh, [str(ctx["dir"])])
+        back = fresh.find_person("Tester")
+        ok = (not problems and state.keywords == ["Hand Tag", "Test Person", "Red hair"] and state.sync().in_sync
+              and state.data["profile_tags"] == ["Test Person", "Red hair"]
+              and back is not None and back.uid == person.uid and [v.tag for v in back.values] == ["Red hair"])
+        detail = (f"keywords={state.keywords} explorer={state.explorer}\n"
+                  f"rebuilt from the file: {back.name if back else None} {[v.tag for v in back.values] if back else ''}")
+        if problems:
+            detail += "\nProblems: " + "; ".join(problems)
+    finally:
+        db.close()
+        fresh.close()
+    return ok, detail
 
 
 def _recycle(ctx):

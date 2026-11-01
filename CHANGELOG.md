@@ -2,6 +2,18 @@
 
 All notable changes to Runemark. Versions follow [semantic versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **People.** Tag the people in a video from a People box beside the tags (any name or alias works). The **People** window (Ctrl+Shift+P) keeps each person's aliases and values for attributes you define, such as *Hair: Red*, written to their videos as tags (*Red hair*). Values can be limited to some years, and a value that doesn't apply to one video can be marked **Not in this video**.
+- **Changing a person updates their videos**, as one undoable change. Only tags that came from profiles change; tags you typed yourself stay, and a tag two people share stays while either is in the video.
+- **People travel with the files.** Each video carries a small record of its people, so a library scan on a new PC or after losing the tag database brings them back. The format is documented in `docs/data-format.md` for other tools (a Stash import plugin is planned).
+- **Library:** a People column; searching finds videos by their people's names and aliases; the `.nfo` export lists people as actors.
+- A self-test check for people.
+
+### Fixed
+- Release notes on GitHub were empty for 0.3.0 (the notes script couldn't write "→" on Windows).
+
 ## [0.3.0] - 2026-11-01
 
 ### Added

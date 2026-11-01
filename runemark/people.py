@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 FORMAT = "runemark-data"
 VERSION = 1
+KNOWN_KEYS = {"format", "version", "people", "profile_tags", "also_hand"}
 
 Progress = Callable[[int, str], None]
 
@@ -201,6 +202,10 @@ def save_people(db: TagDB, path: str | os.PathLike, people: list[tuple[Person | 
         raise TagDBError("People can only be saved in MP4 files; open an MKV and save it to convert it first.")
     state = state or read_state(path)
     new = block_for(db, people, state.meta.year)
+    if new is not None and state.data and state.data.get("format") == FORMAT:
+        for key, value in state.data.items():          # keys from a later version or another tool: keep them
+            if key not in KNOWN_KEYS:
+                new.setdefault(key, value)
     current_tags = merge_unique(state.keywords, state.explorer or [])
     tags = [db.canonical(t) for t in combine(current_tags, state.data, new)]
     if (new or None) == (state.data or None) and [t.casefold() for t in tags] == \

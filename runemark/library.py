@@ -340,7 +340,7 @@ def undo_batch(db: TagDB, entries, *, explorer_mode: str = explorer.MODE_AUTO, p
 # ------------------------------------------------------------------ Jellyfin / Kodi
 def nfo_text(record: FileRecord, description: str = "", collection: str = "") -> str:
     """A movie .nfo (Kodi format, read by Jellyfin and Emby) with title, year, plot, rating,
-    genres and tags, and optionally a collection ("set")."""
+    genres, tags and the people in it (as actors), and optionally a collection ("set")."""
     title = record.title or Path(record.path).stem
     genre = {g.casefold() for g in record.genre}
     lines = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', "<movie>",
@@ -356,6 +356,8 @@ def nfo_text(record: FileRecord, description: str = "", collection: str = "") ->
     for t in record.tags:
         if t.casefold() not in genre:
             lines.append(f"  <tag>{escape(t)}</tag>")
+    for name in record.people:                      # people in the video: Kodi and Jellyfin show them as cast
+        lines.append(f"  <actor>\n    <name>{escape(name)}</name>\n  </actor>")
     if collection:
         lines.append(f"  <set>\n    <name>{escape(collection)}</name>\n  </set>")
     lines.append("</movie>")

@@ -93,6 +93,17 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
 
+## People
+
+Tag the people in a video once, and everything you've recorded about them follows.
+
+- **People box** (beside the tags): type any name or alias. A new name can be added on the spot.
+- **People window** (**⋯ → People…**, Ctrl+Shift+P, or click a person): each person has a name and any number of aliases, and values for **attributes** you define (for example *Hair: Red*, written to files as the tag *Red hair*). A value can be limited to some years; it then applies only to videos whose year falls inside them. **Attributes…** renames or deletes fields, sets whether a field is written as a tag, and links it to a Stash performer field.
+- A person's name, their attribute values (and aliases, if you tick that) are **written to their videos as ordinary tags**, so Explorer (`tags:` in its search box), Plex, Jellyfin and other programs find them. In the editor they're shown in italics. Clicking one offers **Not in this video**, for a value that doesn't apply to one video; that's stored in the file, so it sticks.
+- **Change a profile and the videos follow.** When you close People after changing someone, Runemark offers to update the videos they're in (one undoable change, like a bulk change). Only tags that came from profiles change: tags you typed yourself stay, and a tag two people share stays while either of them is in the video. Deleting a person takes them out of their videos.
+- **Library:** a People column, and searching finds a video by any of its people's names or aliases. The `.nfo` export lists them as actors.
+- **Portable:** each video also carries a small record of its people (aliases, values, which tags came from a profile). A library scan on a new PC, or after losing the tag database, rebuilds the people list from the videos. The format is described in [docs/data-format.md](docs/data-format.md), so other tools can read it too.
+
 ## Undo
 
 Runemark remembers each file's tags, genre, title, year, description and rating from just before every save (the last 10 saves per file, in the tag database).
@@ -135,6 +146,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Ctrl+O | Open |
 | Ctrl+L | Jump to the tag box |
 | Ctrl+D | Tag database |
+| Ctrl+Shift+P | People |
 | Ctrl+PgUp / PgDn | Previous / next open file |
 
 You can open several files at once (or drop them on the window). Move between them with the arrows next to the file name.
@@ -161,6 +173,7 @@ runemark/
   tagdb.py          the tag database (SQLite) and the library index
   tagsync.py        reading tags from every place, saving and verifying
   library.py        library scans, search, bulk changes, .nfo export
+  people.py         people in videos: the data block, profile tags, updating videos (docs/data-format.md)
   datastore.py      backups, restore, portable mode
   explorer.py       Windows property system, Recycle Bin, right-click menu
   media/probe.py    ffprobe parsing and the Details tab text

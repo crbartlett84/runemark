@@ -250,3 +250,38 @@ def test_a_hand_typed_tag_that_a_profile_also_gives_survives(tmp_path, media, db
     assert read_state(f).keywords == ["Freckles", "Lake", "Ana Lee", "Red hair"]   # ... but it was typed by hand
     P.refresh_files(db, [f], label="remove Ana", drop={ana.uid})
     assert read_state(f).keywords == ["Freckles", "Lake"]
+
+
+def test_unknown_keys_from_other_tools_are_kept(tmp_path, media, db, ana):
+    (f,) = files(tmp_path, media, ["a.mp4"], year=2018)
+    P.save_people(db, f, [(ana, [])], label="test")
+    state = read_state(f)
+    data = dict(state.data, stash={"scene_id": "42"})
+    data["people"] = [dict(state.data["people"][0], extra="x")]
+    save_mp4(f, keywords=state.keywords, genre=[], data=data)
+    db.add_person_value(ana.id, db.find_attribute("Marks").id, "Star tattoo")
+    P.refresh_files(db, [f], label="refresh")
+    after = read_state(f).data
+    assert after["stash"] == {"scene_id": "42"} and "Star tattoo" in after["profile_tags"]
+
+
+def test_the_documented_example_reads_as_documented():
+    """docs/data-format.md's example block gives the tags the page says it does."""
+    import json
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "docs" / "data-format.md").read_text(encoding="utf-8")
+    example = json.loads(re.search(r"```json\n(.*?)```", text, re.S).group(1))
+    (entry,) = P.entries_of(example)
+    assert P.entry_tags(entry, 2018) == example["profile_tags"]
+    assert P.entry_tags(entry, 2021) == ["Ana Lee"]                 # Red hair only until 2019
+    assert P.hand_tags(["Lake", "Ana Lee", "Red hair"], example) == ["Lake"]
+
+
+def test_nfo_lists_people_as_actors(tmp_path, media, db, ana):
+    (f,) = files(tmp_path, media, ["a.mp4"], year=2018)
+    P.save_people(db, f, [(ana, [])], label="test")
+    L.reindex(db, f)
+    (record,) = db.library()
+    text = L.nfo_text(record)
+    assert "<actor>\n    <name>Ana Lee</name>\n  </actor>" in text and "<tag>Red hair</tag>" in text
