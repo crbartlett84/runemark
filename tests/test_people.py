@@ -224,3 +224,29 @@ def test_refresh_adopts_this_librarys_profile_for_a_person_matched_by_name(tmp_p
         assert state.data["people"][0]["id"] == mine.uid and state.keywords == ["Annie"]
     finally:
         other.close()
+
+
+def test_removing_one_person_keeps_a_tag_another_still_gives(tmp_path, media, db, ana):
+    (f,) = files(tmp_path, media, ["a.mp4"], year=2018)
+    bea = db.add_person("Bea Cole")
+    db.add_person_value(bea.id, db.find_attribute("Hair").id, "Red", tag="Red hair")
+    bea = db.person(bea.id)
+    P.save_people(db, f, [(ana, []), (bea, [])], label="test")
+    assert read_state(f).keywords == ["Ana Lee", "Red hair", "Freckles", "Bea Cole"]
+    P.refresh_files(db, [f], label="remove Ana", drop={ana.uid})
+    assert read_state(f).keywords == ["Bea Cole", "Red hair"]          # Bea still has red hair
+    P.refresh_files(db, [f], label="remove Bea", drop={bea.uid})
+    assert read_state(f).keywords == []
+
+
+def test_a_hand_typed_tag_that_a_profile_also_gives_survives(tmp_path, media, db, ana):
+    (f,) = files(tmp_path, media, ["a.mp4"], year=2018)
+    save_mp4(f, keywords=["Freckles", "Lake"], genre=[])                 # typed by hand first
+    P.save_people(db, f, [(ana, [])], label="test")
+    state = read_state(f)
+    assert state.keywords == ["Freckles", "Lake", "Ana Lee", "Red hair"] and state.data["also_hand"] == ["Freckles"]
+    db.remove_person_value(next(v.id for v in ana.values if v.value == "Freckles"))
+    P.refresh_files(db, [f], label="no more freckles")                  # the profile stops giving it ...
+    assert read_state(f).keywords == ["Freckles", "Lake", "Ana Lee", "Red hair"]   # ... but it was typed by hand
+    P.refresh_files(db, [f], label="remove Ana", drop={ana.uid})
+    assert read_state(f).keywords == ["Freckles", "Lake"]

@@ -94,14 +94,26 @@ def profile_tags_of(data: dict | None) -> list[str]:
 
 
 def hand_tags(keywords: list[str], data: dict | None) -> list[str]:
-    """The tags that weren't added by a profile."""
-    added = {t.casefold() for t in profile_tags_of(data)}
+    """The tags that weren't added by a profile, including ones typed by hand that a profile also gives
+    (the block lists those under "also_hand", so removing the person doesn't take them away)."""
+    also = {t.casefold() for t in (data or {}).get("also_hand", [])} if profile_tags_of(data) else set()
+    added = {t.casefold() for t in profile_tags_of(data)} - also
     return [k for k in keywords if k.casefold() not in added]
 
 
 def combine(keywords: list[str], old: dict | None, new: dict | None) -> list[str]:
-    """A file's tags after its people change: its hand-typed tags, then the tags from its people now."""
-    return merge_unique(hand_tags(keywords, old), profile_tags_of(new))
+    """A file's tags after its people change: its hand-typed tags, then the tags from its people now.
+    Profile tags are worked out again from everyone still in the video, so a tag two people share
+    (both have "Red hair") stays when one of them is removed. Updates `new` with "also_hand"."""
+    hand = hand_tags(keywords, old)
+    if new is not None:
+        given = {t.casefold() for t in profile_tags_of(new)}
+        overlap = [t for t in hand if t.casefold() in given]
+        if overlap:
+            new["also_hand"] = overlap
+        else:
+            new.pop("also_hand", None)
+    return merge_unique(hand, profile_tags_of(new))
 
 
 # ------------------------------------------------------------------ reading people back from files
