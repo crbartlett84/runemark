@@ -10,10 +10,11 @@ import json
 import os
 import re
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 HISTORY_KEEP = 10      # earlier states remembered per file, for undo
 MAX_NAME = 100
 
@@ -65,6 +66,44 @@ CREATE TABLE IF NOT EXISTS file_history(
 );
 CREATE INDEX IF NOT EXISTS idx_history_key ON file_history(key, id);
 CREATE INDEX IF NOT EXISTS idx_history_batch ON file_history(batch);
+-- Schema 4: people. A person has one name and any number of aliases (all unique across people), and values
+-- for attribute fields the user defines ("Hair": "Red", written to files as the tag "Red hair").
+-- uid columns are permanent IDs that travel inside video files, so other libraries and tools can match them.
+CREATE TABLE IF NOT EXISTS attributes(
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    stash_field TEXT,
+    write_tags INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS people(
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    write_aliases INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS person_aliases(
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+CREATE TABLE IF NOT EXISTS person_values(
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    attribute_id INTEGER NOT NULL REFERENCES attributes(id) ON DELETE CASCADE,
+    value TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    from_year INTEGER,
+    to_year INTEGER
+);
+CREATE TABLE IF NOT EXISTS file_people(
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    PRIMARY KEY(file_id, person_id)
+);
+CREATE INDEX IF NOT EXISTS idx_person_values_person ON person_values(person_id);
+CREATE INDEX IF NOT EXISTS idx_file_people_person ON file_people(person_id);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -89,6 +128,44 @@ class FileRecord:
     genre: list
     missing: bool
     saved_at: str | None
+
+
+@dataclass
+class Attribute:
+    """A field the user defines for people ("Hair", "Tattoos"). stash_field: the Stash performer field it maps to."""
+    id: int
+    uid: str
+    name: str
+    stash_field: str | None
+    write_tags: bool
+
+
+@dataclass
+class PersonValue:
+    """One value of an attribute for a person, and the tag it becomes in files ("Red" -> "Red hair").
+    from_year/to_year limit it to videos from those years (either can be open)."""
+    id: int
+    uid: str
+    attribute_id: int
+    attribute: str
+    value: str
+    tag: str
+    from_year: int | None = None
+    to_year: int | None = None
+
+
+@dataclass
+class Person:
+    id: int
+    uid: str
+    name: str
+    aliases: list
+    write_aliases: bool
+    values: list
+
+
+def new_uid() -> str:
+    return uuid.uuid4().hex
 
 
 def _read_only_uri(path: str | os.PathLike) -> str:
@@ -131,6 +208,7 @@ class HistoryEntry:
     year: int | None
     description: str
     rating: int
+    data: dict | None = None      # Runemark's data block before the save (schema 4+)
 
     def summary(self) -> str:
         bits = ["; ".join(self.keywords + [g for g in self.genre if g.casefold() not in
@@ -197,6 +275,9 @@ class TagDB:
         for name, kind in LIBRARY_COLUMNS.items():
             if name not in have:
                 self.conn.execute(f"ALTER TABLE files ADD COLUMN {name} {kind}")
+        history_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(file_history)").fetchall()}
+        if "data" not in history_cols:
+            self.conn.execute("ALTER TABLE file_history ADD COLUMN data TEXT")
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                           (str(SCHEMA_VERSION),))
         self.conn.commit()
@@ -453,14 +534,14 @@ class TagDB:
     # ------------------------------------------------------------------ history (undo)
     def record_history(self, path: str | os.PathLike, *, keywords: list[str], genre: list[str], title: str = "",
                        year: int | None = None, description: str = "", rating: int = 0, label: str = "",
-                       batch: str | None = None) -> None:
+                       batch: str | None = None, data: dict | None = None) -> None:
         """Remember a file's state from just before a save. Keeps the newest HISTORY_KEEP per file."""
         key = file_key(path)
         self.conn.execute(
             "INSERT INTO file_history(key, path, saved_at, batch, label, keywords, genre, title, year, description,"
-            " rating) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rating, data) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (key, str(path), _now(), batch, label, json.dumps(list(keywords)), json.dumps(list(genre)),
-             title or "", year, description or "", int(rating or 0)))
+             title or "", year, description or "", int(rating or 0), json.dumps(data) if data else None))
         self.conn.execute(
             "DELETE FROM file_history WHERE key = ? AND id NOT IN "
             "(SELECT id FROM file_history WHERE key = ? ORDER BY id DESC LIMIT ?)", (key, key, HISTORY_KEEP))
@@ -470,7 +551,7 @@ class TagDB:
     def _history_entry(row) -> HistoryEntry:
         return HistoryEntry(row["id"], row["path"], row["saved_at"], row["batch"], row["label"],
                             json.loads(row["keywords"]), json.loads(row["genre"]), row["title"], row["year"],
-                            row["description"], row["rating"])
+                            row["description"], row["rating"], json.loads(row["data"]) if row["data"] else None)
 
     def history(self, path: str | os.PathLike) -> list[HistoryEntry]:
         """Earlier states of a file, newest first."""
@@ -542,8 +623,9 @@ class TagDB:
     def index_file(self, path: str | os.PathLike, *, tags: list[str], container: str, title: str = "",
                    year: int | None = None, rating: int = 0, has_cover: bool = False,
                    duration: float | None = None, genre: list[str] | None = None,
-                   size: int | None = None, mtime: float | None = None, commit: bool = True) -> None:
-        """Record what a file holds (from a library scan)."""
+                   size: int | None = None, mtime: float | None = None, commit: bool = True,
+                   people: list[int] | None = None) -> None:
+        """Record what a file holds (from a library scan). `people`: person ids found in its data block."""
         key = file_key(path)
         row = self.conn.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
         values = (str(path), size, mtime, container, title, year, rating, int(has_cover), duration,
@@ -561,6 +643,9 @@ class TagDB:
             file_id = cur.lastrowid
         self.conn.executemany("INSERT OR IGNORE INTO file_tags(file_id, tag_name) VALUES(?, ?)",
                               [(file_id, t) for t in tags])
+        self.conn.execute("DELETE FROM file_people WHERE file_id = ?", (file_id,))
+        self.conn.executemany("INSERT OR IGNORE INTO file_people(file_id, person_id) VALUES(?, ?)",
+                              [(file_id, p) for p in (people or [])])
         if commit:
             self.conn.commit()
 
@@ -730,3 +815,217 @@ class TagDB:
             except OSError:
                 pass
         return target
+
+    # ------------------------------------------------------------------ people (schema 4)
+    def _name_owner(self, name: str) -> tuple[int, str] | None:
+        """(person id, their main name) if `name` is any person's name or alias."""
+        row = self.conn.execute("SELECT id, name FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+        if row is None:
+            row = self.conn.execute("SELECT people.id, people.name FROM person_aliases JOIN people "
+                                    "ON people.id = person_aliases.person_id WHERE alias = ? COLLATE NOCASE",
+                                    (name,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def _check_free(self, name: str, person_id: int | None = None) -> None:
+        owner = self._name_owner(name)
+        if owner and owner[0] != person_id:
+            raise DuplicateName(f"“{name}” is already used by {owner[1]}.", owner[0])
+
+    def add_person(self, name: str, aliases: list[str] = (), *, write_aliases: bool = False,
+                   uid: str | None = None) -> Person:
+        name = clean_name(name, "Person")
+        self._check_free(name)
+        cur = self.conn.execute("INSERT INTO people(uid, name, write_aliases, created_at) VALUES(?, ?, ?, ?)",
+                                (uid or new_uid(), name, int(write_aliases), _now()))
+        person_id = cur.lastrowid
+        try:
+            self._set_aliases(person_id, name, aliases)
+        except TagDBError:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return self.person(person_id)
+
+    def _set_aliases(self, person_id: int, name: str, aliases) -> None:
+        clean, seen = [], {name.casefold()}
+        for alias in aliases:
+            alias = clean_name(alias, "Alias")
+            if alias.casefold() in seen:
+                continue
+            self._check_free(alias, person_id)
+            seen.add(alias.casefold())
+            clean.append(alias)
+        self.conn.execute("DELETE FROM person_aliases WHERE person_id = ?", (person_id,))
+        self.conn.executemany("INSERT INTO person_aliases(person_id, alias) VALUES(?, ?)",
+                              [(person_id, a) for a in clean])
+
+    def update_person(self, person_id: int, *, name: str | None = None, aliases: list[str] | None = None,
+                      write_aliases: bool | None = None) -> Person:
+        current = self.person(person_id)
+        new_name = clean_name(name, "Person") if name is not None else current.name
+        self._check_free(new_name, person_id)
+        try:
+            self.conn.execute("UPDATE people SET name = ? WHERE id = ?", (new_name, person_id))
+            if write_aliases is not None:
+                self.conn.execute("UPDATE people SET write_aliases = ? WHERE id = ?", (int(write_aliases), person_id))
+            old_aliases = current.aliases if aliases is None else aliases
+            if new_name.casefold() != current.name.casefold() and aliases is None:
+                old_aliases = [a for a in old_aliases if a.casefold() != new_name.casefold()]
+            self._set_aliases(person_id, new_name, old_aliases)
+        except (TagDBError, sqlite3.DatabaseError):
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return self.person(person_id)
+
+    def delete_person(self, person_id: int) -> None:
+        self.conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
+        self.conn.commit()
+
+    def _person_from_row(self, row) -> Person:
+        aliases = [r[0] for r in self.conn.execute(
+            "SELECT alias FROM person_aliases WHERE person_id = ? ORDER BY alias COLLATE NOCASE", (row["id"],))]
+        values = [PersonValue(r["id"], r["uid"], r["attribute_id"], r["attr_name"], r["value"], r["tag"],
+                              r["from_year"], r["to_year"]) for r in self.conn.execute(
+            "SELECT person_values.*, attributes.name AS attr_name FROM person_values JOIN attributes "
+            "ON attributes.id = person_values.attribute_id WHERE person_id = ? "
+            "ORDER BY attributes.name COLLATE NOCASE, value COLLATE NOCASE", (row["id"],))]
+        return Person(row["id"], row["uid"], row["name"], aliases, bool(row["write_aliases"]), values)
+
+    def person(self, person_id: int) -> Person:
+        row = self.conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
+        if row is None:
+            raise TagDBError("That person no longer exists.")
+        return self._person_from_row(row)
+
+    def person_by_uid(self, uid: str) -> Person | None:
+        row = self.conn.execute("SELECT * FROM people WHERE uid = ?", (uid,)).fetchone()
+        return self._person_from_row(row) if row else None
+
+    def find_person(self, name_or_alias: str) -> Person | None:
+        owner = self._name_owner(" ".join(str(name_or_alias).split()))
+        return self.person(owner[0]) if owner else None
+
+    def people(self) -> list[Person]:
+        rows = self.conn.execute("SELECT * FROM people ORDER BY name COLLATE NOCASE").fetchall()
+        return [self._person_from_row(r) for r in rows]
+
+    def person_names(self) -> dict[str, str]:
+        """{every name and alias, casefolded: main name}, for pickers and search."""
+        out = {r[0].casefold(): r[0] for r in self.conn.execute("SELECT name FROM people")}
+        for alias, name in self.conn.execute("SELECT alias, people.name FROM person_aliases JOIN people "
+                                             "ON people.id = person_aliases.person_id"):
+            out[alias.casefold()] = name
+        return out
+
+    # attributes
+    def add_attribute(self, name: str, *, stash_field: str | None = None, write_tags: bool = True,
+                      uid: str | None = None) -> Attribute:
+        name = clean_name(name, "Attribute")
+        if self.find_attribute(name):
+            raise DuplicateName(f"There's already an attribute called “{name}”.")
+        cur = self.conn.execute("INSERT INTO attributes(uid, name, stash_field, write_tags) VALUES(?, ?, ?, ?)",
+                                (uid or new_uid(), name, stash_field or None, int(write_tags)))
+        self.conn.commit()
+        return self.attribute(cur.lastrowid)
+
+    def update_attribute(self, attribute_id: int, *, name: str | None = None, stash_field: str | None = ...,
+                         write_tags: bool | None = None) -> Attribute:
+        current = self.attribute(attribute_id)
+        if name is not None:
+            name = clean_name(name, "Attribute")
+            clash = self.find_attribute(name)
+            if clash and clash.id != attribute_id:
+                raise DuplicateName(f"There's already an attribute called “{clash.name}”.")
+            self.conn.execute("UPDATE attributes SET name = ? WHERE id = ?", (name, attribute_id))
+        if stash_field is not ...:
+            self.conn.execute("UPDATE attributes SET stash_field = ? WHERE id = ?", (stash_field or None, attribute_id))
+        if write_tags is not None:
+            self.conn.execute("UPDATE attributes SET write_tags = ? WHERE id = ?", (int(write_tags), attribute_id))
+        self.conn.commit()
+        return self.attribute(current.id)
+
+    def delete_attribute(self, attribute_id: int) -> None:
+        self.conn.execute("DELETE FROM attributes WHERE id = ?", (attribute_id,))
+        self.conn.commit()
+
+    @staticmethod
+    def _attribute_from_row(row) -> Attribute:
+        return Attribute(row["id"], row["uid"], row["name"], row["stash_field"], bool(row["write_tags"]))
+
+    def attribute(self, attribute_id: int) -> Attribute:
+        row = self.conn.execute("SELECT * FROM attributes WHERE id = ?", (attribute_id,)).fetchone()
+        if row is None:
+            raise TagDBError("That attribute no longer exists.")
+        return self._attribute_from_row(row)
+
+    def find_attribute(self, name: str) -> Attribute | None:
+        row = self.conn.execute("SELECT * FROM attributes WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+        return self._attribute_from_row(row) if row else None
+
+    def attribute_by_uid(self, uid: str) -> Attribute | None:
+        row = self.conn.execute("SELECT * FROM attributes WHERE uid = ?", (uid,)).fetchone()
+        return self._attribute_from_row(row) if row else None
+
+    def attributes(self) -> list[Attribute]:
+        return [self._attribute_from_row(r) for r in
+                self.conn.execute("SELECT * FROM attributes ORDER BY name COLLATE NOCASE").fetchall()]
+
+    # a person's values
+    def add_person_value(self, person_id: int, attribute_id: int, value: str, *, tag: str | None = None,
+                         from_year: int | None = None, to_year: int | None = None,
+                         uid: str | None = None) -> PersonValue:
+        self.person(person_id)
+        attr = self.attribute(attribute_id)
+        value = clean_name(value, "Value")
+        tag = clean_name(tag, "Tag") if tag else value
+        if from_year and to_year and from_year > to_year:
+            raise InvalidName("The 'from' year is after the 'to' year.")
+        cur = self.conn.execute("INSERT INTO person_values(uid, person_id, attribute_id, value, tag, from_year, "
+                                "to_year) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                                (uid or new_uid(), person_id, attr.id, value, tag, from_year, to_year))
+        self.conn.commit()
+        return self.person_value(cur.lastrowid)
+
+    def update_person_value(self, value_id: int, *, value: str | None = None, tag: str | None = None,
+                            from_year: int | None = ..., to_year: int | None = ...) -> PersonValue:
+        current = self.person_value(value_id)
+        new_value = clean_name(value, "Value") if value is not None else current.value
+        new_tag = clean_name(tag, "Tag") if tag else (current.tag if tag is None else new_value)
+        fy = current.from_year if from_year is ... else from_year
+        ty = current.to_year if to_year is ... else to_year
+        if fy and ty and fy > ty:
+            raise InvalidName("The 'from' year is after the 'to' year.")
+        self.conn.execute("UPDATE person_values SET value = ?, tag = ?, from_year = ?, to_year = ? WHERE id = ?",
+                          (new_value, new_tag, fy, ty, value_id))
+        self.conn.commit()
+        return self.person_value(value_id)
+
+    def remove_person_value(self, value_id: int) -> None:
+        self.conn.execute("DELETE FROM person_values WHERE id = ?", (value_id,))
+        self.conn.commit()
+
+    def person_value(self, value_id: int) -> PersonValue:
+        row = self.conn.execute("SELECT person_values.*, attributes.name AS attr_name FROM person_values JOIN "
+                                "attributes ON attributes.id = person_values.attribute_id WHERE person_values.id = ?",
+                                (value_id,)).fetchone()
+        if row is None:
+            raise TagDBError("That value no longer exists.")
+        return PersonValue(row["id"], row["uid"], row["attribute_id"], row["attr_name"], row["value"], row["tag"],
+                           row["from_year"], row["to_year"])
+
+    # which files have which people (from the files' data blocks, kept up to date by saves and scans)
+    def files_with_person(self, person_id: int) -> list[str]:
+        rows = self.conn.execute("SELECT files.path FROM files JOIN file_people ON files.id = file_people.file_id "
+                                 "WHERE file_people.person_id = ? ORDER BY files.path COLLATE NOCASE",
+                                 (person_id,)).fetchall()
+        return [r[0] for r in rows]
+
+    def file_people(self) -> dict[str, list[str]]:
+        """{file path: [main names]} for every file with people."""
+        out: dict[str, list[str]] = {}
+        for path, name in self.conn.execute("SELECT files.path, people.name FROM file_people JOIN files ON "
+                                            "files.id = file_people.file_id JOIN people ON people.id = "
+                                            "file_people.person_id ORDER BY people.name COLLATE NOCASE"):
+            out.setdefault(path, []).append(name)
+        return out

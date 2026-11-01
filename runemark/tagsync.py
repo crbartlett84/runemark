@@ -70,6 +70,7 @@ class FileState:
     cover: bytes | None
     explorer_error: str | None = None
     meta: VideoMeta = field(default_factory=VideoMeta)
+    data: dict | None = None            # Runemark's data block (people, profile tags); MP4 only
 
     def all_tags(self) -> list[str]:
         return merge_unique(self.keywords, self.explorer, self.genre)
@@ -104,7 +105,7 @@ def read_state(path: str | os.PathLike, info: MediaInfo | None = None,
         except Exception as exc:  # noqa: BLE001
             log.info("couldn't read the rating of %s: %s", path, exc)
         meta = VideoMeta(tags.title, tags.year, tags.description, rating)
-        return FileState(path, kind, tags.keywords, tags.genre, explorer_tags, tags.cover, error, meta)
+        return FileState(path, kind, tags.keywords, tags.genre, explorer_tags, tags.cover, error, meta, tags.data)
     # MKV (or anything else ffprobe can read): Matroska tags, cover from an image attachment
     keywords: list[str] = []
     genre: list[str] = []
@@ -279,9 +280,12 @@ def verify_meta(target: Path, meta) -> list[str]:
     return problems
 
 
-def verify_mp4(target: Path, keywords: list[str], genre: list[str], cover, check_explorer: bool) -> list[str]:
+def verify_mp4(target: Path, keywords: list[str], genre: list[str], cover, check_explorer: bool,
+               data=UNCHANGED) -> list[str]:
     problems = []
     tags = read_mp4_tags(target)
+    if data is not UNCHANGED and (tags.data or None) != (data or None):
+        problems.append("Runemark's data block (people) didn't read back correctly.")
     if [k.casefold() for k in tags.keywords] != [k.casefold() for k in keywords]:
         problems.append(f"Keywords read back as: {', '.join(tags.keywords) or '(none)'}")
     if [g.casefold() for g in tags.genre] != [g.casefold() for g in genre]:
@@ -304,15 +308,16 @@ def verify_mp4(target: Path, keywords: list[str], genre: list[str], cover, check
 
 def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], cover=UNCHANGED,
              explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False,
-             progress: Progress | None = None, meta=UNCHANGED) -> SaveOutcome:
-    """Write tags, genre, cover, title/year/description/rating and Explorer's Tags to an MP4,
-    then read everything back. meta=UNCHANGED leaves title, year, description and rating alone."""
+             progress: Progress | None = None, meta=UNCHANGED, data=UNCHANGED) -> SaveOutcome:
+    """Write tags, genre, cover, title/year/description/rating, Runemark's data block and Explorer's Tags
+    to an MP4, then read everything back. meta=UNCHANGED leaves title, year, description and rating alone;
+    data=UNCHANGED leaves the data block alone (data=None removes it)."""
     path = Path(path)
     if container_of(path) != "mp4":
         raise SaveError("Only MP4 files can be saved directly; MKV files are converted first.")
     ensure_writable(path)
     stat = path.stat()
-    growth = estimate_growth(path, keywords=keywords, genre=genre, cover=cover, meta=meta)
+    growth = estimate_growth(path, keywords=keywords, genre=genre, cover=cover, meta=meta, data=data)
     use_copy = edit_moves_media(path, growth)
     target, tmp = path, None
     if use_copy:
@@ -326,7 +331,7 @@ def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], 
     try:
         if progress:
             progress(-1, "Writing tags and thumbnail…")
-        retry(lambda: write_mp4_tags(target, keywords=keywords, genre=genre, cover=cover, meta=meta))
+        retry(lambda: write_mp4_tags(target, keywords=keywords, genre=genre, cover=cover, meta=meta, data=data))
         rating = stars_to_value(meta.rating) if isinstance(meta, VideoMeta) else None
         method = None
         if explorer.supported(target):
@@ -335,7 +340,7 @@ def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], 
             method = retry(lambda: _write_explorer(target, keywords, genre, explorer_mode, rating))
         if progress:
             progress(-1, "Checking what was written…")
-        problems = verify_mp4(target, keywords, genre, cover, explorer.supported(target))
+        problems = verify_mp4(target, keywords, genre, cover, explorer.supported(target), data)
         problems += verify_meta(target, meta)
         if tmp is not None:
             retry(lambda: os.replace(tmp, path))
@@ -355,11 +360,11 @@ def save_mp4(path: str | os.PathLike, *, keywords: list[str], genre: list[str], 
 def save_mp4_with_chapters(path: str | os.PathLike, info: MediaInfo, marks, *, keywords: list[str],
                            genre: list[str], cover: bytes | None, meta: VideoMeta,
                            explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False,
-                           progress: Progress | None = None, cancel=None) -> SaveOutcome:
+                           progress: Progress | None = None, cancel=None, data: dict | None = None) -> SaveOutcome:
     """Write new chapters (which means writing the file again, without re-encoding), then the
     tags, thumbnail and details into the new file, check it, and swap it in for the original.
 
-    `cover` and `meta` must be the complete wanted values: the rewrite starts without them.
+    `cover`, `meta` and `data` must be the complete wanted values: the rewrite starts without them.
     """
     from .media import chapters as chapter_io
     path = Path(path)
@@ -373,7 +378,7 @@ def save_mp4_with_chapters(path: str | os.PathLike, info: MediaInfo, marks, *, k
     tmp = chapter_io.rewrite_with_chapters(info, marks, progress=progress, cancel=cancel)
     try:
         outcome = save_mp4(tmp, keywords=keywords, genre=genre, cover=cover or None,
-                           explorer_mode=explorer_mode, progress=progress, meta=meta)
+                           explorer_mode=explorer_mode, progress=progress, meta=meta, data=data)
         if progress:
             progress(-1, "Replacing the original…")
         retry(lambda: os.replace(tmp, path))

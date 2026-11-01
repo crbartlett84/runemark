@@ -113,13 +113,13 @@ def read_for_index(path: Path) -> dict:
             explorer_tags, rating = [], 0
         return dict(container="mp4", tags=merge_unique(tags.keywords, explorer_tags, tags.genre),
                     title=tags.title, year=tags.year, rating=rating, has_cover=bool(tags.cover),
-                    duration=duration, genre=tags.genre)
+                    duration=duration, genre=tags.genre, data=tags.data)
     info = probe(path)
     keywords = split_values([info.tag("keywords")]) if info.tag("keywords") else []
     genre = split_values([info.tag("genre")]) if info.tag("genre") else []
     return dict(container="mkv" if ext in MKV_EXTENSIONS else "other", tags=merge_unique(keywords, genre),
                 title=info.tag("title"), year=parse_year(info.tag("date") or info.tag("year")), rating=0,
-                has_cover=bool(info.cover_sources), duration=info.duration, genre=genre)
+                has_cover=bool(info.cover_sources), duration=info.duration, genre=genre, data=None)
 
 
 @dataclass
@@ -188,8 +188,7 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
         if not rescan_all and known is not None and known[0] == stat.st_size and known[1] == stat.st_mtime:
             continue
         try:
-            data = read_for_index(path)
-            db.index_file(path, size=stat.st_size, mtime=stat.st_mtime, commit=False, **data)
+            _index(db, path, stat, read_for_index(path), commit=False)
             result.read += 1
             pending += 1
         except Exception as exc:  # noqa: BLE001
@@ -207,9 +206,17 @@ def reindex(db: TagDB, path: str | os.PathLike) -> None:
     path = Path(path)
     try:
         stat = path.stat()
-        db.index_file(path, size=stat.st_size, mtime=stat.st_mtime, **read_for_index(path))
+        _index(db, path, stat, read_for_index(path))
     except Exception as exc:  # noqa: BLE001
         log.info("library: couldn't refresh %s: %s", path, exc)
+
+
+def _index(db: TagDB, path: Path, stat, data: dict, commit: bool = True) -> None:
+    """Index one file, including the people in its data block (adding people the database doesn't know yet)."""
+    from .people import resolve_people
+    block = data.pop("data", None)
+    people = resolve_people(db, block) if block else []
+    db.index_file(path, size=stat.st_size, mtime=stat.st_mtime, commit=commit, people=people, **data)
 
 
 # ------------------------------------------------------------------ changing many files
@@ -282,7 +289,7 @@ def history_fields(state) -> dict:
     """What record_history needs from a FileState read before a save."""
     return {"keywords": merge_unique(state.keywords, state.explorer or []), "genre": list(state.genre),
             "title": state.meta.title, "year": state.meta.year, "description": state.meta.description,
-            "rating": state.meta.rating or 0}
+            "rating": state.meta.rating or 0, "data": getattr(state, "data", None)}
 
 
 def new_batch_id() -> str:
@@ -297,7 +304,8 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
         raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
     outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
                        preserve_mtime=preserve_mtime,
-                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating))
+                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating),
+                       data=entry.data)      # people too (None removes a block the save added)
     db.remember_file(path, entry.keywords)
     reindex(db, path)
     db.drop_history(entry.id)

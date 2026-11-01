@@ -932,7 +932,8 @@ class MainWindow(QMainWindow):
                                               cover=whole_cover, meta=meta,
                                               explorer_mode=self.settings.explorer_writer,
                                               preserve_mtime=self.settings.preserve_modified_date,
-                                              progress=job.report, cancel=job.cancel)
+                                              progress=job.report, cancel=job.cancel,
+                                              data=doc.state.data)   # the rewrite starts without the data block
             return save_mp4(doc.path, keywords=keywords, genre=genre, cover=cover,
                             explorer_mode=self.settings.explorer_writer,
                             preserve_mtime=self.settings.preserve_modified_date, progress=job.report,

@@ -1,6 +1,7 @@
 """Tags, genre and cover art inside MP4 files (the MP4 equivalent of ID3), via mutagen."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ GENRE_KEY = "\xa9gen"
 COVER_KEY = "covr"
 TITLE_KEY = "\xa9nam"
 YEAR_KEY = "\xa9day"
+DATA_KEY = "----:com.runemark:data"     # Runemark's own record (people, where tags came from): JSON, docs/data-format.md
 DESCRIPTION_KEYS = ("desc", "\xa9cmt")   # Plex/Jellyfin read desc; Explorer shows ©cmt as Comments
 SEPARATOR = "; "
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -76,6 +78,7 @@ class Mp4Tags:
     title: str = ""
     year: int | None = None
     description: str = ""
+    data: dict | None = None     # Runemark's data block, if the file has one
 
 
 def split_values(values: Iterable[str]) -> list[str]:
@@ -121,7 +124,23 @@ def read_mp4_tags(path: str | os.PathLike, mp4: MP4 | None = None) -> Mp4Tags:
         if tags.get(key):
             description = str(tags[key][0])
             break
-    return Mp4Tags(split_values(keywords), split_values(genre), cover, title, year, description)
+    return Mp4Tags(split_values(keywords), split_values(genre), cover, title, year, description, _read_data(tags))
+
+
+def _read_data(tags) -> dict | None:
+    values = tags.get(DATA_KEY) if tags else None
+    if not values:
+        return None
+    try:
+        data = json.loads(bytes(values[0]).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        log.warning("ignoring an unreadable Runemark data block")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def encode_data(data: dict) -> bytes:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _padding_func(min_padding: int, ensure_padding: int = KEEP_PADDING_ABOVE):
@@ -136,9 +155,11 @@ def _padding_func(min_padding: int, ensure_padding: int = KEEP_PADDING_ABOVE):
 
 def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[str],
                    cover: bytes | None | _Unchanged = UNCHANGED, min_padding: int = MIN_PADDING,
-                   ensure_padding: int = KEEP_PADDING_ABOVE, meta: VideoMeta | _Unchanged = UNCHANGED) -> None:
-    """Write keywords, genre and (optionally) cover art and title/year/description.
-    cover=None or b'' removes the cover. The star rating lives in Explorer's Xtra box (explorer.py).
+                   ensure_padding: int = KEEP_PADDING_ABOVE, meta: VideoMeta | _Unchanged = UNCHANGED,
+                   data: dict | None | _Unchanged = UNCHANGED) -> None:
+    """Write keywords, genre and (optionally) cover art, title/year/description and Runemark's data block.
+    cover=None or b'' removes the cover; data=None removes the data block.
+    The star rating lives in Explorer's Xtra box (explorer.py).
 
     ensure_padding: leave at least this much free room beside the tag list afterwards.
     """
@@ -167,6 +188,11 @@ def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[
         _set_text(tags, TITLE_KEY, meta.title)
         _write_year(tags, meta.year)
         _write_description(tags, meta.description)
+    if not isinstance(data, _Unchanged):
+        if data:
+            tags[DATA_KEY] = [MP4FreeForm(encode_data(data), dataformat=AtomDataType.UTF8)]
+        elif DATA_KEY in tags:
+            del tags[DATA_KEY]
     mp4.save(padding=_padding_func(min_padding, ensure_padding))
 
 
@@ -205,7 +231,8 @@ def _set_text(tags, key: str, value: str) -> None:
 
 
 def estimate_growth(path: str | os.PathLike, *, keywords: list[str], genre: list[str],
-                    cover: bytes | None | _Unchanged, meta: VideoMeta | _Unchanged = UNCHANGED) -> int:
+                    cover: bytes | None | _Unchanged, meta: VideoMeta | _Unchanged = UNCHANGED,
+                    data: dict | None | _Unchanged = UNCHANGED) -> int:
     """Rough number of extra bytes a write needs beyond the current tag list."""
     current = read_mp4_tags(path)
     if isinstance(meta, VideoMeta):
@@ -217,6 +244,8 @@ def estimate_growth(path: str | os.PathLike, *, keywords: list[str], genre: list
     growth += len(SEPARATOR.join(genre).encode("utf-8")) - len(SEPARATOR.join(current.genre).encode("utf-8"))
     if not isinstance(cover, _Unchanged):
         growth += len(cover or b"") - len(current.cover or b"")
+    if isinstance(data, dict):
+        growth += len(encode_data(data)) - (len(encode_data(current.data)) if current.data else 0)
     growth += 512 + growth_meta  # box headers for newly added items
     # Explorer's Tags (Xtra box) also come out of the same padding
     growth += sum(len(t.encode("utf-16-le")) + 8 for t in keywords) + 64
