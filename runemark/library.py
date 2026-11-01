@@ -63,7 +63,8 @@ def matches(record: FileRecord, search: Search) -> bool:
     if any(t.casefold() not in have for t in search.tags):
         return False
     text = search.text.strip().casefold()
-    if text and text not in Path(record.path).name.casefold() and text not in record.title.casefold():
+    if text and text not in Path(record.path).name.casefold() and text not in record.title.casefold() \
+            and not any(text in n.casefold() for n in record.people + record.people_aliases):
         return False
     f = search.filter
     if f == FILTER_MISSING:

@@ -42,7 +42,7 @@ class LibraryWindow(QDialog):
         # ---- search row
         row = QHBoxLayout()
         self.text = QLineEdit()
-        self.text.setPlaceholderText("Search file names and titles")
+        self.text.setPlaceholderText("Search file names, titles and people")
         self.text.setClearButtonEnabled(True)
         self.text.textChanged.connect(self._text_changed)
         self.tag_input = QLineEdit()

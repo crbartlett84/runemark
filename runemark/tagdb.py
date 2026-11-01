@@ -128,6 +128,12 @@ class FileRecord:
     genre: list
     missing: bool
     saved_at: str | None
+    people: list = None             # main names of the people in it (from its data block)
+    people_aliases: list = None     # their aliases, so searching any name finds the video
+
+    def __post_init__(self):
+        self.people = self.people or []
+        self.people_aliases = self.people_aliases or []
 
 
 @dataclass
@@ -676,13 +682,25 @@ class TagDB:
         tags: dict[int, list[str]] = {}
         for r in self.conn.execute("SELECT file_id, tag_name FROM file_tags").fetchall():
             tags.setdefault(r["file_id"], []).append(r["tag_name"])
+        people: dict[int, list[str]] = {}
+        aliases: dict[int, list[str]] = {}
+        for file_id, name, person_id in self.conn.execute(
+                "SELECT file_people.file_id, people.name, people.id FROM file_people JOIN people "
+                "ON people.id = file_people.person_id ORDER BY people.name COLLATE NOCASE"):
+            people.setdefault(file_id, []).append(name)
+        person_aliases: dict[int, list[str]] = {}
+        for person_id, alias in self.conn.execute("SELECT person_id, alias FROM person_aliases"):
+            person_aliases.setdefault(person_id, []).append(alias)
+        for file_id, person_id in self.conn.execute("SELECT file_id, person_id FROM file_people"):
+            aliases.setdefault(file_id, []).extend(person_aliases.get(person_id, []))
         out = []
         for r in self.conn.execute("SELECT * FROM files ORDER BY path COLLATE NOCASE").fetchall():
             container = r["container"] or ("mkv" if str(r["path"]).lower().endswith(".mkv") else "mp4")
             out.append(FileRecord(r["path"], sorted(tags.get(r["id"], []), key=str.casefold), container,
                                   r["title"] or "", r["year"], r["rating"] or 0, bool(r["has_cover"]),
                                   r["duration"], [g for g in (r["genre"] or "").split("; ") if g],
-                                  bool(r["missing"]), r["saved_at"]))
+                                  bool(r["missing"]), r["saved_at"], people.get(r["id"], []),
+                                  aliases.get(r["id"], [])))
         return out
 
     # ------------------------------------------------------------------ backup / import / export

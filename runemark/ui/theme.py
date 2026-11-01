@@ -229,6 +229,11 @@ QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color
 #Chip[unknown="true"] {{ background: transparent; border: 1px dashed {p.faint}; }}
 #ChipText {{ color: {p.chip_text}; }}
 #Chip[unknown="true"] #ChipText {{ color: {p.muted}; }}
+#Chip[profile="true"] {{ background: transparent; border: 1px solid {_mix(p.accent, p.chip, 0.45)}; }}
+#Chip[profile="true"] #ChipText {{ color: {p.muted}; font-style: italic; }}
+#Chip[skipped="true"] {{ background: transparent; border: 1px dashed {p.faint}; }}
+#Chip[skipped="true"] #ChipText {{ color: {p.faint}; text-decoration: line-through; }}
+#Chip[person="true"] {{ border: 1px solid {p.accent}; }}
 #ChipBadge {{ color: {p.genre}; font-size: 10px; font-weight: 700; }}
 QToolButton#ChipClose {{ background: transparent; border: 0; padding: 0; border-radius: 9px; }}
 QToolButton#ChipClose:hover {{ background: {_mix(p.text, p.chip, 0.15)}; }}
@@ -297,6 +302,7 @@ _ICONS = {
     "library": '<rect x="3.5" y="4" width="4" height="16" rx="1"/><rect x="9.5" y="4" width="4" height="16" rx="1"/><path d="M16 5.2l3.8-1 3 15.2-3.8 1z"/>',
     "chapters": '<path d="M5 6h14M5 12h14M5 18h9"/><circle cx="3" cy="6" r=".6" fill="currentColor"/><circle cx="3" cy="12" r=".6" fill="currentColor"/><circle cx="3" cy="18" r=".6" fill="currentColor"/>',
     "sparkle": '<path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8z"/><path d="M18.5 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
+    "person": '<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c.8-3.8 3.8-6 7.5-6s6.7 2.2 7.5 6"/>',
     "shield": '<path d="M12 3.5l7 2.8v5.2c0 4.3-3 7.6-7 9-4-1.4-7-4.7-7-9V6.3z"/><path d="M8.8 12.2l2.3 2.3 4.3-4.6"/>',
 }
 

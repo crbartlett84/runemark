@@ -20,6 +20,10 @@ ROLE_NAME = Qt.ItemDataRole.UserRole + 1
 
 class TagEditor(QWidget):
     tagsChanged = Signal(list)
+    personEntered = Signal(str)            # a name or alias typed in the People box
+    personRemoved = Signal(str)            # person uid
+    skipToggled = Signal(str, str)         # person uid, value uid: "not in this video" / "back in this video"
+    personOpened = Signal(str)             # person uid: open their profile
     manageRequested = Signal()
     addUnknownRequested = Signal(str)      # put an unknown tag into the database
     createRequested = Signal(str)          # new tag typed in the box
@@ -41,6 +45,35 @@ class TagEditor(QWidget):
         self.banner = Banner()
         self.banner.hide()
         layout.addWidget(self.banner)
+
+        people_head = QHBoxLayout()
+        people_title = QLabel("PEOPLE")
+        people_title.setObjectName("CardTitle")
+        people_head.addWidget(people_title)
+        people_head.addStretch(1)
+        layout.addLayout(people_head)
+        self.people_frame = ChipArea()
+        self.people_chips = self.people_frame.flow
+        layout.addWidget(self.people_frame)
+        person_row = QHBoxLayout()
+        self.person_input = QLineEdit()
+        self.person_input.setPlaceholderText("Add a person (any name or alias)")
+        self.person_input.setClearButtonEnabled(True)
+        self.person_input.returnPressed.connect(self._commit_person)
+        self.person_button = text_button("Add", "plus")
+        self.person_button.clicked.connect(self._commit_person)
+        person_row.addWidget(self.person_input, 1)
+        person_row.addWidget(self.person_button)
+        layout.addLayout(person_row)
+        self.person_model = QStringListModel(self)
+        self.person_completer = QCompleter(self.person_model, self)
+        self.person_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.person_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.person_completer.activated.connect(self._person_completed)
+        self.person_input.setCompleter(self.person_completer)
+        self._people: list[tuple[str, str, str]] = []      # (uid, name, tooltip)
+        self._profile: list[dict] = []                     # profile tags, see set_people
+        self._people_enabled = False
 
         head = QHBoxLayout()
         title = QLabel("ON THIS FILE")
@@ -120,6 +153,7 @@ class TagEditor(QWidget):
         self._enabled = enabled
         for widget in (self.input, self.add_button, self.tree, self.filter):
             widget.setEnabled(enabled)
+        self.set_people_enabled(enabled)
         if not enabled:
             self.chips_frame.set_placeholder(CLOSED_HINT)
             self.hint.hide()
@@ -133,6 +167,11 @@ class TagEditor(QWidget):
         self._known = {t.name.casefold() for t in tags}
         self._genre_set = {t.name.casefold() for t in tags if t.category_id in genre_cats}
         self.completer_model.setStringList([t.name for t in tags])
+        names = set()
+        for person in self.db.people():
+            names.add(person.name)
+            names.update(person.aliases)
+        self.person_model.setStringList(sorted(names, key=str.casefold))
         self._build_tree()
         self._render_chips()
 
@@ -190,7 +229,17 @@ class TagEditor(QWidget):
             if is_unknown:
                 chip.clicked.connect(self.addUnknownRequested)
             self.chips.addWidget(chip)
-        count = len(self.tags)
+        hand = {t.casefold() for t in self.tags}
+        for row in self._profile:
+            if row["tag"].casefold() in hand:
+                continue                                   # typed by hand as well: shown once, as a hand tag
+            chip = Chip(row["tag"], removable=False, tooltip=self._profile_tip(row), parent=self.chips_frame)
+            chip.setProperty("profile", "true")
+            chip.setProperty("skipped", "true" if row["skipped"] else "false")
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.clicked.connect(lambda _=None, r=row, c=chip: self._profile_menu(r, c))
+            self.chips.addWidget(chip)
+        count = len(self.tags) + sum(1 for r in self._profile if not r["skipped"] and r["tag"].casefold() not in hand)
         self.count_label.setText(f"{count} tag{'s' if count != 1 else ''}" if count else "")
         self.chips_frame.set_placeholder(EMPTY_HINT if self._enabled else CLOSED_HINT)
         if self._enabled and unknown:
@@ -198,6 +247,62 @@ class TagEditor(QWidget):
             self.hint.show()
         else:
             self.hint.hide()
+
+    # ---------------------------------------------------------------- people
+    def set_people_enabled(self, enabled: bool):
+        self._people_enabled = enabled
+        for widget in (self.person_input, self.person_button):
+            widget.setEnabled(enabled)
+        self.people_frame.set_placeholder("No people yet." if enabled else "")
+
+    def set_people(self, people: list[tuple[str, str, str]], profile: list[dict]):
+        """people: (uid, name, tooltip). profile: one dict per profile tag:
+        {"tag", "skipped", "givers": [(person uid, person name, value uid or None, what it is)]}."""
+        self._people = list(people)
+        self._profile = list(profile)
+        self.people_chips.clear()
+        for uid, name, tip in self._people:
+            chip = Chip(name, tooltip=tip, parent=self.people_frame)
+            chip.setProperty("person", "true")
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.removeClicked.connect(lambda _=None, u=uid: self.personRemoved.emit(u))
+            chip.clicked.connect(lambda _=None, u=uid: self.personOpened.emit(u))
+            self.people_chips.addWidget(chip)
+        self.people_frame.set_placeholder("No people yet." if self._people_enabled else "")
+        self._render_chips()
+
+    @staticmethod
+    def _profile_tip(row: dict) -> str:
+        givers = "\n".join(f"• {name}: {what}" for _u, name, _v, what in row["givers"])
+        state = "Not in this video (click to bring it back)" if row["skipped"] else "From a profile (click for options)"
+        return f"{state}\n{givers}"
+
+    def _profile_menu(self, row: dict, chip):
+        menu = QMenu(self)
+        for person_uid, name, value_uid, what in row["givers"]:
+            if value_uid is None:
+                act = menu.addAction(f"{name}: {what}")
+                act.setEnabled(False)
+                continue
+            label = (f"Back in this video ({name}: {what})" if row["skipped"]
+                     else f"Not in this video ({name}: {what})")
+            act = menu.addAction(label)
+            act.triggered.connect(lambda _=False, p=person_uid, v=value_uid: self.skipToggled.emit(p, v))
+        menu.addSeparator()
+        hint = menu.addAction("Change it for every video in the person's profile")
+        hint.setEnabled(bool(row["givers"]))
+        hint.triggered.connect(lambda _=False, p=row["givers"][0][0]: self.personOpened.emit(p))
+        menu.exec(chip.mapToGlobal(chip.rect().bottomLeft()))
+
+    def _commit_person(self):
+        text = " ".join(self.person_input.text().split())
+        if text and self._people_enabled:
+            self.personEntered.emit(text)
+        self.person_input.clear()
+
+    def _person_completed(self, text: str):
+        self.personEntered.emit(text)
+        self.person_input.clear()
 
     # ---------------------------------------------------------------- editing
     def add_tag(self, name: str):

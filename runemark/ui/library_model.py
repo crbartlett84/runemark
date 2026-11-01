@@ -9,7 +9,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from ..media.probe import fmt_duration
 from ..tagdb import FileRecord
 
-COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder"]
+COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder", "People"]
 PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
@@ -33,6 +33,8 @@ def _text(rec: FileRecord, col: int) -> str:
         return "Yes" if rec.has_cover else "—"
     if col == 6:
         return fmt_duration(rec.duration) if rec.duration else ""
+    if col == 8:
+        return "; ".join(rec.people)
     return str(path.parent)
 
 
@@ -53,6 +55,8 @@ def _key(rec: FileRecord, col: int):
         return int(rec.has_cover)
     if col == 6:
         return rec.duration
+    if col == 8:
+        return "; ".join(rec.people).casefold() or None
     return str(path.parent).casefold()
 
 
@@ -104,6 +108,8 @@ class LibraryModel(QAbstractTableModel):
                 return rec.path
             if col == 4:
                 return "\n".join(rec.tags)
+            if col == 8 and rec.people_aliases:
+                return "Also known as: " + ", ".join(rec.people_aliases)
         if role == Qt.ItemDataRole.ForegroundRole and rec.missing and self.faint is not None:
             return self.faint
         return None

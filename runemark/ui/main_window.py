@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QAbstractSpinBox, QComboBox as _QComboBox)
 
 from .. import __version__, explorer, library, selftest
+from .. import people as people_io
 from ..media import chapters as chapter_io
 from ..media import convert as C
 from ..media import frames, suggest
@@ -44,8 +45,11 @@ class Document:
         self.path = path
         self.info = info
         self.state = state
-        self.tags = [db.canonical(t) for t in state.all_tags()]
+        # Hand-typed tags only; tags that come from the people in the video are worked out when saving.
+        self.tags = people_io.hand_tags([db.canonical(t) for t in state.all_tags()], state.data)
         self.saved_tags = list(self.tags)
+        self.people = people_io.current_people(db, state.data)     # [(Person or file entry, skipped value uids)]
+        self.saved_people = list(self.people)
         self.cover = UNCHANGED          # UNCHANGED, jpeg bytes, or REMOVE
         self.cover_note = ""
         self.meta = VideoMeta(**vars(state.meta))
@@ -64,11 +68,20 @@ class Document:
     def chapters_changed(self) -> bool:
         return not chapter_io.same_marks(self.chapters, self.saved_chapters)
 
+    def people_changed(self) -> bool:
+        return people_key(self.people) != people_key(self.saved_people)
+
     def dirty(self) -> bool:
         return (not same_tags(self.tags, self.saved_tags)) or self.cover is not UNCHANGED \
-            or self.meta_changed() or self.chapters_changed()
+            or self.meta_changed() or self.chapters_changed() or self.people_changed()
+
+    def compose(self, db: TagDB) -> tuple[list[str], dict | None]:
+        """The file's full tag list (hand-typed + from its people) and its data block, as they'd be saved."""
+        block = people_io.block_for(db, self.people, self.meta.year)
+        return people_io.combine(self.tags, None, block), block
 
     def discard(self) -> None:
+        self.people = list(self.saved_people)
         self.tags = list(self.saved_tags)
         self.cover = UNCHANGED
         self.meta = VideoMeta(**vars(self.saved_meta))
@@ -82,6 +95,10 @@ class Document:
 
     def needs_sync(self) -> bool:
         return self.container == "mp4" and not self.state.sync().in_sync
+
+
+def people_key(people) -> list[tuple[str, tuple]]:
+    return [((p["id"] if isinstance(p, dict) else p.uid), tuple(sorted(skip))) for p, skip in people]
 
 
 class MainWindow(QMainWindow):
@@ -207,6 +224,10 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tag_editor = TagEditor()
         self.tag_editor.tagsChanged.connect(self._tags_edited)
+        self.tag_editor.personEntered.connect(self._add_person)
+        self.tag_editor.personRemoved.connect(self._remove_person)
+        self.tag_editor.skipToggled.connect(self._toggle_skip)
+        self.tag_editor.personOpened.connect(self.manage_people)
         self.tag_editor.manageRequested.connect(self.manage_tags)
         self.tag_editor.createRequested.connect(self._create_tag)
         self.tag_editor.addUnknownRequested.connect(self._file_unknown_tag)
@@ -274,6 +295,7 @@ class MainWindow(QMainWindow):
         self.act_save = action("Save", lambda: self.save(), "Ctrl+S", "save")
         self.act_capture = action("Use this frame as the thumbnail", self.capture_frame, "Ctrl+T", "camera")
         self.act_manage = action("Tag database…", self.manage_tags, "Ctrl+D", "database")
+        self.act_people = action("People…", lambda: self.manage_people(), "Ctrl+Shift+P", "person")
         self.act_library = action("Library…", self.show_library, "Ctrl+B", "library")
         self.act_settings = action("Settings…", self.open_settings, "Ctrl+,", "settings")
         self.act_selftest = action("Run self-test…", self.run_self_test, None, "shield")
@@ -299,6 +321,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.act_library)
         menu.addAction(self.act_manage)
+        menu.addAction(self.act_people)
         menu.addAction(self.act_settings)
         menu.addSeparator()
         menu.addAction(self.act_selftest)
@@ -457,6 +480,7 @@ class MainWindow(QMainWindow):
         self._load_frame_mode(doc)
         self.tag_editor.set_enabled(True)
         self.tag_editor.set_tags(doc.tags)
+        self._refresh_people()
         self.tag_editor.show_sync(doc.container, doc.state.sync(), doc.state.explorer_error)
         self.thumbs.set_container(doc.container)
         self._refresh_thumbs()
@@ -630,6 +654,167 @@ class MainWindow(QMainWindow):
             self.doc.tags = list(tags)
             self._refresh_ui()
 
+    # ================================================================ people
+    def _refresh_people(self):
+        doc = self.doc
+        if doc is None:
+            self.tag_editor.set_people([], [])
+            return
+        rows, profile = [], {}
+        for person, skip in doc.people:
+            entry = dict(person) if isinstance(person, dict) else people_io.person_entry(self.db, person)
+            uid, name = entry["id"], entry["name"]
+            tip = "Click to open their profile"
+            if entry.get("aliases"):
+                tip = "Also known as " + ", ".join(entry["aliases"]) + "\n" + tip
+            if isinstance(person, dict):
+                tip += "\n(From the file: not in your people list yet)"
+            rows.append((uid, name, tip))
+
+            def give(tag, value_uid, what, skipped=False):
+                row = profile.setdefault(tag.casefold(), {"tag": tag, "givers": [], "given": False})
+                row["givers"].append((uid, name, value_uid, what))
+                row["given"] = row["given"] or not skipped
+
+            give(name, None, "their name")
+            if entry.get("aliases_as_tags"):
+                for alias in entry.get("aliases", []):
+                    give(alias, None, "an alias (set in their profile)")
+            for value in entry.get("values", []):
+                if value.get("as_tag", True) and people_io.value_applies(value, doc.meta.year):
+                    give(value["tag"], value["id"], f"{value['attribute']['name']}: {value['value']}",
+                         skipped=value["id"] in skip)
+        out = []
+        for row in profile.values():
+            row["skipped"] = not row.pop("given")
+            out.append(row)
+        self.tag_editor.set_people(rows, out)
+
+    def _add_person(self, text: str):
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        person = self.db.find_person(text)
+        if person is None:
+            answer = QMessageBox.question(
+                self, "New person", f"Add “{text}” to your people?\n\nYou can give them aliases and "
+                "attributes (written to their videos as tags) in People.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                person = self.db.add_person(text)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(self, "New person", str(exc))
+                return
+            self.tag_editor.refresh_database()
+        if any((p["id"] if isinstance(p, dict) else p.uid) == person.uid for p, _s in doc.people):
+            self.set_status(f"{person.name} is already in this video")
+            return
+        doc.people = doc.people + [(person, [])]
+        self._refresh_people()
+        self._refresh_ui()
+
+    def _remove_person(self, uid: str):
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        doc.people = [(p, s) for p, s in doc.people if (p["id"] if isinstance(p, dict) else p.uid) != uid]
+        self._refresh_people()
+        self._refresh_ui()
+
+    def _toggle_skip(self, person_uid: str, value_uid: str):
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        changed = []
+        for p, skip in doc.people:
+            if (p["id"] if isinstance(p, dict) else p.uid) == person_uid:
+                skip = [v for v in skip if v != value_uid] if value_uid in skip else skip + [value_uid]
+            changed.append((p, skip))
+        doc.people = changed
+        self._refresh_people()
+        self._refresh_ui()
+
+    def manage_people(self, uid: str | None = None):
+        from .people_dialog import PeopleDialog
+        dialog = PeopleDialog(self.db, self, select_uid=uid if isinstance(uid, str) else None)
+        pending = []
+        dialog.filesNeedUpdate.connect(lambda *args: pending.append(args))
+        dialog.exec()
+        self.tag_editor.refresh_database()
+        if self.doc is not None:
+            # profiles may have changed: pick up the new names and values (unsaved edits are kept)
+            self.doc.people = [(self.db.person_by_uid(p["id"] if isinstance(p, dict) else p.uid) or p, s)
+                               for p, s in self.doc.people]
+            self.doc.saved_people = [(self.db.person_by_uid(p["id"] if isinstance(p, dict) else p.uid) or p, s)
+                                     for p, s in self.doc.saved_people]
+            self._refresh_people()
+        if self.library_window is not None:
+            self.library_window.refresh()
+        for args in pending:
+            self._update_people_files(*args)
+
+    def _update_people_files(self, paths: list[str], label: str, drop: list[str]):
+        """After People closes: offer to bring the videos with the changed people up to date (one undoable batch)."""
+        doc = self.doc
+        files = {file_key(p): Path(p) for p in paths}
+        doc_key = file_key(doc.path) if doc else None
+        if doc is not None and doc_key in files and doc.dirty():
+            # unsaved edits in the editor: update it there (saving writes the change) instead of under it
+            doc.people = [(p, s) for p, s in doc.people if (p["id"] if isinstance(p, dict) else p.uid) not in drop]
+            files.pop(doc_key)
+            self._refresh_people()
+            self._refresh_ui()
+            self.toast("The open video was updated in the editor. Save it to write the change.")
+        if not files:
+            return
+        names = "\n".join(f"• {p.name}" for p in list(files.values())[:12])
+        more = f"\n…and {len(files) - 12} more" if len(files) > 12 else ""
+        answer = QMessageBox.question(
+            self, "Update videos", f"{label}.\n\nUpdate the {len(files)} video(s) with them so their tags "
+            f"match?\n\n{names}{more}\n\nTags you typed yourself aren't changed. You can undo this from the "
+            "Library (More → Undo last bulk change).")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        reload_open = doc is not None and doc_key in files
+        position = self.player.unload() if reload_open else 0
+        dialog = ProgressDialog("Updating videos", cancellable=True, parent=self)
+        mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
+        self._busy = True
+        db_path = self.db.path
+
+        def work(job):
+            thread_db = TagDB(db_path)                  # SQLite connections belong to one thread
+            try:
+                return people_io.refresh_files(thread_db, list(files.values()), label=label, drop=set(drop),
+                                               explorer_mode=mode, preserve_mtime=preserve,
+                                               progress=job.report, cancel=job.cancel)
+            finally:
+                thread_db.close()
+
+        def finish():
+            self._busy = False
+            dialog.finish()
+            self._library_saved()
+            if reload_open and doc is not None:
+                self._load(doc.path, position)
+
+        def done(problems):
+            finish()
+            updated = len(files) - len(problems)
+            self.set_status(f"Updated {updated} of {len(files)} video(s)")
+            if problems:
+                TextReportDialog("Some videos weren't updated",
+                                 "\n".join(f"{p.name}: {why}" for p, why in problems), self).exec()
+
+        def failed(exc, _tb):
+            finish()
+            QMessageBox.critical(self, "Update videos", str(exc))
+
+        job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+        dialog.cancelRequested.connect(job.cancel.set)
+        dialog.show()
+
     def _create_tag(self, text: str):
         tag, category = ask_new_tag(self, self.db, text, self.settings.last_category_id)
         if tag is not None:
@@ -649,7 +834,7 @@ class MainWindow(QMainWindow):
         if doc is None or doc.state.explorer is None:
             return
         chosen = doc.state.explorer if side == "explorer" else doc.state.keywords
-        doc.tags = [self.db.canonical(t) for t in merge_unique(chosen)]
+        doc.tags = people_io.hand_tags([self.db.canonical(t) for t in merge_unique(chosen)], doc.state.data)
         doc.saved_tags = []  # force a save
         self.tag_editor.set_tags(doc.tags)
         self._refresh_ui()
@@ -835,7 +1020,10 @@ class MainWindow(QMainWindow):
 
     def _meta_edited(self):
         if self.doc is not None:
+            year_before = self.doc.meta.year
             self.doc.meta = self.details.meta.value()
+            if self.doc.meta.year != year_before and self.doc.people:
+                self._refresh_people()            # values limited to some years may now apply (or not)
             self._refresh_ui()
 
     def _refresh_tag_names(self):
@@ -908,7 +1096,8 @@ class MainWindow(QMainWindow):
             self._convert_and_save(doc, after)
 
     def _save_mp4(self, doc: Document, after=None):
-        keywords, genre = self._fields(doc.tags, doc.state.genre)
+        all_tags, block = doc.compose(self.db)
+        keywords, genre = self._fields(all_tags, doc.state.genre)
         cover = doc.cover
         rewrite = doc.chapters_changed()
         meta = doc.meta if (doc.meta_changed() or rewrite) else UNCHANGED
@@ -933,11 +1122,11 @@ class MainWindow(QMainWindow):
                                               explorer_mode=self.settings.explorer_writer,
                                               preserve_mtime=self.settings.preserve_modified_date,
                                               progress=job.report, cancel=job.cancel,
-                                              data=doc.state.data)   # the rewrite starts without the data block
+                                              data=block)   # the rewrite starts without the data block
             return save_mp4(doc.path, keywords=keywords, genre=genre, cover=cover,
                             explorer_mode=self.settings.explorer_writer,
                             preserve_mtime=self.settings.preserve_modified_date, progress=job.report,
-                            meta=meta)
+                            meta=meta, data=block)
 
         def done(outcome):
             self._busy = False
@@ -989,7 +1178,8 @@ class MainWindow(QMainWindow):
         dialog = ConvertDialog(plan, self)
         if dialog.exec() != ConvertDialog.DialogCode.Accepted:
             return
-        keywords, genre = self._fields(doc.tags, doc.state.genre)
+        all_tags, block = doc.compose(self.db)
+        keywords, genre = self._fields(all_tags, doc.state.genre)
         tags_saved = list(doc.tags)
         meta = VideoMeta(**vars(doc.meta))
         if doc.cover is UNCHANGED:
@@ -1014,7 +1204,7 @@ class MainWindow(QMainWindow):
             final = plan.output
             try:
                 outcome = save_mp4(tmp, keywords=keywords, genre=genre, cover=cover,
-                                   explorer_mode=self.settings.explorer_writer, meta=meta)
+                                   explorer_mode=self.settings.explorer_writer, meta=meta, data=block)
                 os.replace(tmp, final)
             except BaseException:
                 C.cleanup([tmp, *sidecars])
