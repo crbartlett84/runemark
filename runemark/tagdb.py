@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 HISTORY_KEEP = 10      # earlier states remembered per file, for undo
 MAX_NAME = 100
 
@@ -104,6 +104,16 @@ CREATE TABLE IF NOT EXISTS file_people(
 );
 CREATE INDEX IF NOT EXISTS idx_person_values_person ON person_values(person_id);
 CREATE INDEX IF NOT EXISTS idx_file_people_person ON file_people(person_id);
+-- Schema 5: video fingerprints for finding copies (media/fingerprint.py), recomputed when the file changes.
+CREATE TABLE IF NOT EXISTS fingerprints(
+    key TEXT PRIMARY KEY,
+    size INTEGER,
+    mtime REAL,
+    version INTEGER NOT NULL,
+    fps REAL NOT NULL,
+    crop TEXT NOT NULL DEFAULT '',
+    data BLOB NOT NULL
+);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -1047,3 +1057,27 @@ class TagDB:
                                             "file_people.person_id ORDER BY people.name COLLATE NOCASE"):
             out.setdefault(path, []).append(name)
         return out
+
+    # ------------------------------------------------------------------ fingerprints (schema 5)
+    def fingerprint(self, path: str | os.PathLike, size: int, mtime: float, version: int):
+        """The stored fingerprint, if it's for this exact file (same size, modified time and hash version)."""
+        from .media.fingerprint import Fingerprint
+        row = self.conn.execute("SELECT * FROM fingerprints WHERE key = ?", (file_key(path),)).fetchone()
+        if row is None or row["size"] != size or row["mtime"] != mtime or row["version"] != version:
+            return None
+        return Fingerprint.from_bytes(row["data"], row["fps"], row["crop"], row["version"])
+
+    def save_fingerprint(self, path: str | os.PathLike, size: int, mtime: float, fp, commit: bool = True) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO fingerprints(key, size, mtime, version, fps, crop, data) "
+                          "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                          (file_key(path), size, mtime, fp.version, fp.fps, fp.crop, fp.to_bytes()))
+        if commit:
+            self.conn.commit()
+
+    def forget_fingerprints(self, keep_keys: set[str]) -> int:
+        """Drop fingerprints of files that aren't in the library any more."""
+        rows = [r[0] for r in self.conn.execute("SELECT key FROM fingerprints")]
+        gone = [k for k in rows if k not in keep_keys]
+        self.conn.executemany("DELETE FROM fingerprints WHERE key = ?", [(k,) for k in gone])
+        self.conn.commit()
+        return len(gone)
