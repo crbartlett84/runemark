@@ -12,6 +12,7 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 - A self-test check for people.
 
 ### Fixed
+- Closing a window while it was still loading the frames across the video could report an error from a background job. The job now just stops.
 - Release notes on GitHub were empty for 0.3.0 (the notes script couldn't write "→" on Windows).
 
 ## [0.3.0] - 2026-11-01

@@ -28,21 +28,43 @@ class Job(QRunnable):
         self.cancel = threading.Event()
         self.setAutoDelete(False)
 
+    def _send(self, signal, *values) -> None:
+        """Emit, unless whoever was listening has gone (a window closed mid-job, or the app quitting): then the
+        job is cancelled quietly instead of raising "Signal source has been deleted" from a pool thread."""
+        try:
+            signal.emit(*values)
+        except RuntimeError as exc:
+            if "deleted" not in str(exc):
+                raise
+            self.cancel.set()
+            raise _Orphaned from None
+
     def report(self, percent: int, message: str = "") -> None:
-        self.signals.progress.emit(percent, message)
+        self._send(self.signals.progress, percent, message)
 
     def emit(self, value: Any) -> None:
-        self.signals.item.emit(value)
+        self._send(self.signals.item, value)
 
     def run(self) -> None:
         try:
-            result = self.fn(self, *self.args, **self.kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            text = traceback.format_exc()
-            log.warning("background job failed: %s", text)
-            self.signals.failed.emit(exc, text)
-        else:
-            self.signals.done.emit(result)
+            try:
+                result = self.fn(self, *self.args, **self.kwargs)
+            except _Orphaned:
+                raise
+            except BaseException as exc:  # noqa: BLE001
+                text = traceback.format_exc()
+                log.warning("background job failed: %s", text)
+                self._send(self.signals.failed, exc, text)
+            else:
+                self._send(self.signals.done, result)
+        except _Orphaned:
+            _alive.discard(self)
+            log.info("background job stopped: its window has closed")
+
+
+class _Orphaned(BaseException):
+    """Internal: the job's listeners are gone. A BaseException, so a job's own `except Exception` doesn't
+    swallow it and carry on working for nobody."""
 
 
 _alive: set[Job] = set()
