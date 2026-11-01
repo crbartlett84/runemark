@@ -138,6 +138,8 @@ class PeopleDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
+        for b in buttons.buttons():
+            b.setAutoDefault(False)
         layout.addWidget(buttons)
         self._fill_attributes()
         self._fill_list()
@@ -490,5 +492,7 @@ class AttributesDialog(QDialog):
 def QPushButtonLike(text: str, slot):  # noqa: N802 - a small factory that reads like a widget
     from PySide6.QtWidgets import QPushButton
     button = QPushButton(text)
+    button.setAutoDefault(False)      # Enter in a text box must not press a button (e.g. New person…)
+    button.setDefault(False)
     button.clicked.connect(slot)
     return button

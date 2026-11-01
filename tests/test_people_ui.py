@@ -197,3 +197,12 @@ def test_library_people_column_and_search_by_alias(tmp_path, media, db, qapp):
         assert w.model.rowCount() == 1 and w.model.record(0).people == ["Ana Lee"]
     finally:
         w.close()
+
+
+def test_no_button_in_the_people_window_takes_enter(db, qapp):
+    """Enter in the value box adds the value; it mustn't also press New person… (found in the click-through)."""
+    from PySide6.QtWidgets import QPushButton
+    from runemark.ui.people_dialog import PeopleDialog
+    dialog = PeopleDialog(db)
+    assert all(not b.autoDefault() and not b.isDefault() for b in dialog.findChildren(QPushButton))
+    dialog.done(0)
