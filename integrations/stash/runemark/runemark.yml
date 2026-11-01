@@ -1,0 +1,40 @@
+name: Runemark Import
+description: Imports what Runemark wrote into your videos (tags, title, date, description, rating, cover, people as performers, chapters as markers). Fills in blanks; never removes anything.
+version: 0.1.0
+url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
+exec:
+  - python
+  - "{pluginDir}/runemark_import.py"
+interface: raw
+errLog: warning
+tasks:
+  - name: Import from Runemark
+    description: Check every scene's file for Runemark's tags, details, people and chapters, and bring Stash up to date. Safe to run again.
+    defaultArgs:
+      mode: all
+hooks:
+  - name: Import new scenes from Runemark
+    description: When a scan adds a scene, import what Runemark wrote into its file.
+    triggeredBy:
+      - Scene.Create.Post
+settings:
+  overwrite:
+    displayName: Replace details Stash already has
+    description: "Off (default): only fill in what's blank. On: Runemark's title, details, date, rating, cover and performer fields win."
+    type: BOOLEAN
+  chapterTag:
+    displayName: Tag for chapter markers
+    description: Every marker needs a primary tag; chapters get this one (default "Chapter").
+    type: STRING
+  yearOnlyDates:
+    displayName: Year-only dates become 1 January
+    description: Runemark often knows only the year. Off (default) leaves Stash's date blank in that case.
+    type: BOOLEAN
+  importCover:
+    displayName: Import Runemark's thumbnail as the cover
+    description: Default on (only for scenes nobody has edited yet, unless "Replace details" is on).
+    type: BOOLEAN
+  createPerformers:
+    displayName: Add performers Stash doesn't have yet
+    description: Default on. Off only links people Stash already knows (by name or alias).
+    type: BOOLEAN
