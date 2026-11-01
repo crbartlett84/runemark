@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runemark"
-version = "0.3.0"
+version = "0.4.0"
 description = "Tag MP4 and MKV videos, choose their thumbnails, and keep Explorer's Tags in sync"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"

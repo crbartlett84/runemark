@@ -2,7 +2,7 @@
 
 All notable changes to Runemark. Versions follow [semantic versioning](https://semver.org).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-01
 
 ### Added
 - **People.** Tag the people in a video from a People box beside the tags (any name or alias works). The **People** window (Ctrl+Shift+P) keeps each person's aliases and values for attributes you define, such as *Hair: Red*, written to their videos as tags (*Red hair*). Values can be limited to some years, and a value that doesn't apply to one video can be marked **Not in this video**.
@@ -68,6 +68,7 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 First release: open MP4 and MKV files, step frame by frame, choose the thumbnail, see file details, tag from a categorised tag database, keep Explorer's Tags, the file's own tags and Genre in sync, and convert MKV to MP4 without re-encoding the video.
 
+[0.4.0]: https://github.com/crbartlett84/runemark/releases/tag/v0.4.0
 [0.3.0]: https://github.com/crbartlett84/runemark/releases/tag/v0.3.0
 [0.2.0]: https://github.com/crbartlett84/runemark/releases/tag/v0.2.0
 [0.1.1]: https://github.com/crbartlett84/runemark/releases/tag/v0.1.1
