@@ -103,7 +103,7 @@ def fingerprint(path: str | Path, *, duration: float | None = None, fps: float =
     # differ completely from one frame to the next. Averaging first makes the hash depend on the moment, not the frame.
     window = max(2, round(10 / fps))
     filters = ([f"crop={crop}"] if crop else []) + [
-        "scale=64:36:flags=area", "fps=10", f"tmix=frames={window}", f"fps={fps}",
+        "fps=10", "scale=64:36:flags=area", f"tmix=frames={window}", f"fps={fps}",
         f"scale={W}:{H}:flags=area", "format=gray"]
     # Speed: skip the frames no other frame depends on (the frames that are decoded stay exact), and let FFmpeg
     # use the graphics card if there is one. Not -skip_loop_filter: later frames are built from earlier ones, so
