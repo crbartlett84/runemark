@@ -12,7 +12,6 @@ import re
 import statistics
 import subprocess
 import threading
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,26 +65,45 @@ def dhash(pixels: bytes) -> tuple[int, bool]:
     return value, statistics.pstdev(pixels) < FLAT_SPREAD
 
 
-def detect_crop(path: str | Path, duration: float | None) -> str:
-    """Black bars to remove, found by FFmpeg's cropdetect on frames spread through the video ("" for none)."""
-    start = max(0.0, (duration or 0) * 0.1)
-    args = [proc.ffmpeg(), "-hide_banner", "-nostdin", "-ss", f"{start:.2f}", "-i", str(path), "-an", "-sn",
-            "-vf", "fps=1/2,cropdetect=limit=24:round=2:reset=1", "-frames:v", "30", "-f", "null", "-"]
-    result = proc.run(args, timeout=300, check=False)
-    found = Counter(re.findall(rb"crop=(\d+:\d+:\d+:\d+)", result.stderr))
-    if not found:
+def detect_crop(path: str | Path, duration: float | None = None) -> str:
+    """Black bars to remove ("" for none). FFmpeg's cropdetect looks at one keyframe every few seconds through the
+    whole video, and the crop kept is the largest picture area any of them showed: bars are the same in every
+    frame, while a dark scene (which looks like bars on its own) is always contradicted by a brighter one."""
+    def run(keyframes_only: bool):
+        args = [proc.ffmpeg(), "-hide_banner", "-nostdin", *(["-skip_frame", "nokey"] if keyframes_only else []),
+                "-i", str(path), "-an", "-sn", "-dn", "-vf",
+                ("select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,5)'," if keyframes_only else "fps=1/2,")
+                + "cropdetect=limit=24:round=2:reset=1", "-f", "null", "-"]
+        out = proc.run(args, timeout=900, check=False).stderr
+        return [tuple(int(v) for v in m.split(b":")) for m in re.findall(rb"crop=(\d+:\d+:\d+:\d+)", out)], out
+
+    boxes, stderr = run(keyframes_only=True)
+    if len(boxes) < 12:                       # few keyframes (a short clip): look at a frame every 2 s instead
+        boxes, stderr = run(keyframes_only=False)
+    sizes = re.search(rb"Stream #\S+ Video: .*?, (\d{2,5})x(\d{2,5})", stderr)
+    if not boxes or not sizes:
         return ""
-    crop = found.most_common(1)[0][0].decode()
-    w, h, x, y = (int(v) for v in crop.split(":"))
-    return "" if (x == 0 and y == 0) or w < 32 or h < 32 else crop
+    full_w, full_h = int(sizes.group(1)), int(sizes.group(2))
+    x0 = min(b[2] for b in boxes)
+    y0 = min(b[3] for b in boxes)
+    x1 = max(b[2] + b[0] for b in boxes)
+    y1 = max(b[3] + b[1] for b in boxes)
+    w, h = x1 - x0, y1 - y0
+    if w < 32 or h < 32 or (w >= full_w - 4 and h >= full_h - 4):
+        return ""
+    return f"{w - w % 2}:{h - h % 2}:{x0}:{y0}"
 
 
 def fingerprint(path: str | Path, *, duration: float | None = None, fps: float = DEFAULT_FPS,
                 cancel: threading.Event | None = None) -> Fingerprint:
     """Read the whole video once (decoded small and greyscale) and hash a frame every 1/fps seconds."""
-    crop = detect_crop(path, duration)
+    crop = detect_crop(path)
     filters = ([f"crop={crop}"] if crop else []) + [f"fps={fps}", f"scale={W}:{H}:flags=area", "format=gray"]
-    args = [proc.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-an", "-sn", "-dn",
+    # Speed: skip the frames no other frame depends on (the frames that are decoded stay exact), and let FFmpeg
+    # use the graphics card if there is one. Not -skip_loop_filter: later frames are built from earlier ones, so
+    # skipping the deblocking filter drifts differently in each encoding and copies stop matching.
+    args = [proc.ffmpeg(), "-hide_banner", "-nostdin", "-v", "fatal", "-hwaccel", "auto",
+            "-skip_frame", "noref", "-i", str(path), "-an", "-sn", "-dn",
             "-vf", ",".join(filters), "-f", "rawvideo", "-"]
     hashes, flat = [], []
     with proc.popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as p:

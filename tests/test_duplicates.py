@@ -85,6 +85,7 @@ def test_fingerprint_basics(prints, clips):
     assert again.hashes == fp.hashes and again.flat == fp.flat
     assert prints["letterboxed"].crop.startswith("320:180:0:4")          # black bars found and cropped
     assert prints["original"].crop == ""
+    assert prints["unrelated"].crop == "" and prints["shares_one"].crop == ""  # dark scenes aren't mistaken for bars
 
 
 @pytest.mark.parametrize("copy", ["reencoded", "letterboxed"])
