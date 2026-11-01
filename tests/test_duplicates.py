@@ -63,6 +63,10 @@ def clips(tmp_path_factory):
     out["trimmed"] = d / "trimmed.mp4"
     ff("-ss", "5.3", "-i", str(base), "-t", str(SCENE * 6 - 5.3 - 6.7), "-c:v", "libx264", "-preset", "ultrafast",
        str(out["trimmed"]))
+    # trimmed AND re-encoded with B-frames (a normal preset): frames land at different moments than the original's,
+    # which made the fast-changing "life" scene stop matching before samples were averaged over half a second
+    out["trimmed_bframes"] = d / "trimmed_bframes.mp4"
+    ff("-ss", "6.3", "-i", str(base), "-t", "28", "-c:v", "libx264", "-preset", "veryfast", str(out["trimmed_bframes"]))
     # scene 3 (16-24 s) cut out of the middle
     out["scene_cut"] = make(SCENES[:2] + SCENES[3:], d / "scene_cut.mp4")
     # scenes swapped around
@@ -104,6 +108,11 @@ def test_trimmed_copy_is_a_cut_with_gaps_at_the_ends(prints):
     assert abs(s1 - (SCENE * 6 - 6.7)) <= 1.0 and abs(e1 - SCENE * 6) <= 1.0
 
 
+def test_trimmed_reencode_with_bframes_is_a_cut(prints):
+    m = D.compare(prints["original"], prints["trimmed_bframes"])
+    assert m is not None and m.kind == D.CUT and m.coverage_b > 0.9, m
+
+
 def test_a_scene_cut_from_the_middle_is_found_and_located(prints):
     m = D.compare(prints["original"], prints["scene_cut"])
     assert m.kind == D.CUT and len(m.runs) >= 2 and m.coverage_b > 0.9
@@ -129,7 +138,7 @@ def test_finding_copies_across_a_library(prints):
     kinds = {frozenset((f.a, f.b)): f.match.kind for f in found}
     assert kinds[frozenset(("original", "reencoded"))] == D.DUPLICATE
     assert kinds[frozenset(("original", "trimmed"))] == D.CUT
-    group = {"original", "reencoded", "letterboxed", "trimmed", "scene_cut", "reordered"}
+    group = {"original", "reencoded", "letterboxed", "trimmed", "trimmed_bframes", "scene_cut", "reordered"}
     assert all(not ("unrelated" in pair and pair & group) for pair in kinds)
     assert kinds[frozenset(("unrelated", "shares_one"))] == D.SHARED        # they share two scenes
     assert kinds[frozenset(("original", "shares_one"))] == D.SHARED

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import proc
 
-VERSION = 1                 # bump when the hash changes, so stored fingerprints are recomputed
+VERSION = 2                 # bump when the hash changes, so stored fingerprints are recomputed
 DEFAULT_FPS = 2.0
 W, H = 9, 8
 FRAME_BYTES = W * H
@@ -98,7 +98,13 @@ def fingerprint(path: str | Path, *, duration: float | None = None, fps: float =
                 cancel: threading.Event | None = None) -> Fingerprint:
     """Read the whole video once (decoded small and greyscale) and hash a frame every 1/fps seconds."""
     crop = detect_crop(path)
-    filters = ([f"crop={crop}"] if crop else []) + [f"fps={fps}", f"scale={W}:{H}:flags=area", "format=gray"]
+    # Each sample is the average of the half-second around it, not one instant: two copies' frames never line up
+    # exactly (a trim at 6.3 s, different keyframes, skipped frames), and fast-changing pictures (water, confetti)
+    # differ completely from one frame to the next. Averaging first makes the hash depend on the moment, not the frame.
+    window = max(2, round(10 / fps))
+    filters = ([f"crop={crop}"] if crop else []) + [
+        "scale=64:36:flags=area", "fps=10", f"tmix=frames={window}", f"fps={fps}",
+        f"scale={W}:{H}:flags=area", "format=gray"]
     # Speed: skip the frames no other frame depends on (the frames that are decoded stay exact), and let FFmpeg
     # use the graphics card if there is one. Not -skip_loop_filter: later frames are built from earlier ones, so
     # skipping the deblocking filter drifts differently in each encoding and copies stop matching.
