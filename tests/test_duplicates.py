@@ -261,8 +261,8 @@ def test_duplicates_window(clips, tmp_path, monkeypatch):
         w.copies.setCurrentItem(next(r for r in w._rows() if r.text(0) == "original.mp4"))
         w._merge()
         end = time.time() + 30
-        while "Lake" not in read_state(folder / "original.mp4").keywords and time.time() < end:
-            app.processEvents()
+        while not w.status.text().startswith("Copied tags") and time.time() < end:   # don't read mid-write:
+            app.processEvents()                                                       # Windows locks the file
             time.sleep(0.02)
         assert read_state(folder / "original.mp4").keywords == ["Lake"]
 
