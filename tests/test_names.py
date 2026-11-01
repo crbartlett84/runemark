@@ -161,6 +161,7 @@ def test_names_dialog_previews_and_renames(tmp_path, media, monkeypatch):
     try:
         L.scan(db, [str(folder)])
         dialog = NamesDialog(db, db.library(), "rename", settings)
+        assert dialog.pattern.completer() is None        # typing "{Title}" mustn't turn into a preset
         dialog.pattern.setCurrentText("{Title} ({Year})")
         dialog._refresh()
         rows = {dialog.table.item(r, 0).text(): (dialog.table.item(r, 1).text(), dialog.table.item(r, 2).text())

@@ -52,6 +52,7 @@ class NamesDialog(QDialog):
         self.pattern = QComboBox()
         self.pattern.setEditable(True)
         self.pattern.addItems(READ_PRESETS if mode == "read" else RENAME_PRESETS)
+        self.pattern.setCompleter(None)             # no auto-completing from the presets while typing a pattern
         last = getattr(settings, "name_patterns", {}).get(mode) if settings is not None else None
         if last:
             self.pattern.setCurrentText(last)

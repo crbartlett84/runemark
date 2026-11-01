@@ -195,6 +195,7 @@ class DuplicatesWindow(QDialog):
             empty = QTreeWidgetItem(["No copies found."])
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             self.copies.addTopLevelItem(empty)
+            empty.setFirstColumnSpanned(True)          # the message across the whole width, not cut to "N…"
 
         self.shared.clear()
         for f in self.found:
