@@ -125,7 +125,8 @@ class RenamePlan:
 
     @property
     def changes(self) -> bool:
-        return not self.problem and os.path.normcase(self.old) != os.path.normcase(self.new)
+        # exact comparison: on Windows "beach day" -> "Beach Day" is a real change (only the letter case)
+        return not self.problem and self.old != self.new
 
 
 def values_for(record) -> dict[str, str]:
