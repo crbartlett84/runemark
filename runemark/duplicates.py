@@ -351,3 +351,125 @@ def scan_library(db, *, include_shared: bool = True, progress=None, cancel=None)
     if progress:
         progress(100, "Done")
     return result
+
+
+# ------------------------------------------------------------------ deciding what to keep
+@dataclass
+class Copy:
+    """One video in a group of copies, with what's needed to choose between them."""
+    path: str
+    width: int = 0
+    height: int = 0
+    bit_rate: int = 0
+    duration: float = 0.0
+    size: int = 0
+    tags: int = 0
+    people: int = 0
+
+    @property
+    def pixels(self) -> int:
+        return self.width * self.height
+
+
+def describe_copy(path: str, record=None) -> Copy:
+    """Resolution, bitrate, length and size (read with ffprobe), plus how much tagging it already has."""
+    import os
+    from .media.probe import probe
+    c = Copy(path)
+    try:
+        info = probe(path)
+        video = info.main_video
+        c.width, c.height = (video.width or 0, video.height or 0) if video else (0, 0)
+        c.bit_rate = info.bit_rate or 0
+        c.duration = info.duration or 0.0
+        c.size = info.size or os.path.getsize(path)
+    except Exception:  # noqa: BLE001
+        try:
+            c.size = os.path.getsize(path)
+        except OSError:
+            pass
+    if record is not None:
+        c.tags, c.people = len(record.tags), len(record.people)
+        c.duration = c.duration or (record.duration or 0.0)
+    return c
+
+
+BITRATE_TIE = 0.8       # bitrates within 20% of the best count as the same quality
+
+
+def best_quality(copies: list[Copy]) -> Copy:
+    """Chris's rule (2026-11-01): highest resolution, then highest bitrate; ties go to the longest.
+    Bitrates within 20% of each other are a tie (encoder noise, not a quality difference), so a complete copy
+    isn't passed over for a trimmed one that happens to have a slightly higher bitrate."""
+    top = max(c.pixels for c in copies)
+    sharpest = [c for c in copies if c.pixels == top]
+    best_rate = max(c.bit_rate for c in sharpest)
+    close = [c for c in sharpest if c.bit_rate >= best_rate * BITRATE_TIE]
+    return max(close, key=lambda c: (round(c.duration), c.bit_rate))
+
+
+def _fmt(seconds: float) -> str:
+    seconds = int(round(seconds))
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def relation(keeper: str, other: str, found: list[Found]) -> str:
+    """How `other` differs from the keeper, in words ("Same video", "Missing 2:40 at 12:30", …)."""
+    for f in found:
+        if {f.a, f.b} != {keeper, other}:
+            continue
+        m = f.match
+        missing, extra = (m.a_gaps, m.b_gaps) if f.a == keeper else (m.b_gaps, m.a_gaps)
+        bits = []
+        if missing:
+            bits.append("missing " + ", ".join(f"{_fmt(e - s)} at {_fmt(s)}" for s, e in missing))
+        if extra:
+            bits.append("has " + ", ".join(f"{_fmt(e - s)} more at {_fmt(s)}" for s, e in extra))
+        if m.reordered:
+            bits.append("scenes in a different order")
+        if not bits:
+            return "Same video"
+        text = "; ".join(bits)
+        return text[0].upper() + text[1:]
+    return "Same group (a copy of a copy)"
+
+
+def merge_into(db, keeper: str, others: list[str], *, explorer_mode=None, preserve_mtime: bool = False) -> list[str]:
+    """Give the kept copy everything the others had: their hand-typed tags and people are added, and its
+    title, year, description and rating are filled in where it has none. Nothing is taken away. Undoable
+    (one history entry). Returns problems reading the file back."""
+    from . import explorer, people as P
+    from .library import history_fields, reindex
+    from .media.mp4meta import VideoMeta
+    from .tagsync import merge_unique, read_state, route_fields, save_mp4
+    kept = read_state(keeper)
+    if kept.container != "mp4":
+        raise ValueError("Only an MP4 can be the kept copy here; convert the MKV first.")
+    hand = P.hand_tags(merge_unique(kept.keywords, kept.explorer or []), kept.data)
+    people = P.current_people(db, kept.data)
+    have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _ in people}
+    meta = VideoMeta(**vars(kept.meta))
+    for path in others:
+        st = read_state(path)
+        hand = merge_unique(hand, P.hand_tags(merge_unique(st.keywords, st.explorer or []), st.data))
+        for p, skip in P.current_people(db, st.data):
+            uid = p["id"] if isinstance(p, dict) else p.uid
+            if uid not in have:
+                have.add(uid)
+                people.append((p, skip))
+        meta.title = meta.title or st.meta.title
+        meta.year = meta.year or st.meta.year
+        meta.description = meta.description or st.meta.description
+        meta.rating = meta.rating or st.meta.rating
+    block = P.block_for(db, people, meta.year)
+    tags = [db.canonical(t) for t in P.combine(hand, None, block)]
+    keywords, genre = route_fields(tags, is_genre=db.is_genre_tag, is_known=lambda n: db.find_tag(n) is not None,
+                                   original_genre=kept.genre)
+    outcome = save_mp4(keeper, keywords=keywords, genre=genre, meta=meta, data=block,
+                       explorer_mode=explorer_mode or explorer.MODE_AUTO, preserve_mtime=preserve_mtime)
+    db.record_history(keeper, **history_fields(kept), label="Duplicates: tags from the other copies")
+    db.remember_file(keeper, keywords)
+    reindex(db, keeper)
+    return outcome.problems

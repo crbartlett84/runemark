@@ -143,6 +143,7 @@ class LibraryWindow(QDialog):
         more_menu = QMenu(more)
         more_menu.addAction("Export for Jellyfin / Kodi (.nfo)…", self._export_nfo)
         more_menu.addAction("Show in File Explorer", self._reveal)
+        more_menu.addAction("Find duplicates…", self.find_duplicates)
         more_menu.addSeparator()
         more_menu.addAction("Undo last bulk change…", self._undo_bulk)
         more_menu.addSeparator()
@@ -389,6 +390,14 @@ class LibraryWindow(QDialog):
         paths = [p for p in self.selected_paths() if p.exists()]
         if paths:
             self.openRequested.emit(paths)
+
+    def find_duplicates(self):
+        from .duplicates_window import DuplicatesWindow
+        window = DuplicatesWindow(self.db, self.settings, host=self.host, parent=self)
+        window.openRequested.connect(self.openRequested)
+        window.changed.connect(self.refresh)
+        window.exec()
+        self.refresh()
 
     def _reveal(self):
         paths = self.selected_paths()

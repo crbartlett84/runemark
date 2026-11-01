@@ -172,3 +172,106 @@ def test_library_scan_stores_fingerprints_and_reads_each_video_once(clips, tmp_p
         assert db.conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0] == 2   # the gone file's dropped
     finally:
         db.close()
+
+
+def test_keep_rule_and_relations(prints, clips):
+    copies = [D.Copy("a", 1920, 1080, 4_000_000, 60), D.Copy("b", 1920, 1080, 8_000_000, 58),
+              D.Copy("c", 1280, 720, 20_000_000, 61)]
+    assert D.best_quality(copies).path == "b"                                   # resolution, then bitrate
+    assert D.best_quality([D.Copy("x", 1280, 720, 5, 40), D.Copy("y", 1280, 720, 5, 60)]).path == "y"
+    # a trimmed copy with a slightly higher bitrate doesn't beat the complete one
+    assert D.best_quality([D.Copy("full", 1280, 720, 1_000_000, 60), D.Copy("cut", 1280, 720, 1_100_000, 48)]).path \
+        == "full"
+    real = D.describe_copy(str(clips["reencoded"]))
+    assert (real.width, real.height) == (212, 120) and real.duration > 40 and real.size > 0
+    found = D.find_copies(prints)
+    assert D.relation("original", "reencoded", found) == "Same video"
+    text = D.relation("original", "scene_cut", found)
+    assert text.startswith("Missing 0:08 at 0:16"), text
+    assert D.relation("trimmed", "original", found).startswith("Has ")
+
+
+def test_merge_into_the_kept_copy(clips, tmp_path):
+    import shutil
+    from runemark import people as P
+    from runemark.media.mp4meta import VideoMeta
+    from runemark.tagdb import TagDB
+    from runemark.tagsync import read_state, save_mp4
+    keep, other = tmp_path / "keep.mp4", tmp_path / "other.mp4"
+    shutil.copy2(clips["original"], keep)
+    shutil.copy2(clips["trimmed"], other)
+    db = TagDB(tmp_path / "t.db")
+    try:
+        save_mp4(keep, keywords=["Lake"], genre=[], meta=VideoMeta("", None, "", 0))
+        save_mp4(other, keywords=["Summer", "lake"], genre=[], meta=VideoMeta("Cottage", 2019, "", 4))
+        ana = db.add_person("Ana Lee")
+        P.save_people(db, other, [(ana, [])], label="t")
+        assert D.merge_into(db, str(keep), [str(other)]) == []
+        st = read_state(keep)
+        assert st.keywords == ["Lake", "Summer", "Ana Lee"]
+        assert (st.meta.title, st.meta.year, st.meta.rating) == ("Cottage", 2019, 4)
+        assert st.data["people"][0]["id"] == ana.uid and db.files_with_person(ana.id) == sorted(
+            [str(keep), str(other)])
+        assert db.history(keep)[0].label.startswith("Duplicates")
+    finally:
+        db.close()
+
+
+# --- the Duplicates window ------------------------------------------------------------------------------------
+
+def test_duplicates_window(clips, tmp_path, monkeypatch):
+    import shutil
+    import time
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from runemark import explorer
+    from runemark import library as L
+    from runemark.settings import Settings
+    from runemark.tagdb import TagDB
+    from runemark.tagsync import read_state, save_mp4
+    from runemark.ui.duplicates_window import DuplicatesWindow
+    app = QApplication.instance() or QApplication([])
+    folder = tmp_path / "lib"
+    folder.mkdir()
+    for name in ("original", "reencoded", "trimmed", "unrelated", "shares_one"):
+        shutil.copy2(clips[name], folder / clips[name].name)
+    save_mp4(folder / "trimmed.mp4", keywords=["Lake"], genre=[])
+    db = TagDB(tmp_path / "t.db")
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    recycled = []
+    monkeypatch.setattr(explorer, "recycle", lambda p: (recycled.append(Path(p).name), Path(p).unlink()))
+    try:
+        L.scan(db, [str(folder)])
+        w = DuplicatesWindow(db, Settings.load())
+        w.shared_box.setChecked(True)
+        w.find()
+        end = time.time() + 120
+        while w._job is not None and time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
+        (group,) = w.groups
+        assert {Path(c.path).name for c in group["copies"]} == {"original.mp4", "reencoded.mkv", "trimmed.mp4"}
+        assert Path(group["keep"]).name == "original.mp4"                  # 320x180 beats the 212x120 re-encode
+        rows = {r.text(0): r.text(1) for r in w._rows()}
+        assert rows["original.mp4"].startswith("Keep") and rows["reencoded.mkv"] == "Same video"
+        assert rows["trimmed.mp4"].startswith("Missing ")
+        assert w.tabs.isTabEnabled(1) and w.shared.topLevelItemCount() >= 1
+
+        # copy tags into the kept copy (runs in the background)
+        w.copies.setCurrentItem(next(r for r in w._rows() if r.text(0) == "original.mp4"))
+        w._merge()
+        end = time.time() + 30
+        while "Lake" not in read_state(folder / "original.mp4").keywords and time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
+        assert read_state(folder / "original.mp4").keywords == ["Lake"]
+
+        # tick the others and recycle them
+        w._tick_others()
+        assert sorted(w._ticked()) == sorted([str(folder / "reencoded.mkv"), str(folder / "trimmed.mp4")])
+        w._recycle()
+        assert sorted(recycled) == ["reencoded.mkv", "trimmed.mp4"] and w.groups == []
+        assert {Path(r.path).name for r in db.library()} == {"original.mp4", "unrelated.mp4", "shares_one.mp4"}
+        w.close()
+    finally:
+        db.close()
