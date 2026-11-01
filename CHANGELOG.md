@@ -2,6 +2,14 @@
 
 All notable changes to Runemark. Versions follow [semantic versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **Find duplicates** (Library → More). Finds copies of a video even when re-encoded, resized, converted, letterboxed, trimmed, with scenes cut out or reordered, and says how each copy differs ("Missing 2:40 at 12:30"). Suggests the best-quality copy to keep, can copy the others' tags and people into it, and sends the rest to the Recycle Bin when you say. Videos are read once and remembered. Videos that only share a section are listed separately when asked for.
+- **Read details from file names** (Library → More): fill in title, year, rating and people from names like `Ana Lee - Beach Day (2019)`.
+- **Rename from details** (Library → More): rename and sort into folders from a pattern like `{Year}\{Title}`, with a preview, clash checks, subtitles and `.nfo` files moving along, and **Undo last rename**.
+- Self-test checks for finding duplicates.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added

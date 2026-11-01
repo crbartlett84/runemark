@@ -1062,6 +1062,14 @@ class MainWindow(QMainWindow):
             return
         self._release_then(lambda _position: then())
 
+    def files_moved(self, pairs: list[tuple[str, str]]):
+        """Videos were renamed or moved (Library → Rename): follow the open one, and fix the open-file list."""
+        moved = {file_key(old): Path(new) for old, new in pairs}
+        self.queue = [moved.get(file_key(p), p) for p in self.queue]
+        doc = self.doc
+        if doc is not None and file_key(doc.path) in moved:
+            self._load(moved[file_key(doc.path)], 0, status=f"Renamed to {moved[file_key(doc.path)].name}")
+
     def files_changed(self, paths: list[Path]):
         doc = self.doc
         if doc is not None and file_key(doc.path) in {file_key(p) for p in paths}:

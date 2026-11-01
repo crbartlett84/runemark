@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS fingerprints(
     crop TEXT NOT NULL DEFAULT '',
     data BLOB NOT NULL
 );
+-- Schema 5: renames, so a batch of renames can be undone.
+CREATE TABLE IF NOT EXISTS renames(
+    id INTEGER PRIMARY KEY,
+    batch TEXT NOT NULL,
+    old TEXT NOT NULL,
+    new TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_renames_batch ON renames(batch);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -597,6 +606,8 @@ class TagDB:
     def move_file(self, old: str | os.PathLike, new: str | os.PathLike) -> None:
         self.conn.execute("UPDATE file_history SET key = ?, path = ? WHERE key = ?",
                           (file_key(new), str(new), file_key(old)))
+        self.conn.execute("DELETE FROM fingerprints WHERE key = ? AND key != ?", (file_key(new), file_key(old)))
+        self.conn.execute("UPDATE fingerprints SET key = ? WHERE key = ?", (file_key(new), file_key(old)))
         row = self.conn.execute("SELECT id FROM files WHERE key = ?", (file_key(old),)).fetchone()
         if not row:
             return
@@ -1081,3 +1092,26 @@ class TagDB:
         self.conn.executemany("DELETE FROM fingerprints WHERE key = ?", [(k,) for k in gone])
         self.conn.commit()
         return len(gone)
+
+    # ------------------------------------------------------------------ renames (schema 5, for undo)
+    def record_rename(self, batch: str, old: str, new: str) -> None:
+        self.conn.execute("INSERT INTO renames(batch, old, new, at) VALUES(?, ?, ?, ?)", (batch, str(old), str(new),
+                                                                                         _now()))
+        self.conn.commit()
+
+    def last_rename_batch(self) -> str | None:
+        row = self.conn.execute("SELECT batch FROM renames ORDER BY id DESC LIMIT 1").fetchone()
+        return row[0] if row else None
+
+    def renames(self, batch: str | None = None) -> list[tuple[str, str]]:
+        """(old, new) of one batch of renames, in the order they were done (default: the last batch)."""
+        batch = batch or self.last_rename_batch()
+        if batch is None:
+            return []
+        return [(r[0], r[1]) for r in self.conn.execute("SELECT old, new FROM renames WHERE batch = ? ORDER BY id",
+                                                         (batch,))]
+
+    def drop_renames(self, batch: str | None) -> None:
+        if batch:
+            self.conn.execute("DELETE FROM renames WHERE batch = ?", (batch,))
+            self.conn.commit()

@@ -43,6 +43,7 @@ def run(progress: Callable[[int, str], None] | None = None) -> list[Check]:
         ("MKV to MP4 conversion", _convert),
         ("Tag database", _database),
         ("People (data block, profile tags, rebuild from the file)", _people),
+        ("Duplicates (fingerprint a video and recognise a re-encoded copy)", _duplicates),
         ("Recycle Bin support", _recycle),
     ]
     with tempfile.TemporaryDirectory(prefix="runemark-selftest-") as tmp:
@@ -262,6 +263,23 @@ def _people(ctx):
         db.close()
         fresh.close()
     return ok, detail
+
+
+def _duplicates(ctx):
+    from . import duplicates
+    from .media import fingerprint
+    original = ctx["dir"] / "dupe-a.mp4"
+    copy = ctx["dir"] / "dupe-b.mp4"
+    proc.run([proc.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i",
+              "mandelbrot=s=320x180:r=25:start_scale=3:end_scale=0.3", "-t", "12", "-c:v", "libx264",
+              "-pix_fmt", "yuv420p", str(original)], timeout=180)
+    proc.run([proc.ffmpeg(), "-v", "error", "-y", "-i", str(original), "-vf", "scale=212:120", "-c:v", "libx264",
+              "-crf", "33", str(copy)], timeout=180)
+    a, b = fingerprint.fingerprint(original), fingerprint.fingerprint(copy)
+    match = duplicates.compare(a, b)
+    ok = match is not None and match.kind == duplicates.DUPLICATE
+    return ok, (f"{len(a.hashes)} samples; " + (f"{match.kind}, {match.coverage_a:.0%} / {match.coverage_b:.0%} matched"
+                                                if match else "no match"))
 
 
 def _recycle(ctx):

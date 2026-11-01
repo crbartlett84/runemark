@@ -32,6 +32,7 @@ class Settings:
     saved_searches: dict = field(default_factory=dict)   # name -> {"tags": [...], "text": "", "filter": ""}
     library_geometry: str = ""
     library_last_search: dict = field(default_factory=dict)   # the Library reopens with this search/filter
+    name_patterns: dict = field(default_factory=dict)         # "read" / "rename" -> the last pattern used
     suggestions_count: int = 8
 
     @classmethod

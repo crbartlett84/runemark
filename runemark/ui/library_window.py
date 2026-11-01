@@ -145,6 +145,10 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Show in File Explorer", self._reveal)
         more_menu.addAction("Find duplicates…", self.find_duplicates)
         more_menu.addSeparator()
+        more_menu.addAction("Read details from file names…", lambda: self.file_names("read"))
+        more_menu.addAction("Rename from details…", lambda: self.file_names("rename"))
+        more_menu.addAction("Undo last rename…", self._undo_rename)
+        more_menu.addSeparator()
         more_menu.addAction("Undo last bulk change…", self._undo_bulk)
         more_menu.addSeparator()
         more_menu.addAction("Read every file again", lambda: self.scan(rescan_all=True))
@@ -398,6 +402,52 @@ class LibraryWindow(QDialog):
         window.changed.connect(self.refresh)
         window.exec()
         self.refresh()
+
+    def _targets(self) -> list:
+        """The selected videos, or every video shown when nothing is selected."""
+        chosen = {str(p).casefold() for p in self.selected_paths()}
+        shown = [self.model.record(r) for r in range(self.model.rowCount())]
+        return [r for r in shown if not r.missing and (not chosen or r.path.casefold() in chosen)]
+
+    def file_names(self, mode: str):
+        from .names_dialog import NamesDialog
+        records = self._targets()
+        if not records:
+            return
+        dialog = NamesDialog(self.db, records, mode, self.settings, host=self.host, parent=self)
+        dialog.exec()
+        if dialog.applied:
+            self.refresh()
+            if self.host is not None and mode == "read":
+                self.host.files_changed([Path(r.path) for r in records])
+            elif self.host is not None and dialog.moved and hasattr(self.host, "files_moved"):
+                self.host.files_moved(dialog.moved)
+
+    def _undo_rename(self):
+        from .. import names as N
+        rows = self.db.renames()
+        if not rows:
+            QMessageBox.information(self, "Undo last rename", "There's no rename to undo.")
+            return
+        listing = "\n".join(f"• {Path(new).name} → {Path(old).name}" for old, new in rows[:12])
+        more = f"\n…and {len(rows) - 12} more" if len(rows) > 12 else ""
+        if QMessageBox.question(self, "Undo last rename", f"Put {len(rows)} video(s) back?\n\n{listing}{more}") \
+                != QMessageBox.StandardButton.Yes:
+            return
+
+        def go():
+            problems = N.undo_renames(self.db)
+            self.refresh()
+            if self.host is not None and hasattr(self.host, "files_moved"):
+                self.host.files_moved([(new, old) for old, new in rows])
+            if problems:
+                TextReportDialog("Some videos weren't put back",
+                                 "\n".join(f"{Path(p).name}: {why}" for p, why in problems), self).exec()
+
+        if self.host is not None:
+            self.host.release_for([Path(new) for _old, new in rows], go)
+        else:
+            go()
 
     def _reveal(self):
         paths = self.selected_paths()

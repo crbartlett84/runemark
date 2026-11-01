@@ -104,6 +104,25 @@ Tag the people in a video once, and everything you've recorded about them follow
 - **Library:** a People column, and searching finds a video by any of its people's names or aliases. The `.nfo` export lists them as actors.
 - **Portable:** each video also carries a small record of its people (aliases, values, which tags came from a profile). A library scan on a new PC, or after losing the tag database, rebuilds the people list from the videos. The format is described in [docs/data-format.md](docs/data-format.md), so other tools can read it too.
 
+## Duplicates
+
+**Library → More → Find duplicates…** finds copies of the same video, even when they were re-encoded, resized, converted to another format, given black bars, trimmed (opening or credits cut off), had scenes cut out or put in a different order.
+
+- Each video is read once (about 3 minutes per hour of 1080p video on a modest PC; faster with a graphics card) and remembered. After that only new or changed videos are read, and a search can be stopped and picks up where it left off.
+- Copies are shown in groups, with the **best-quality** one suggested to keep (highest resolution, then bitrate; bitrates within 20% count as equal and go to the most complete copy). Each other copy says how it differs: *Same video*, *Missing 2:40 at 12:30*, *Has 0:45 more at 0:00*.
+- **Copy tags into the one to keep** adds the other copies' tags and people and fills in its title, year, description and rating where it has none. Nothing is removed, and it can be undone.
+- **Send ticked to the Recycle Bin** (tick them, or use **Tick all but the one to keep**). Nothing is deleted automatically, and on drives without a Recycle Bin the file is kept.
+- **Shares a section** (tick it before searching) lists different videos that share part of their content, such as the same intro.
+- It can't recognise a copy that was mirrored, heavily cropped, covered by a big watermark, sped up, or filmed off a screen.
+
+## File names
+
+Both work on the selected videos in the Library (or all shown, if none are selected) and show a preview first.
+
+- **More → Read details from file names…** fills in title, year, rating and people from names that follow a pattern, such as `{People} - {Title} ({Year})`. People can be separated by commas, "&" or "and", and are matched to your People list by name or alias (new ones can be added). Details already filled in are kept unless you choose to replace them. Undo with **Undo last bulk change**.
+- **More → Rename from details…** renames from a pattern such as `{Title} ({Year})`, and `\` sorts into folders (`{Year}\{Title}`). Characters Windows doesn't allow are replaced, empty fields leave no stray brackets or dashes, videos without a title are skipped, and clashes are shown and skipped. Subtitles and `.nfo` files with the same name move along, and Runemark's library, undo history and people follow. **More → Undo last rename…** puts them back.
+- If Sonarr, Radarr or Plex manage a folder, let them rename, or rescan them afterwards.
+
 ## Undo
 
 Runemark remembers each file's tags, genre, title, year, description and rating from just before every save (the last 10 saves per file, in the tag database).
@@ -174,6 +193,9 @@ runemark/
   tagsync.py        reading tags from every place, saving and verifying
   library.py        library scans, search, bulk changes, .nfo export
   people.py         people in videos: the data block, profile tags, updating videos (docs/data-format.md)
+  duplicates.py     finding copies: comparing fingerprints, groups, the keep rule, merging tags
+  names.py          file names: reading details from names, renaming from details, undo
+  media/fingerprint.py  video fingerprints (a picture hash every half-second)
   datastore.py      backups, restore, portable mode
   explorer.py       Windows property system, Recycle Bin, right-click menu
   media/probe.py    ffprobe parsing and the Details tab text
