@@ -16,6 +16,7 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 ### Changed
 - **The Library is much faster with big collections.** Typing a search no longer rebuilds the whole list on every key (with 5,000 videos, from about 180 ms per key to under 3 ms), and scans read each MP4 twice instead of four times and save to the database in batches (about 5× faster here; more on network shares).
 - Sorting the Library puts blanks (no year, no rating, …) last in both directions, so "highest rated first" starts with five stars.
+- The Library keeps your selection after a bulk change or a rescan, so you can rate a set of files and then tag the same files.
 
 ### Fixed
 - **Converting an MKV on a network share or a USB drive no longer deletes the original.** Those drives have no Recycle Bin, and Windows deletes instead of recycling there. Runemark now keeps the MKV and tells you.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QItemSelection, QItemSelectionModel, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
@@ -184,9 +184,12 @@ class LibraryWindow(QDialog):
 
     def _apply(self):
         self._search_timer.stop()
+        keep = {str(p).casefold() for p in self.selected_paths()}  # still selected after a change or rescan
         shown = [r for r in self.records if L.matches(r, self.search)]
         self.model.faint = _color(theme.current().faint)
         self.model.set_records(shown)
+        if keep:
+            self._select_paths(keep)
         total = len(self.records)
         self.count.setText(f"{len(shown)} of {total} video{'s' if total != 1 else ''}")
         if not total:
@@ -199,6 +202,15 @@ class LibraryWindow(QDialog):
         else:
             self.empty.hide()
         self._selection_changed()
+
+    def _select_paths(self, folded_paths: set[str]) -> None:
+        selection = QItemSelection()
+        last = self.model.columnCount() - 1
+        for row, rec in enumerate(self.model.rows):
+            if rec.path.casefold() in folded_paths:
+                selection.select(self.model.index(row, 0), self.model.index(row, last))
+        flags = QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows
+        self.table.selectionModel().select(selection, flags)
 
     def selected_paths(self) -> list[Path]:
         rows = sorted(i.row() for i in self.table.selectionModel().selectedRows())

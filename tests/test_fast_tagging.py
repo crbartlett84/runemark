@@ -160,3 +160,23 @@ def test_bulk_prompt_keeps_tag_case():
     change = L.BulkChange(add=["Lake", "Summer", "NS"])
     assert L.sentence_case(change.describe()) == "Add Lake, Summer, NS"
     assert L.sentence_case("") == ""
+
+
+def test_library_keeps_selection_after_refresh(tmp_path, qapp):
+    """Rate a few files, then press T: the same files should still be selected after the first change."""
+    from runemark.ui.library_window import LibraryWindow
+    db = TagDB(tmp_path / "tags.db")
+    try:
+        for i in range(4):
+            db.index_file(tmp_path / f"c{i}.mp4", tags=[], container="mp4", title=f"C{i}")
+        w = LibraryWindow(db, Settings.load(), host=None)
+        w.table.selectRow(1)
+        w.table.selectionModel().select(w.model.index(2, 0), w.table.selectionModel().SelectionFlag.Select
+                                        | w.table.selectionModel().SelectionFlag.Rows)
+        before = [p.name for p in w.selected_paths()]
+        assert before == ["c1.mp4", "c2.mp4"]
+        w.refresh()
+        assert [p.name for p in w.selected_paths()] == before
+        w.close()
+    finally:
+        db.close()
