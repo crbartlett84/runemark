@@ -85,6 +85,7 @@ there is no extra whitespace, but readers must not rely on either. A file withou
 | `aliases_as_tags` | boolean | Whether the aliases were also written as tags. |
 | `values` | array | The person's attribute values (all of them, including ones skipped for this video or outside its years). |
 | `skip` | array of strings | Ids of values that don't apply to this video ("not in this video"). |
+| `photo` | string | Optional (0.6.0+). The person's photo: a small square JPEG, base64. |
 
 **Value**
 
@@ -122,3 +123,4 @@ share stays while either of them is there.
 
 - Version 1 (Runemark 0.4.0): first version.
 - Runemark 0.5.0 adds the studio (`STUDIO`). The data block is unchanged.
+- Runemark 0.6.0 adds an optional `photo` to each person. Still version 1: readers that don't know it ignore it.

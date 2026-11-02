@@ -9,7 +9,7 @@ doesn't read tags embedded in video files on its own, so without it, files you t
 | Studio | Scene studio, matched by name or alias (created if missing) |
 | Date (`©day`) | Scene date (full dates; year-only dates only if you turn that on) |
 | Tags you typed, and attribute tags such as *Red hair* | Scene tags (created if missing) |
-| People | Performers, matched by name or alias (created if missing), with their aliases |
+| People | Performers, matched by name or alias (created if missing), with their aliases, and their photo when Stash has no picture of them |
 | A person's attributes | The performer field you linked them to in Runemark (*Hair* → hair colour), otherwise a performer custom field (*Marks*: *Freckles*) |
 | Chapters | Scene markers with start and end, tagged with the chapter's name ("Missionary"), so they group by name |
 | Thumbnail | Scene cover |

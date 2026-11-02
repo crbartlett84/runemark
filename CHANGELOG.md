@@ -4,6 +4,19 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
+### Added
+- **Tag keys:** Alt+1–9 add a chosen tag to the open video, or remove it. Right-click a tag → Put on a key, or ⋯ → Tag keys….
+- **Tag rules** (Tag database → Also adds…): a tag brings others with it (*Cowgirl* also adds *Sex*), in the editor, tag keys, chapter names and Library bulk changes. Included in exports.
+- **Command palette** (Ctrl+K): type to find any action, tag, person or video.
+- **People photos:** crop one from the frame on screen (right-click a person beside the video) or from a picture (People window). Shown beside their name, carried in their videos' data block, and used by the Stash plugin for performers without a picture.
+- **Chapter thumbnails:** each chapter shows its first frame.
+- **Library:** **Details…** sets studio and year and adds people on many videos at once (undoable); a **Grid** of thumbnails beside the list; **Health check** (tags out of sync, people's tags out of date, unused `.nfo` details, no thumbnail, missing files) with fixes; **Stats**.
+- **Scan on start:** new videos reach the inbox without a manual scan.
+- **Updates:** a daily check for a new version, and **Update now**: download, check against GitHub's checksum, swap in on close, keep the previous version, roll back if the swap fails.
+- **Activity** (⋯ → Activity…): what was saved, changed in bulk, undone, renamed or recycled, and when.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added

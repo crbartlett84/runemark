@@ -9,7 +9,9 @@ A Windows desktop app for tagging your MP4 and MKV videos.
 - **Chapters**: mark chapters on exact frames. They're numbered automatically, or named after a tag (which also tags the file) or anything you type. Number keys add a named chapter in one press.
 - **Title, year, studio, description and star rating**: Explorer shows them, and Plex and Jellyfin read them. Details can be filled in from a `.nfo` file beside the video.
 - **Thumbnail suggestions**: Runemark looks through the video and offers sharp, well-lit, varied frames.
-- **Library**: every video in your folders in one list. Search by tags, work through new videos in the **Inbox**, find what's untagged or has no thumbnail, and tag or rate many files at once.
+- **Library**: every video in your folders in one list or as a grid of thumbnails. Search by tags, work through new videos in the **Inbox**, find what's untagged or has no thumbnail, tag, rate or set details on many files at once, run a **health check** and see **stats**.
+- **Fast keys**: Alt+1–9 add your most-used tags, 1–9 add named chapters, Ctrl+K finds any action, tag, person or video.
+- **Updates itself** from GitHub when you say so, checked against GitHub's published checksum, keeping the previous version.
 
 ## Download
 
@@ -78,6 +80,8 @@ Open the **Chapters** tab, pause on the frame where a chapter starts (step with 
 
 **Chapter keys.** Press **1**–**9** to add a chapter at the frame on screen with a name you chose for that key (for chapters you add all the time). Set them up with **Keys…** on the Chapters tab, or right-click a chapter's name → **Put on a key**. The keys in use are listed under the buttons.
 
+**Thumbnails.** Each chapter in the list shows its first frame, so a wrong start is easy to spot.
+
 **Name suggestions.** When you name a chapter, the names you've used before come first: first those used in videos with the same people or studio, then your other chapter names, then the rest of your tags. Runemark learns them from the Library, so scan your folders for the best suggestions.
 
 Existing chapters in a file show up in the list, so you can correct them without losing them. Saving changed chapters writes the whole file again (nothing is re-encoded, and data tracks such as camera GPS aren't kept; Runemark asks first if there are any). It checks the new file before replacing the original. Explorer doesn't show chapters; VLC, Plex and Jellyfin do.
@@ -99,6 +103,11 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - Select several videos and use **Add tag…** (type several, separated by commas), **Remove tag…** or **Rate…**. Each file is saved and checked like a normal save. MKVs are skipped, since they need converting first.
 - The Library reopens with the search and filter you last used. A scan can be stopped with **Stop scan**; what it has read so far is kept.
 - **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, studio, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
+- **Details…** sets the studio or year of the selected videos, and adds people, in one undoable change. Blank boxes are left as they are.
+- **Grid** shows the videos as thumbnails (their covers, cached after the first look); **List** goes back. The selection and keys work the same in both.
+- **More → Health check…** looks for videos where Explorer's Tags and the file's own tags disagree, people's tags are out of date (their profile changed since), a `.nfo` has details the video doesn't, there's no thumbnail, or the file has gone. Fix them one at a time or all at once; fixes can be undone like a bulk change.
+- **More → Stats…**: how much of the library is tagged, has people, chapters, thumbnails and studios; the most used tags, people and studios; ratings; and how many new videos arrived each month.
+- **Scan on start:** Runemark looks for new and changed videos in the background when it opens, so the inbox is up to date without **Scan for changes** (turn it off in Settings).
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
 
 ## People
@@ -109,6 +118,7 @@ Tag the people in a video once, and everything you've recorded about them follow
 - **People window** (**⋯ → People…**, Ctrl+Shift+P, or click a person): each person has a name and any number of aliases, and values for **attributes** you define (for example *Hair: Red*, written to files as the tag *Red hair*). A value can be limited to some years; it then applies only to videos whose year falls inside them. **Attributes…** renames or deletes fields, sets whether a field is written as a tag, and links it to a Stash performer field.
 - A person's name, their attribute values (and aliases, if you tick that) are **written to their videos as ordinary tags**, so Explorer (`tags:` in its search box), Plex, Jellyfin and other programs find them. In the editor they're shown in italics. Clicking one offers **Not in this video**, for a value that doesn't apply to one video; that's stored in the file, so it sticks.
 - **Change a profile and the videos follow.** When you close People after changing someone, Runemark offers to update the videos they're in (one undoable change, like a bulk change). Only tags that came from profiles change: tags you typed yourself stay, and a tag two people share stays while either of them is in the video. Deleting a person takes them out of their videos.
+- **Photos:** right-click someone in the People box → **Photo from this frame…**, or in the People window **Photo from a picture…**, then drag and resize a square over their face. The photo shows beside their name, travels in their videos (so a new library gets it back), and the Stash plugin uses it for a performer who has no picture of their own.
 - **Library:** a People column, and searching finds a video by any of its people's names or aliases. The `.nfo` export lists them as actors.
 - **Portable:** each video also carries a small record of its people (aliases, values, which tags came from a profile). A library scan on a new PC, or after losing the tag database, rebuilds the people list from the videos. The format is described in [docs/data-format.md](docs/data-format.md), so other tools can read it too.
 
@@ -146,6 +156,7 @@ Runemark remembers each file's tags, genre, title, year, description and rating 
 
 - **Categories:** create, nest, rename or delete them, and drag one into another. Deleting a category keeps its tags; they move up a level.
 - **Tags:** create, rename, move (or drag onto a category), merge or delete them. Tag names are unique across all categories, because only the name is written to files.
+- **Also adds… (tag rules):** a tag can bring others with it. Tag a video *Cowgirl* and it can be tagged *Sex* too. Rules follow each other (A adds B, B adds C), apply when a tag is added in the editor, by a tag key or a chapter name, or in a Library bulk change, and are shown in the **Also adds** column. Removing a tag later leaves the tags it brought. Rules are included in exports.
 - **Updating files:** Runemark remembers which files it tagged. Renaming, merging or deleting a tag, or changing which categories feed Genre, offers to update those files for you.
 - **Import… / Export…** use a JSON file for moving tags to another PC.
 
@@ -157,6 +168,8 @@ Runemark remembers each file's tags, genre, title, year, description and rating 
 
 Tags that a file already has but your database doesn't are shown dashed. Click one to file it in a category.
 
+**Tag keys.** **Alt+1**–**Alt+9** add a tag to the open video (with its rules), or remove it if it's there. Right-click a tag → **Put on a key**, or set them all in **⋯ → Tag keys…**. The keys in use are listed under the tag box.
+
 ## Keyboard
 
 | Key | Action |
@@ -166,7 +179,9 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Shift+← → | Back / forward 5 seconds |
 | Ctrl+T | Use this frame as the thumbnail |
 | M | Add a chapter at this frame |
-| 1–9 | Add a chapter at this frame with that key's name (Chapters → Keys…) |
+| 1–9 | Add a chapter at this frame with that key's name |
+| Alt+1–9 | Add (or remove) that key's tag |
+| Ctrl+K | Go to anything: actions, tags, people, videos |
 | Ctrl+B | Library |
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and go to the next file |
@@ -181,6 +196,12 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 You can open several files at once (or drop them on the window). Move between them with the arrows next to the file name.
 
 In the Library list: **Enter** opens the selected files, **0–5** sets their rating, **T** adds tags and **D** marks them done (out of the inbox).
+
+## Activity and updates
+
+**⋯ → Activity…** lists what Runemark changed and when: saves, bulk changes, undos, renames and duplicates sent to the Recycle Bin, newest first. Double-click a file to open it.
+
+**Updates.** Once a day Runemark asks GitHub whether there's a newer version (turn it off in Settings, or use **⋯ → Check for updates…**). When there is, **Update now** downloads it, checks it against the SHA-256 checksum GitHub publishes for the download (and refuses it if there isn't one, or it doesn't match), then closes Runemark, swaps the new version into the same folder and opens it again. The version you had is kept beside it as `Runemark-previous`; if the swap fails, it's put back and opened instead. Your tags, people and settings aren't touched, and in portable mode the data folder moves into the new version. Runemark can't update itself from a folder it can't write beside (such as Program Files): it opens the releases page instead.
 
 ## Safety
 
