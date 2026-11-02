@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
@@ -309,6 +312,8 @@ class MainWindow(QMainWindow):
         self.act_logs = action("Open log folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir()))),
                                None, "folder")
         self.act_about = action("About Runemark", self.about, None, "info")
+        self.act_update = action("Check for updates…", lambda: self.check_for_updates(quiet=False), None, "download")
+        self.act_activity = action("Activity…", self.show_activity, None, "history")
         action("Previous file", lambda: self._move_in_queue(-1), "Ctrl+PgUp")
         action("Next file", lambda: self._move_in_queue(1), "Ctrl+PgDown")
         self.act_save_next = action("Save and next file", self.save_and_next, "Ctrl+Return")
@@ -341,8 +346,10 @@ class MainWindow(QMainWindow):
         menu.addAction(self.act_people)
         menu.addAction(self.act_settings)
         menu.addSeparator()
+        menu.addAction(self.act_activity)
         menu.addAction(self.act_selftest)
         menu.addAction(self.act_logs)
+        menu.addAction(self.act_update)
         menu.addAction(self.act_about)
         menu.aboutToShow.connect(self._fill_recent)
         self.more_button.setMenu(menu)
@@ -1750,6 +1757,143 @@ class MainWindow(QMainWindow):
         self.settings.splitter_state = bytes(self.splitter.saveState().toBase64()).decode()
         self.settings.save()
         event.accept()
+
+    # ================================================================ start-up: scan, updates
+    def after_start(self, updated: bool = False, update_failed: bool = False):
+        """Things to do once the window is up: report an update, scan the library, check for a new version."""
+        from .. import updater
+        if updated:
+            leftover = Path(updater.app_folder()).parent / updater.STAGE_NAME
+            shutil.rmtree(leftover, ignore_errors=True)
+            QTimer.singleShot(400, lambda: self.toast(
+                f"Updated to Runemark {__version__}. The previous version is kept beside it in "
+                f"“{updater.PREVIOUS_NAME}”, in case you need it."))
+        if update_failed:
+            QTimer.singleShot(400, lambda: QMessageBox.warning(
+                self, "Update", "The update couldn't be installed, so this is still the version you had. "
+                "What happened is in runemark-update.log in your temporary folder."))
+        if self.settings.scan_on_start and self.settings.library_folders:
+            QTimer.singleShot(1500, self.scan_library_quietly)
+        if self.settings.check_updates and self.settings.last_update_check != date.today().isoformat():
+            QTimer.singleShot(4000, lambda: self.check_for_updates(quiet=True))
+
+    def scan_library_quietly(self):
+        """Look for new and changed videos in the background, so the inbox is current without a manual scan."""
+        if getattr(self, "_quiet_scan", None) is not None:
+            return
+        db_path, folders = self.db.path, list(self.settings.library_folders)
+
+        def work(job):
+            db = TagDB(db_path)
+            try:
+                result = library.scan(db, folders, cancel=job.cancel)
+                inbox = sum(1 for r in db.library() if r.in_inbox)
+                return result, inbox
+            finally:
+                db.close()
+
+        def done(out):
+            self._quiet_scan = None
+            result, inbox = out
+            if self.library_window is not None and self.library_window.isVisible():
+                self.library_window.refresh()
+            if result.read or inbox:
+                self.set_status(f"Library: {result.read} new or changed video(s) read · {inbox} in the inbox")
+
+        def failed(exc, _tb):
+            self._quiet_scan = None
+            log.info("background library scan failed: %s", exc)
+
+        self._quiet_scan = workers.start(work, on_done=done, on_error=failed)
+
+    def check_for_updates(self, quiet: bool = True):
+        from .. import updater
+
+        def work(job):
+            return updater.check()
+
+        def done(release):
+            self.settings.last_update_check = date.today().isoformat()
+            self.settings.save()
+            if release is None or not release.newer:
+                if not quiet:
+                    QMessageBox.information(self, "Updates", f"Runemark {__version__} is the latest version.")
+                return
+            if quiet and release.version == self.settings.skipped_version:
+                return
+            self.act_update.setText(f"Update to {release.version}…")
+            if quiet:
+                self.toast(f"Runemark {release.version} is out: More → Update to {release.version}…")
+                self._pending_release = release
+                self.act_update.triggered.disconnect()
+                self.act_update.triggered.connect(lambda: self.offer_update(self._pending_release))
+            else:
+                self.offer_update(release)
+
+        def failed(exc, _tb):
+            log.info("update check failed: %s", exc)
+            if not quiet:
+                QMessageBox.warning(self, "Updates", f"Couldn't reach GitHub to check for updates:\n\n{exc}")
+
+        workers.start(work, on_done=done, on_error=failed)
+
+    def offer_update(self, release):
+        from .update_dialog import UpdateDialog
+        dialog = UpdateDialog(release, self)
+        choice = dialog.exec_choice()
+        if choice == "skip":
+            self.settings.skipped_version = release.version
+            self.settings.save()
+        elif choice == "install":
+            self._install_update(release)
+
+    def _install_update(self, release):
+        from .. import updater
+        ok, why = updater.can_install()
+        if not ok:
+            QMessageBox.information(self, "Update", why)
+            QDesktopServices.openUrl(QUrl(release.page))
+            return
+        if self._busy:
+            QMessageBox.information(self, "Update", "Please wait until the current save finishes.")
+            return
+        if not self._confirm_leave(lambda: self._install_update(release)):
+            return
+        dialog = ProgressDialog("Downloading the update", cancellable=True, parent=self)
+
+        def work(job):
+            zip_path = Path(tempfile.gettempdir()) / release.asset_name
+            updater.download(release, zip_path, progress=job.report, cancel=job.cancel)
+            job.report(-1, "Unpacking…")
+            staged = updater.stage(zip_path)
+            zip_path.unlink(missing_ok=True)
+            return staged
+
+        def done(staged):
+            dialog.finish()
+            answer = QMessageBox.question(
+                self, "Update", f"Runemark {release.version} is downloaded and checked. Runemark will close, "
+                "swap in the new version and open again. Your tags, people and settings stay as they are.\n\n"
+                "Update now?")
+            if answer != QMessageBox.StandardButton.Yes:
+                shutil.rmtree(staged, ignore_errors=True)
+                return
+            updater.launch_swap(staged)
+            self.close()
+
+        def failed(exc, _tb):
+            dialog.finish()
+            QMessageBox.warning(self, "Update", f"The update wasn't installed:\n\n{exc}")
+
+        job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+        dialog.cancelRequested.connect(job.cancel.set)
+        dialog.show()
+
+    def show_activity(self):
+        from .activity_dialog import ActivityDialog
+        dialog = ActivityDialog(self.db, self)
+        dialog.openRequested.connect(self.open_paths)
+        dialog.exec()
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)

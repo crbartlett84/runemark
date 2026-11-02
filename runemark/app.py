@@ -18,6 +18,8 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--self-test", nargs="?", const="", metavar="REPORT",
                         help="run the self-test without the window; write the report to REPORT")
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
+    parser.add_argument("--updated", action="store_true", help=argparse.SUPPRESS)        # started by the updater
+    parser.add_argument("--update-failed", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -123,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     files = [Path(f) for f in args.files]
     if files:
         window.open_paths(files)
+    window.after_start(updated=args.updated, update_failed=args.update_failed)
     code = app.exec()
     db.close()
     return code

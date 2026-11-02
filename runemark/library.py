@@ -335,6 +335,7 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
     db.remember_file(path, entry.keywords)
     reindex(db, path)
     db.drop_history(entry.id)
+    db.log_activity(f"Undone: {entry.label or 'a save'}", path)
     return outcome
 
 

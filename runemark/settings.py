@@ -37,6 +37,11 @@ class Settings:
     read_nfo: bool = True                 # fill empty details from a .nfo beside a video the first time it opens
     chapter_keys: dict = field(default_factory=dict)          # "1".."9" -> the chapter name that key adds
     tag_keys: dict = field(default_factory=dict)              # "1".."9" -> the tag Alt+that key adds or removes
+    scan_on_start: bool = True            # look for new and changed videos in the library folders on start
+    check_updates: bool = True            # ask GitHub once a day whether there's a newer Runemark
+    last_update_check: str = ""           # ISO date of the last check
+    skipped_version: str = ""             # "don't tell me about this one"
+    library_view: str = "list"            # "list" or "grid"
 
     @classmethod
     def path(cls) -> Path:

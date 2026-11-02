@@ -135,6 +135,15 @@ CREATE TABLE IF NOT EXISTS person_photos(
     image BLOB NOT NULL,
     updated_at TEXT
 );
+-- 0.6.0: what Runemark did to which file and when (saves, bulk changes, renames, recycling), for the Activity window.
+CREATE TABLE IF NOT EXISTS activity(
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    label TEXT NOT NULL,
+    path TEXT NOT NULL,
+    batch TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_at ON activity(at);
 -- 0.6.0: tag rules ("Cowgirl" also adds "Sex"), applied when a tag is added.
 CREATE TABLE IF NOT EXISTS tag_rules(
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -697,6 +706,7 @@ class TagDB:
             (key, str(path), _now(), batch, label, json.dumps(list(keywords)), json.dumps(list(genre)),
              title or "", year, description or "", int(rating or 0), json.dumps(data) if data else None,
              studio))
+        self.log_activity(label or "Saved", path, batch, commit=False)
         self.conn.execute(
             "DELETE FROM file_history WHERE key = ? AND id NOT IN "
             "(SELECT id FROM file_history WHERE key = ? ORDER BY id DESC LIMIT ?)", (key, key, HISTORY_KEEP))
@@ -1256,7 +1266,24 @@ class TagDB:
     def record_rename(self, batch: str, old: str, new: str) -> None:
         self.conn.execute("INSERT INTO renames(batch, old, new, at) VALUES(?, ?, ?, ?)", (batch, str(old), str(new),
                                                                                          _now()))
+        self.log_activity(f"Renamed from {Path(old).name}", new, batch, commit=False)
         self.conn.commit()
+
+    # ------------------------------------------------------------------ activity log (0.6.0)
+    ACTIVITY_KEEP = 20000
+
+    def log_activity(self, label: str, path, batch: str | None = None, commit: bool = True) -> None:
+        self.conn.execute("INSERT INTO activity(at, label, path, batch) VALUES(?, ?, ?, ?)",
+                          (_now(), label, str(path), batch))
+        self.conn.execute("DELETE FROM activity WHERE id <= (SELECT MAX(id) FROM activity) - ?", (self.ACTIVITY_KEEP,))
+        if commit:
+            self.conn.commit()
+
+    def activity(self, limit: int = 2000) -> list[dict]:
+        """Newest first: {"at", "label", "path", "batch"}."""
+        rows = self.conn.execute("SELECT at, label, path, batch FROM activity ORDER BY id DESC LIMIT ?",
+                                 (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def last_rename_batch(self) -> str | None:
         row = self.conn.execute("SELECT batch FROM renames ORDER BY id DESC LIMIT 1").fetchone()

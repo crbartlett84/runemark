@@ -343,6 +343,7 @@ class DuplicatesWindow(QDialog):
                 kept.append(f"{Path(p).name}: {exc}")
                 continue
             gone.append(p)
+            self.db.log_activity("Sent to the Recycle Bin (a duplicate)", p)
             self.db.forget_file(p)
         for g in self.groups:
             g["copies"] = [c for c in g["copies"] if c.path not in gone]

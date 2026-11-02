@@ -260,6 +260,13 @@ class SettingsDialog(QDialog):
         form.addRow("", self.read_nfo)
         form.addRow("", nfo_note)
 
+        self.scan_on_start = QCheckBox("Look for new videos in the Library folders when Runemark starts")
+        self.scan_on_start.setChecked(settings.scan_on_start)
+        self.check_updates = QCheckBox("Check for a new version of Runemark once a day")
+        self.check_updates.setChecked(settings.check_updates)
+        form.addRow("", self.scan_on_start)
+        form.addRow("", self.check_updates)
+
         self.writer = QComboBox()
         self.writer.addItem("Windows (falls back to Runemark's own writer)", "auto")
         self.writer.addItem("Runemark's own writer only", "builtin")
@@ -426,6 +433,8 @@ class SettingsDialog(QDialog):
         s.filmstrip_count = self.film.value()
         s.preserve_modified_date = self.preserve.isChecked()
         s.read_nfo = self.read_nfo.isChecked()
+        s.scan_on_start = self.scan_on_start.isChecked()
+        s.check_updates = self.check_updates.isChecked()
         s.explorer_writer = self.writer.currentData()
         s.save()
         if not self._apply_portable():
