@@ -226,6 +226,11 @@ class PluginAPI:
             self._w.tag_editor.refresh_database()
         return tag.name
 
+    def rename_tag(self, old: str, new: str) -> str | None:
+        """Rename a tag in the database (or merge it into `new` if that exists), and offer to update the videos that
+        carry it, exactly like renaming in the Tag database window. Returns the tag's new name, or None."""
+        return self._w.plugin_rename_tag(old, new)
+
     def find_person(self, name: str) -> dict | None:
         """{"name", "aliases", "links", "has_photo"} for the person with this name or alias, or None."""
         db = self._w.db
@@ -234,10 +239,10 @@ class PluginAPI:
                                        "has_photo": db.person_photo(p.id) is not None}
 
     def add_person(self, name: str, aliases: list[str] = (), links: list[str] = (), photo: bytes | None = None,
-                   values: dict[str, str] | None = None) -> str:
+                   values: dict | None = None) -> str:
         """Add someone to People, or fill in what an existing profile lacks (new aliases, links, a photo when they
-        have none, attribute values they don't have yet). values: {"Hair": "Red"} (attributes are created if
-        missing). Returns their main name."""
+        have none, attribute values they don't have yet). values: {"Hair": "Red"}, or {"Hair": ("Red", "Red hair")}
+        to choose the tag the value becomes (attributes are created if missing). Returns their main name."""
         db = self._w.db
         person = db.find_person(name)
         if person is None:
@@ -256,13 +261,21 @@ class PluginAPI:
             if jpeg:
                 db.set_person_photo(person.id, jpeg)
         for attr_name, value in (values or {}).items():
+            value, tag = (value if isinstance(value, (tuple, list)) else (value, None))
             if not value:
                 continue
             attr = db.find_attribute(attr_name) or db.add_attribute(attr_name)
             if not any(v.attribute_id == attr.id for v in db.person(person.id).values):
-                db.add_person_value(person.id, attr.id, str(value))
+                db.add_person_value(person.id, attr.id, str(value), tag=str(tag) if tag else None)
         self._w.tag_editor.refresh_database()
         return db.person(person.id).name
+
+    def add_attribute(self, name: str, stash_field: str | None = None, as_tag: bool = True) -> str:
+        """Add a people attribute field ("Hair"), optionally linked to a Stash performer field ("hair_color") and
+        written to videos as tags or not. Does nothing if it exists. Returns its name."""
+        db = self._w.db
+        attr = db.find_attribute(name) or db.add_attribute(name, stash_field=stash_field, write_tags=as_tag)
+        return attr.name
 
     def attributes(self) -> list[dict]:
         """People's attribute fields: [{"name", "stash_field", "as_tag"}]."""

@@ -76,8 +76,10 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.find_tag(name)` | The tag as spelled in the database (case doesn't matter), or `None`. |
 | `api.categories()` | Every category as a path, `["Parent", "Child"]`. |
 | `api.add_tag(name, category=None)` | Add a tag (in an existing category path); returns its name. Does nothing if it exists. |
+| `api.rename_tag(old, new)` | Rename a tag (or merge it into an existing `new`), then offer to update the videos that carry it, like renaming in the Tag database. Returns the new name. |
 | `api.find_person(name)` | `{"name", "aliases", "links", "has_photo"}` by name or alias, or `None`. |
-| `api.add_person(name, aliases=(), links=(), photo=None, values=None)` | Add someone, or fill in what their profile lacks: new aliases, links, a photo if they have none (any picture; the top-centre square is used), attribute values they don't have yet (`{"Hair": "Red"}`; attributes are created if missing). Returns their main name. |
+| `api.add_person(name, aliases=(), links=(), photo=None, values=None)` | Add someone, or fill in what their profile lacks: new aliases, links, a photo if they have none (any picture; the top-centre square is used), attribute values they don't have yet (`{"Hair": "Red"}`, or `{"Hair": ("Red", "Red hair")}` to choose the tag it becomes; attributes are created if missing). Returns their main name. |
+| `api.add_attribute(name, stash_field=None, as_tag=True)` | Add a people attribute field, optionally linked to a Stash performer field and written as tags or not. Returns its name. |
 | `api.attributes()` | People's attribute fields: `[{"name", "stash_field", "as_tag"}]`. |
 
 ### Libraries and files

@@ -181,3 +181,18 @@ def test_move_with_sidecars(tmp_path):
     (new.parent / "Again.mp4").write_bytes(b"x")
     with pytest.raises(FileExistsError):
         plugins.move_with_sidecars(src / "Again.mp4", new.parent)
+
+
+def test_plugin_api_attributes_with_tag_wording(tmp_path):
+    db = TagDB(tmp_path / "t.db")
+    api = plugins.PluginAPI(FakeWindow(db, Settings()), plugins.PluginHost(), plugins.Plugin(tmp_path, "p"))
+    assert api.add_attribute("Hair", stash_field="hair_color") == "Hair"
+    assert api.add_attribute("Born", stash_field="birthdate", as_tag=False) == "Born"
+    assert api.add_attribute("hair") == "Hair"                         # exists: nothing new
+    api.add_person("Ana Lee", values={"Hair": ("Black", "Black hair"), "Born": "1992-02-18"})
+    person = db.find_person("Ana Lee")
+    assert sorted((v.attribute, v.value, v.tag) for v in person.values) == [
+        ("Born", "1992-02-18", "1992-02-18"), ("Hair", "Black", "Black hair")]
+    assert {a["name"]: (a["stash_field"], a["as_tag"]) for a in api.attributes()} == {
+        "Born": ("birthdate", False), "Hair": ("hair_color", True)}
+    db.close()

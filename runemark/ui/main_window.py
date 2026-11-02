@@ -259,6 +259,34 @@ class MainWindow(QMainWindow):
         if status:
             self.set_status(status)
 
+    def plugin_rename_tag(self, old: str, new: str) -> str | None:
+        """rename_tag for plugins: the Tag database's rename (or merge), then the same offer to update the files."""
+        from ..tagdb import DuplicateName
+        tag = self.db.find_tag(old)
+        new = " ".join(str(new).split())
+        if tag is None or not new or new == tag.name:
+            return tag.name if tag else None
+        files = self.db.files_with_tags([tag.name])
+        try:
+            result = self.db.rename_tag(tag.id, new).name
+        except DuplicateName as exc:
+            if exc.existing_id is None:
+                raise
+            other = self.db.tag(exc.existing_id)
+            if other.id == tag.id:                      # only the capitals change: rename in place
+                raise
+            self.db.merge_tags(tag.id, other.id)
+            result = other.name
+        if files:
+            self._apply_file_changes([FileChange("rename", files, tag.name, result,
+                                                 f"Rename “{tag.name}” to “{result}”")])
+        else:
+            self.tag_editor.refresh_database()
+        if self.doc is not None and any(t.casefold() == tag.name.casefold() for t in self.doc.tags):
+            self.doc.tags = [result if t.casefold() == tag.name.casefold() else t for t in self.doc.tags]
+            self.tag_editor.set_tags(self.doc.tags)
+        return result
+
     def plugin_move(self, path: Path, folder: Path, new_name: str | None, then, open_after: bool = True):
         """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it.
         open_after=False: if it was open, go on to the next open file (or none) instead of reopening it."""
