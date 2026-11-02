@@ -22,10 +22,6 @@ settings:
     displayName: Replace details Stash already has
     description: "Off (default): only fill in what's blank. On: Runemark's title, details, date, rating, cover and performer fields win."
     type: BOOLEAN
-  chapterTag:
-    displayName: Tag for chapter markers
-    description: Every marker needs a primary tag; chapters get this one (default "Chapter").
-    type: STRING
   yearOnlyDates:
     displayName: Year-only dates become 1 January
     description: Runemark often knows only the year. Off (default) leaves Stash's date blank in that case.

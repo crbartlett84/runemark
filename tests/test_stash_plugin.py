@@ -127,7 +127,8 @@ class FakeStash:
         if "sceneMarkerCreate" in query:
             self.markers.append(v["i"])
             self.scene["scene_markers"].append({"id": str(len(self.markers)), "seconds": v["i"]["seconds"],
-                                                "title": v["i"]["title"]})
+                                                "title": v["i"]["title"],
+                                                "primary_tag": {"name": self.tags[v["i"]["primary_tag_id"]]}})
             return {"sceneMarkerCreate": {"id": "m"}}
         raise AssertionError(f"unexpected query: {query[:80]}")
 
@@ -145,8 +146,9 @@ def test_import_fills_stash_and_is_safe_to_run_again(tagged):
     (perf,) = stash.performers.values()
     assert perf["name"] == "Ana Lee" and perf["alias_list"] == ["Annie"] and perf["hair_color"] == "Red"
     assert perf["custom_fields"] == {"Marks": "Freckles"}           # unmapped attribute: a custom field
-    assert [m["title"] for m in stash.markers] == ["Chapter 1", "Swimming"]
-    assert all(stash.tags[m["primary_tag_id"]] == "Chapter" for m in stash.markers)
+    # Each chapter's name is its marker's tag (no generic "Chapter" tag, no title)
+    assert [stash.tags[m["primary_tag_id"]] for m in stash.markers] == ["Chapter 1", "Swimming"]
+    assert all(m["title"] == "" for m in stash.markers)
     assert s["cover_image"].startswith("data:image/jpeg;base64,") and "marker" in summary
 
     # again: nothing new
@@ -180,3 +182,15 @@ def test_plugin_manifest_is_valid_yaml():
     assert manifest["exec"][1] == "{pluginDir}/runemark_import.py" and manifest["interface"] == "raw"
     assert manifest["hooks"][0]["triggeredBy"] == ["Scene.Create.Post"]
     assert set(manifest["settings"]) == set(I.DEFAULTS)
+
+
+def test_chapters_from_the_old_version_are_not_added_again(tagged):
+    """Markers made before (tag "Chapter", name in the title) count as already there."""
+    stash = FakeStash(tagged)
+    stash._tags = {}
+    stash.tag_id = I.Stash.tag_id.__get__(stash)
+    stash.scene["scene_markers"] = [
+        {"id": "a", "seconds": 0.0, "title": "Chapter 1", "primary_tag": {"name": "Chapter"}},
+        {"id": "b", "seconds": 2.0, "title": "Swimming", "primary_tag": {"name": "Chapter"}},
+    ]
+    assert I.import_chapters(stash, stash.scene, str(tagged), dict(I.DEFAULTS)) == 0

@@ -10,7 +10,7 @@ doesn't read tags embedded in video files on its own, so without it, files you t
 | Tags you typed, and attribute tags such as *Red hair* | Scene tags (created if missing) |
 | People | Performers, matched by name or alias (created if missing), with their aliases |
 | A person's attributes | The performer field you linked them to in Runemark (*Hair* → hair colour), otherwise a performer custom field (*Marks*: *Freckles*) |
-| Chapters | Scene markers with start and end, under the tag "Chapter" |
+| Chapters | Scene markers with start and end, tagged with the chapter's name ("Missionary"), so they group by name |
 | Thumbnail | Scene cover |
 
 It **fills in blanks and never removes anything**: tags, performers and markers are only added, and details Stash
@@ -30,7 +30,6 @@ Needs Stash 0.25 or later (tested with 0.31.1) and Python 3.9+; Stash's Docker i
 ## Settings
 
 - **Replace details Stash already has**: off by default.
-- **Tag for chapter markers**: default "Chapter".
 - **Year-only dates become 1 January**: off by default, so a video Runemark only knows the year of keeps a blank date.
 - **Import Runemark's thumbnail as the cover**: on by default, for scenes nobody has edited yet.
 - **Add performers Stash doesn't have yet**: on by default.

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import runemark_read as R  # noqa: E402
 
 PLUGIN_ID = "runemark"
-DEFAULTS = {"overwrite": False, "chapterTag": "Chapter", "yearOnlyDates": False, "importCover": True,
+DEFAULTS = {"overwrite": False, "yearOnlyDates": False, "importCover": True,
             "createPerformers": True}
 # Stash performer fields Runemark attributes can map to, and how to convert a value
 STRING_FIELDS = {"disambiguation", "birthdate", "ethnicity", "country", "eye_color", "hair_color", "measurements",
@@ -76,7 +76,7 @@ class Stash:
 
 
 SCENE_FIELDS = ("id title details date rating100 files { path } tags { id name } performers { id name } "
-                "scene_markers { id seconds title } paths { screenshot }")
+                "scene_markers { id seconds title primary_tag { name } } paths { screenshot }")
 
 
 # ------------------------------------------------------------------ people → performers
@@ -215,20 +215,29 @@ def _has_custom_cover(scene: dict) -> bool:
 
 
 def import_chapters(stash: Stash, scene: dict, path: str, settings: dict) -> int:
-    """Chapters become scene markers (start, end, title), under the chapter tag. Ones already there are skipped."""
+    """Chapters become scene markers (start, end) whose tag is the chapter's name ("Missionary"), so Stash's marker
+    wall and RuneStash's chapter wall group them by name. Ones already there (same start, same name) are skipped."""
     chapters = R.chapters(path)
     if not chapters:
         return 0
-    existing = {(round(float(m["seconds"]), 1), (m.get("title") or "").casefold()) for m in scene.get("scene_markers") or []}
-    primary = stash.tag_id(settings["chapterTag"] or "Chapter")
+    existing = set()
+    for m in scene.get("scene_markers") or []:
+        name = (m.get("primary_tag") or {}).get("name") or ""
+        if name.casefold() == "chapter":       # made by an earlier version: the name was in the title
+            name = m.get("title") or ""
+        existing.add((round(float(m["seconds"]), 1), name.strip().casefold()))
     added = 0
     for c in chapters:
-        key = (round(c["start"], 1), c["title"].casefold())
+        name = c["title"].strip()
+        if not name:
+            continue
+        key = (round(c["start"], 1), name.casefold())
         if key in existing:
             continue
         stash.q("mutation($i: SceneMarkerCreateInput!) { sceneMarkerCreate(input: $i) { id } }",
                 {"i": {"scene_id": scene["id"], "seconds": c["start"], "end_seconds": c["end"],
-                       "title": c["title"], "primary_tag_id": primary}})
+                       "title": "", "primary_tag_id": stash.tag_id(name)}})
+        existing.add(key)
         added += 1
     return added
 
