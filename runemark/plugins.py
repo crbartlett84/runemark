@@ -274,12 +274,13 @@ class PluginAPI:
         return json.loads(json.dumps(self._w.settings.libraries))
 
     def move_file(self, path: Path | str, folder: Path | str, new_name: str | None = None,
-                  then: Callable[[Path | None, str], Any] | None = None) -> None:
+                  then: Callable[[Path | None, str], Any] | None = None, open_after: bool = True) -> None:
         """Move a video (and files beside it with the same name: .nfo, subtitles…) into `folder`, optionally
-        renamed (new_name without extension). Runemark lets go of it first if it's open (asking to save first if
-        it has unsaved changes), keeps its history and library entry, and opens it from the new place if it was
-        open. then(new_path, "") when done, or then(None, reason) if it couldn't."""
-        self._w.plugin_move(Path(path), Path(folder), new_name, then)
+        renamed (new_name without extension). Runemark lets go of it first if it's open (an open video with unsaved
+        changes isn't moved), and keeps its history and library entry. If it was open it's opened from the new
+        place, or with open_after=False the next open video is shown instead. then(new_path, "") when done, or
+        then(None, reason) if it couldn't."""
+        self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after)
 
     # ---- the plugin's own settings and messages
     @property

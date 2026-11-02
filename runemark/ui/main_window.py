@@ -245,10 +245,26 @@ class MainWindow(QMainWindow):
         self._refresh_ui()
         return done
 
-    def plugin_move(self, path: Path, folder: Path, new_name: str | None, then):
-        """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it."""
+    def _show_nothing(self, status: str = ""):
+        """No video open: empty the panels (after the open one was moved away)."""
+        self.doc = None
+        self.tag_editor.set_tags([])
+        self.tag_editor.set_enabled(False)
+        self._refresh_people()
+        self.details.meta.set_meta(None)
+        self.chapters.set_marks([])
+        self.chapters.set_enabled(False)
+        self._refresh_thumbs()
+        self._refresh_ui()
+        if status:
+            self.set_status(status)
+
+    def plugin_move(self, path: Path, folder: Path, new_name: str | None, then, open_after: bool = True):
+        """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it.
+        open_after=False: if it was open, go on to the next open file (or none) instead of reopening it."""
         from ..plugins import move_with_sidecars
-        reopen = self.doc is not None and file_key(self.doc.path) == file_key(path)
+        was_open = self.doc is not None and file_key(self.doc.path) == file_key(path)
+        reopen = was_open
 
         def finish(new_path, reason):
             if then:
@@ -263,15 +279,23 @@ class MainWindow(QMainWindow):
                 finish(None, str(exc))
                 return
             self.db.move_file(path, new_path)
-            self._emit("file_closed", path) if reopen else None
-            if reopen:
+            if was_open:
+                self._emit("file_closed", path)
                 self.doc = None
             self.files_moved([(str(path), str(new_path))])
             library.reindex(self.db, new_path)
             if self.library_window is not None:
                 self.library_window.refresh()
-            if reopen:
+            if was_open and open_after:
                 self._load(new_path, 0, status=f"Moved to {folder}")
+            elif was_open:
+                index = next((i for i, p in enumerate(self.queue) if file_key(p) == file_key(new_path)), None)
+                if index is not None:
+                    self.queue.pop(index)
+                if self.queue:
+                    self.open_file(self.queue[min(index or 0, len(self.queue) - 1)])
+                else:
+                    self._show_nothing(f"Moved {path.name} to {folder}")
             finish(new_path, "")
 
         if reopen:

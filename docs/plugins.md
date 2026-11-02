@@ -84,7 +84,7 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | Call | What it does |
 |---|---|
 | `api.libraries()` | `[{"name", "folders", "skip"}]` as set up in the Library (a copy). |
-| `api.move_file(path, folder, new_name=None, then=None)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved), keeps its history and library entry, and reopens it from the new place. Never overwrites. `then(new_path, "")`, or `then(None, reason)`. |
+| `api.move_file(path, folder, new_name=None, then=None, open_after=True)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. `then(new_path, "")`, or `then(None, reason)`. |
 
 ### Settings and messages
 | Call | What it does |
