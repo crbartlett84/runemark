@@ -186,7 +186,8 @@ def test_inbox_is_new_videos_not_saved_or_marked_done(tmp_path, media):
     db = TagDB(tmp_path / "t.db")
     try:
         L.scan(db, [str(folder)])
-        inbox = lambda: sorted(r.path.rsplit("/", 1)[-1] for r in db.library()  # noqa: E731
+        from pathlib import Path
+        inbox = lambda: sorted(Path(r.path).name for r in db.library()  # noqa: E731
                                if L.matches(r, L.Search(filter=L.FILTER_INBOX)))
         assert inbox() == ["a.mp4", "b.mp4", "c.mp4"]
         rec = next(r for r in db.library() if r.path.endswith("a.mp4"))
