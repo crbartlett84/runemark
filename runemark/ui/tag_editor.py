@@ -28,6 +28,8 @@ class TagEditor(QWidget):
     addUnknownRequested = Signal(str)      # put an unknown tag into the database
     createRequested = Signal(str)          # new tag typed in the box
     syncChoice = Signal(str)               # "explorer" or "keywords"
+    impliedAdded = Signal(str, list)       # a tag's rules added these tags too
+    tagKeySet = Signal(str, str)           # (key "1"-"9", tag name): put this tag on Alt+key
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +106,11 @@ class TagEditor(QWidget):
         add_row.addWidget(self.input, 1)
         add_row.addWidget(self.add_button)
         layout.addLayout(add_row)
+        self.tag_keys: dict = {}
+        self.keys_line = QLabel("")
+        self.keys_line.setObjectName("Faint")
+        self.keys_line.setWordWrap(True)
+        layout.addWidget(self.keys_line)
 
         self.completer_model = QStringListModel(self)
         self.completer = QCompleter(self.completer_model, self)
@@ -228,6 +235,10 @@ class TagEditor(QWidget):
             chip.removeClicked.connect(self.remove_tag)
             if is_unknown:
                 chip.clicked.connect(self.addUnknownRequested)
+            else:
+                chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                chip.customContextMenuRequested.connect(
+                    lambda pos, n=name, c=chip: self._chip_menu(n, c.mapToGlobal(pos)))
             self.chips.addWidget(chip)
         hand = {t.casefold() for t in self.tags}
         for row in self._profile:
@@ -247,6 +258,30 @@ class TagEditor(QWidget):
             self.hint.show()
         else:
             self.hint.hide()
+
+    def set_tag_keys(self, keys: dict):
+        self.tag_keys = dict(keys or {})
+        used = [f"Alt+{k} {self.tag_keys[k]}" for k in sorted(self.tag_keys) if self.tag_keys.get(k)]
+        self.keys_line.setText("Keys: " + " · ".join(used) if used else
+                               "Tip: right-click a tag to put it on Alt+1–9, then that key adds or removes it.")
+
+    def _chip_menu(self, name: str, pos):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        sub = menu.addMenu(f"Put “{name}” on a key")
+        for key in [str(n) for n in range(1, 10)]:
+            now = self.tag_keys.get(key)
+            act = sub.addAction(f"Alt+{key}" + (f"  (now {now})" if now else ""))
+            act.triggered.connect(lambda _=False, k=key: self.tagKeySet.emit(k, name))
+        menu.exec(pos)
+
+    def toggle_tag(self, name: str) -> bool:
+        """Add the tag (with its rules) if it isn't on the file, otherwise remove it. True = added."""
+        if name.casefold() in {t.casefold() for t in self.tags}:
+            self.remove_tag(name)
+            return False
+        self.add_tag(name)
+        return True
 
     # ---------------------------------------------------------------- people
     def set_people_enabled(self, enabled: bool):
@@ -306,14 +341,20 @@ class TagEditor(QWidget):
 
     # ---------------------------------------------------------------- editing
     def add_tag(self, name: str):
+        """Add a tag, and the tags its rules add (Tag database → Also adds)."""
         name = " ".join(name.split())
         if not name:
             return
         if self.db is not None:
             name = self.db.canonical(name)
-        if name.casefold() in {t.casefold() for t in self.tags}:
+        have = {t.casefold() for t in self.tags}
+        if name.casefold() in have:
             return
-        self.tags.append(name)
+        names = self.db.with_implied([name]) if self.db is not None else [name]
+        added = [n for n in names if n.casefold() not in have]
+        self.tags.extend(added)
+        if len(added) > 1:
+            self.impliedAdded.emit(name, added[1:])
         self._render_chips()
         self._sync_tree_checks()
         self.tagsChanged.emit(list(self.tags))

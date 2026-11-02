@@ -275,6 +275,7 @@ def apply_bulk(db: TagDB, paths: list[Path], change: BulkChange, *, explorer_mod
     is_genre = lambda n: (t := tags_by_name.get(n.casefold())) is not None and t.category_id in genre_cats  # noqa: E731
     is_known = lambda n: n.casefold() in tags_by_name  # noqa: E731
     remove = {r.casefold() for r in change.remove}
+    adding = db.with_implied([db.canonical(a) for a in change.add])      # tag rules add their tags too
     problems: list[tuple[Path, str]] = []
     batch = new_batch_id()
     for n, path in enumerate(paths):
@@ -289,7 +290,7 @@ def apply_bulk(db: TagDB, paths: list[Path], change: BulkChange, *, explorer_mod
         try:
             state = read_state(path)
             tags = [db.canonical(t) for t in state.all_tags() if t.casefold() not in remove]
-            tags = merge_unique(tags, [db.canonical(a) for a in change.add])
+            tags = merge_unique(tags, adding)
             keywords, genre = route_fields(tags, is_genre=is_genre, is_known=is_known, original_genre=state.genre)
             meta = None
             if change.rating is not None:

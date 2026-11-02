@@ -36,6 +36,7 @@ class Settings:
     suggestions_count: int = 8
     read_nfo: bool = True                 # fill empty details from a .nfo beside a video the first time it opens
     chapter_keys: dict = field(default_factory=dict)          # "1".."9" -> the chapter name that key adds
+    tag_keys: dict = field(default_factory=dict)              # "1".."9" -> the tag Alt+that key adds or removes
 
     @classmethod
     def path(cls) -> Path:

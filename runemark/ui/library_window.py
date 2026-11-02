@@ -137,6 +137,9 @@ class LibraryWindow(QDialog):
         self.remove_tag_button.clicked.connect(self._bulk_remove)
         self.rating_button = text_button("Rate…", "star")
         self.rating_button.clicked.connect(self._bulk_rating)
+        self.details_button = text_button("Details…", "edit")
+        self.details_button.setToolTip("Set the studio, year or people of the selected videos")
+        self.details_button.clicked.connect(self._bulk_details)
         more = QToolButton()
         more.setText("More")
         more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -157,7 +160,8 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Read every file again", lambda: self.scan(rescan_all=True))
         more_menu.addAction("Remove selected from the library (files aren't touched)", self._forget)
         more.setMenu(more_menu)
-        for b in (self.open_button, self.add_tag_button, self.remove_tag_button, self.rating_button, more):
+        for b in (self.open_button, self.add_tag_button, self.remove_tag_button, self.rating_button,
+                  self.details_button, more):
             bottom.addWidget(b)
         layout.addLayout(bottom)
         self._fill_saved()
@@ -235,7 +239,8 @@ class LibraryWindow(QDialog):
 
     def _selection_changed(self):
         n = len(self.selected_paths())
-        for b in (self.open_button, self.add_tag_button, self.remove_tag_button, self.rating_button):
+        for b in (self.open_button, self.add_tag_button, self.remove_tag_button, self.rating_button,
+                  self.details_button):
             b.setEnabled(n > 0)
 
     # ---------------------------------------------------------------- search
@@ -520,6 +525,52 @@ class LibraryWindow(QDialog):
         if ok:
             self._run_bulk(L.BulkChange(rating=options.index(choice)))
 
+    def _bulk_details(self):
+        from .. import names as N
+        paths = [p for p in self.selected_paths() if p.suffix.lower() in (".mp4", ".m4v")]
+        skipped = len(self.selected_paths()) - len(paths)
+        if not paths:
+            QMessageBox.information(self, "Details", "Select some MP4 videos first (MKVs need converting first).")
+            return
+        dialog = BulkDetailsDialog(self.db, len(paths), skipped, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        studio, year, people = dialog.values()
+        if not (studio or year or people):
+            return
+        plans = [N.ReadPlan(str(p), year=year, studio=studio or None, people=list(people), matched=True)
+                 for p in paths]
+        self.host.release_for(paths, lambda: self._start_details(paths, plans))
+
+    def _start_details(self, paths: list[Path], plans):
+        from .. import names as N
+        dialog = ProgressDialog("Updating files", cancellable=True, parent=self)
+
+        def work(job):
+            db = self.db_for_thread()
+            try:
+                return N.apply_read(db, plans, overwrite=True, create_people=True, progress=job.report,
+                                    cancel=job.cancel, label="Library: set details")
+            finally:
+                db.close()
+
+        def done(problems):
+            dialog.finish()
+            self.refresh()
+            self.host.files_changed(paths)
+            if problems:
+                TextReportDialog("Some files weren't changed",
+                                 "\n".join(f"{Path(p).name}: {why}" for p, why in problems), self).exec()
+
+        def failed(exc, _tb):
+            dialog.finish()
+            self.refresh()
+            QMessageBox.critical(self, "Details", str(exc))
+
+        job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
+        dialog.cancelRequested.connect(job.cancel.set)
+        dialog.show()
+
     def _undo_bulk(self):
         entries = self.db.last_batch()
         if not entries:
@@ -663,3 +714,51 @@ def _color(value: str):
 
 
 __all__ = ["LibraryWindow", "QPushButton"]
+
+
+class BulkDetailsDialog(QDialog):
+    """Studio, year and people for many videos at once. Blank fields are left alone; people are added."""
+
+    def __init__(self, db: TagDB, count: int, skipped: int, parent=None):
+        super().__init__(parent)
+        from PySide6.QtGui import QIntValidator
+        from PySide6.QtWidgets import QDialogButtonBox, QFormLayout
+        self.setWindowTitle("Details")
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"Set these on {count} video(s). Blank fields are left as they are; people are added to "
+                       "those already there (new names are added to your People list). One undoable change."
+                       + (f"\n{skipped} MKV file(s) are skipped: convert them first." if skipped else ""))
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.studio = QLineEdit()
+        self.studio.setCompleter(_completer(db.studios(), self.studio))
+        self.year = QLineEdit()
+        self.year.setValidator(QIntValidator(1800, 2199, self.year))
+        self.year.setMaximumWidth(80)
+        self.people = QLineEdit()
+        self.people.setPlaceholderText("Names, separated by commas")
+        names = [p.name for p in db.people()] if hasattr(db, "people") else []
+        self.people.setCompleter(_completer(names, self.people))
+        form.addRow("Studio", self.studio)
+        form.addRow("Year", self.year)
+        form.addRow("Add people", self.people)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, int | None, list[str]]:
+        text = self.year.text().strip()
+        year = int(text) if text.isdigit() and len(text) == 4 else None
+        people = [" ".join(n.split()) for n in self.people.text().split(",") if n.strip()]
+        return " ".join(self.studio.text().split()), year, people
+
+
+def _completer(names: list[str], parent) -> QCompleter:
+    completer = QCompleter(QStringListModel(names, parent), parent)
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    return completer

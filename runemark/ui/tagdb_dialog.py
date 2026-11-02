@@ -186,8 +186,8 @@ class CategoryTree(QTreeWidget):
 
 class TagTable(QTableWidget):
     def __init__(self, parent=None):
-        super().__init__(0, 3, parent)
-        self.setHorizontalHeaderLabels(["Tag", "Category", "Files"])
+        super().__init__(0, 4, parent)
+        self.setHorizontalHeaderLabels(["Tag", "Category", "Files", "Also adds"])
         self.verticalHeader().hide()
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -199,6 +199,7 @@ class TagTable(QTableWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
     def selected_ids(self) -> list[int]:
         rows = sorted({i.row() for i in self.selectedIndexes()})
@@ -281,9 +282,12 @@ class TagDatabaseDialog(QDialog):
         self.rename_tag = text_button("Rename", "edit")
         self.move_tag = text_button("Move to…", "folder")
         self.merge_tag = text_button("Merge into…", "merge")
+        self.rules_button = text_button("Also adds…", "plus")
+        self.rules_button.setToolTip("Tags this tag adds with it: tagging a video “Cowgirl” can also tag it “Sex”")
         self.delete_tag = text_button("Delete", "trash")
         for button, slot in ((self.new_tag, self._new_tag), (self.rename_tag, self._rename_tag),
                              (self.move_tag, self._move_tags), (self.merge_tag, self._merge_tag),
+                             (self.rules_button, self._edit_rules),
                              (self.delete_tag, self._delete_tags)):
             button.clicked.connect(slot)
             tag_buttons.addWidget(button)
@@ -377,6 +381,7 @@ class TagDatabaseDialog(QDialog):
         if needle:
             tags = [t for t in tags if needle in t.name.casefold()]
         usage = self.db.tag_usage()
+        rules = self.db.rules()
         self.table.setRowCount(len(tags))
         for row, tag in enumerate(tags):
             name = QTableWidgetItem(tag.name)
@@ -389,6 +394,7 @@ class TagDatabaseDialog(QDialog):
             self.table.setItem(row, 0, name)
             self.table.setItem(row, 1, cat)
             self.table.setItem(row, 2, files)
+            self.table.setItem(row, 3, QTableWidgetItem(", ".join(rules.get(tag.name.casefold(), []))))
 
     # ---------------------------------------------------------------- helpers
     def _error(self, exc: Exception):
@@ -529,6 +535,41 @@ class TagDatabaseDialog(QDialog):
         if files:
             self.fileChanges.emit(FileChange("rename", files, tag.name, renamed.name,
                                              f"Rename “{tag.name}” to “{renamed.name}”"))
+
+    def _edit_rules(self):
+        from ..library import split_tag_input
+        ids = self.table.selected_ids()
+        if len(ids) != 1:
+            QMessageBox.information(self, "Also adds", "Select one tag first.")
+            return
+        tag = self.db.tag(ids[0])
+        now = ", ".join(t.name for t in self.db.implied(tag.id))
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Also adds")
+        dialog.setLabelText(f"When a video is tagged “{tag.name}”, also add these tags (separate with commas). "
+                            "They're added at the time; removing the tag later leaves them.")
+        dialog.setTextValue(now)
+        edit = dialog.findChild(QLineEdit)
+        if edit is not None:
+            from PySide6.QtCore import QStringListModel
+            from PySide6.QtWidgets import QCompleter
+            completer = QCompleter(QStringListModel([t.name for t in self.db.tags()], dialog), edit)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            edit.setCompleter(completer)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        names = split_tag_input(dialog.textValue(), [t.name for t in self.db.tags()])
+        found, missing = [], []
+        for name in names:
+            t = self.db.find_tag(name)
+            (found if t is not None else missing).append(t if t is not None else name)
+        if missing:
+            QMessageBox.warning(self, "Also adds", "Not in your tag database yet: " + ", ".join(missing)
+                                + "\n\nAdd them first, then try again.")
+            return
+        self.db.set_implied(tag.id, [t.id for t in found if t.id != tag.id])
+        self._fill_tags()
 
     def _merge_tag(self):
         ids = self.table.selected_ids()

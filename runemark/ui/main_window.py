@@ -232,6 +232,10 @@ class MainWindow(QMainWindow):
         self.tag_editor.createRequested.connect(self._create_tag)
         self.tag_editor.addUnknownRequested.connect(self._file_unknown_tag)
         self.tag_editor.syncChoice.connect(self._use_one_side)
+        self.tag_editor.impliedAdded.connect(
+            lambda tag, extra: self.set_status(f"“{tag}” also added " + ", ".join(f"“{t}”" for t in extra)))
+        self.tag_editor.tagKeySet.connect(self._set_tag_key)
+        self.tag_editor.set_tag_keys(self.settings.tag_keys)
         self.details = DetailsPanel()
         self.details.meta.changed.connect(self._meta_edited)
         self.thumbs = ThumbnailPanel()
@@ -314,8 +318,17 @@ class MainWindow(QMainWindow):
                                      self.paste_tags, "Ctrl+Shift+V")
         action("Focus tag box", lambda: (self.tabs.setCurrentWidget(self.tag_editor), self.tag_editor.input.setFocus()),
                "Ctrl+L")
+        for n in range(1, 10):                     # tag keys: Alt+1-9 add or remove a chosen tag
+            act = QAction(f"Tag key {n}", self)
+            act.setShortcut(QKeySequence(f"Alt+{n}"))
+            act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            act.triggered.connect(lambda _=False, k=str(n): self.press_tag_key(k))
+            self.addAction(act)
+        self.act_tag_keys = action("Tag keys…", self.edit_tag_keys, None, "edit")
+        self.act_palette = action("Go to anything…", self.show_palette, "Ctrl+K", "search")
         self.recent_menu = QMenu("Open recent", self)
         menu = QMenu(self)
+        menu.addAction(self.act_palette)
         menu.addAction(self.act_open)
         menu.addMenu(self.recent_menu)
         menu.addSeparator()
@@ -323,6 +336,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.act_library)
         menu.addAction(self.act_manage)
+        menu.addAction(self.act_tag_keys)
         menu.addAction(self.act_people)
         menu.addAction(self.act_settings)
         menu.addSeparator()
@@ -1065,6 +1079,65 @@ class MainWindow(QMainWindow):
         mark = self.chapters.add_at(pts, name)
         self.set_status(f"Chapter “{mark.name}” added at {fmt_duration(pts, millis=True)}" if name else
                         f"Chapter added at {fmt_duration(pts, millis=True)}")
+
+    def show_palette(self):
+        from .palette import CommandPalette, Entry
+        entries: list[Entry] = []
+        seen = set()
+        for act in self.actions():
+            text = act.text().replace("&", "").rstrip("…").strip()
+            if not text or text.startswith("Tag key ") or text.casefold() in seen or act is self.act_palette:
+                continue
+            seen.add(text.casefold())
+            entries.append(Entry("Action", text, act.shortcut().toString(), act.trigger))
+        for tag in self.db.tags():
+            entries.append(Entry("Tag", tag.name, "add to this video",
+                                 lambda n=tag.name: self.tag_editor.add_tag(n) if self.doc else self.toast(
+                                     "Open a video first.")))
+        for person in self.db.people():
+            entries.append(Entry("Person", person.name, "add to this video", keywords=" ".join(person.aliases),
+                                 run=lambda n=person.name: self._add_person(n) if self.doc else
+                                 self.manage_people(self.db.find_person(n).uid)))
+        for rec in self.db.library():
+            if rec.missing:
+                continue
+            path = Path(rec.path)
+            entries.append(Entry("Video", rec.title or path.stem, path.name, keywords=path.name + " " + rec.studio,
+                                 run=lambda p=path: self.open_paths([p])))
+        CommandPalette(entries, self).exec()
+
+    def press_tag_key(self, key: str):
+        doc = self.doc
+        if doc is None or self._busy:
+            return
+        name = self.settings.tag_keys.get(key)
+        if not name:
+            self.toast(f"Alt+{key} doesn't add a tag yet: right-click a tag → Put on a key, or More → Tag keys…")
+            return
+        present = name.casefold() in {t.casefold() for t in self.tag_editor.tags}
+        self.set_status(f"Removed “{name}”" if present else f"Added “{name}”")   # rules may say more after
+        self.tag_editor.toggle_tag(name)
+
+    def edit_tag_keys(self):
+        from PySide6.QtCore import QStringListModel
+        from .chapters_panel import ChapterKeysDialog
+        names = QStringListModel([t.name for t in self.db.tags()], self)
+        dialog = ChapterKeysDialog(
+            self.settings.tag_keys, names, self, title="Tag keys", prefix="Alt+",
+            intro="Press Alt and a number to add that tag to the open video, or remove it if it's there already "
+                  "(with the tags its rules add). Leave a key empty to not use it.")
+        if dialog.exec() == ChapterKeysDialog.DialogCode.Accepted:
+            self._save_tag_keys(dialog.keys())
+
+    def _set_tag_key(self, key: str, name: str):
+        keys = {k: v for k, v in self.settings.tag_keys.items() if v.casefold() != name.casefold()}
+        keys[key] = name
+        self._save_tag_keys(keys)
+
+    def _save_tag_keys(self, keys: dict):
+        self.settings.tag_keys = dict(keys)
+        self.settings.save()
+        self.tag_editor.set_tag_keys(keys)
 
     def _chapter_keys_changed(self, keys: dict):
         self.settings.chapter_keys = dict(keys)

@@ -129,6 +129,12 @@ CREATE TABLE IF NOT EXISTS file_chapters(
     name TEXT NOT NULL COLLATE NOCASE
 );
 CREATE INDEX IF NOT EXISTS idx_file_chapters_file ON file_chapters(file_id);
+-- 0.6.0: tag rules ("Cowgirl" also adds "Sex"), applied when a tag is added.
+CREATE TABLE IF NOT EXISTS tag_rules(
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    implies_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY(tag_id, implies_id)
+);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -524,12 +530,57 @@ class TagDB:
         if source_id == target_id:
             return self.tag(target_id)
         source, target = self.tag(source_id), self.tag(target_id)
+        # the target takes over the source's rules both ways (dropping any that would point at itself)
+        self.conn.execute("UPDATE OR IGNORE tag_rules SET tag_id = ? WHERE tag_id = ?", (target_id, source_id))
+        self.conn.execute("UPDATE OR IGNORE tag_rules SET implies_id = ? WHERE implies_id = ?", (target_id, source_id))
+        self.conn.execute("DELETE FROM tag_rules WHERE tag_id = implies_id")
         self.conn.execute("UPDATE OR IGNORE file_tags SET tag_name = ? WHERE tag_name = ? COLLATE NOCASE",
                           (target.name, source.name))
         self.conn.execute("DELETE FROM file_tags WHERE tag_name = ? COLLATE NOCASE", (source.name,))
         self.conn.execute("DELETE FROM tags WHERE id = ?", (source_id,))
         self._changed()
         return target
+
+    # ------------------------------------------------------------------ tag rules
+    def implied(self, tag_id: int) -> list[Tag]:
+        """The tags this tag also adds (directly)."""
+        ids = [r[0] for r in self.conn.execute("SELECT implies_id FROM tag_rules WHERE tag_id = ?", (tag_id,))]
+        return sorted((self.tag(i) for i in ids), key=lambda t: t.name.casefold())
+
+    def set_implied(self, tag_id: int, implied_ids: list[int]) -> None:
+        self.tag(tag_id)
+        with self.conn:
+            self.conn.execute("DELETE FROM tag_rules WHERE tag_id = ?", (tag_id,))
+            self.conn.executemany("INSERT OR IGNORE INTO tag_rules(tag_id, implies_id) VALUES(?, ?)",
+                                  [(tag_id, i) for i in dict.fromkeys(implied_ids) if i != tag_id])
+
+    def _rule_ids(self) -> list[tuple[int, list[int]]]:
+        out: dict[int, list[int]] = {}
+        for a, b in self.conn.execute("SELECT tag_id, implies_id FROM tag_rules ORDER BY tag_id"):
+            out.setdefault(a, []).append(b)
+        return list(out.items())
+
+    def rules(self) -> dict[str, list[str]]:
+        """{tag name (folded): [names it also adds]} for every rule."""
+        out: dict[str, list[str]] = {}
+        for a, b in self.conn.execute("SELECT t1.name, t2.name FROM tag_rules JOIN tags t1 ON t1.id = tag_rules.tag_id "
+                                      "JOIN tags t2 ON t2.id = tag_rules.implies_id ORDER BY t2.name COLLATE NOCASE"):
+            out.setdefault(a.casefold(), []).append(b)
+        return out
+
+    def with_implied(self, names: list[str]) -> list[str]:
+        """The names plus every tag their rules add (and those tags' rules, and so on), in order, once each."""
+        rules = self.rules()
+        out, seen = [], set()
+        todo = list(names)
+        while todo:
+            name = todo.pop(0)
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            out.append(name)
+            todo.extend(rules.get(name.casefold(), []))
+        return out
 
     def move_tag(self, tag_id: int, category_id: int | None) -> Tag:
         self.tag(tag_id)
@@ -820,6 +871,7 @@ class TagDB:
             "exported_at": _now(),
             "uncategorized": [t.name for t in self.tags_in(None)],
             "categories": [node(c) for c in self.children(None)],
+            "rules": {self.tag(r[0]).name: [self.tag(i).name for i in r[1]] for r in self._rule_ids()},
         }
 
     def export_json(self, path: str | os.PathLike) -> None:
@@ -860,6 +912,13 @@ class TagDB:
             for tag_name in data.get("uncategorized", []):
                 added_tags += self._import_tag(tag_name, None)
             walk(data.get("categories", []), None)
+            for name, implied in (data.get("rules") or {}).items():      # 0.6.0+: tag rules
+                tag = self.find_tag(name)
+                for other in implied:
+                    target = self.find_tag(other)
+                    if tag is not None and target is not None and target.id != tag.id:
+                        self.conn.execute("INSERT OR IGNORE INTO tag_rules(tag_id, implies_id) VALUES(?, ?)",
+                                          (tag.id, target.id))
         self._changed()
         return added_cats, added_tags
 

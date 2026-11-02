@@ -56,15 +56,17 @@ class _NameDelegate(QStyledItemDelegate):
 
 
 class ChapterKeysDialog(QDialog):
-    """Which chapter name each number key adds (1-9)."""
+    """Which name each number key (1-9) stands for: chapter keys, or (with other texts) tag keys."""
 
-    def __init__(self, keys: dict, names: QStringListModel, parent=None):
+    CHAPTER_INTRO = ("Pause on a frame and press a number key to add a chapter there with that name, in one key. "
+                     "Pick a tag (the file gets that tag too) or type any name. Leave a key empty to not use it.")
+
+    def __init__(self, keys: dict, names: QStringListModel, parent=None, *, title: str = "Chapter keys",
+                 prefix: str = "Key ", intro: str = CHAPTER_INTRO):
         super().__init__(parent)
-        self.setWindowTitle("Chapter keys")
+        self.setWindowTitle(title)
         layout = QVBoxLayout(self)
-        intro = QLabel("Pause on a frame and press a number key to add a chapter there with that name, in one "
-                       "key. Pick a tag (the file gets that tag too) or type any name. Leave a key empty to not "
-                       "use it.")
+        intro = QLabel(intro)
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -74,7 +76,7 @@ class ChapterKeysDialog(QDialog):
             edit = QLineEdit(keys.get(key, ""))
             edit.setPlaceholderText("(not used)")
             edit.setCompleter(_completer(names, edit))
-            form.addRow(f"Key {key}", edit)
+            form.addRow(f"{prefix}{key}", edit)
             self.edits[key] = edit
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
