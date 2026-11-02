@@ -1,6 +1,7 @@
 """The library window: every video in your folders, searchable by tag, changeable in bulk."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import (QByteArray, QItemSelection, QItemSelectionModel, QSize, QStringListModel, Qt, QTimer,
@@ -59,6 +60,10 @@ class LibraryWindow(QDialog):
         for value, label in L.FILTERS:
             self.filter.addItem(label, value)
         self.filter.currentIndexChanged.connect(self._filter_changed)
+        self.library_pick = QComboBox()
+        self.library_pick.setToolTip("Which library to show. Folders → New library… adds one.")
+        self.library_pick.activated.connect(self._library_picked)
+        row.addWidget(self.library_pick, 1)
         row.addWidget(self.text, 2)
         row.addWidget(self.tag_input, 2)
         row.addWidget(self.filter, 1)
@@ -188,6 +193,8 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Undo last bulk change…", self._undo_bulk)
         more_menu.addSeparator()
         more_menu.addAction("Read every file again", lambda: self.scan(rescan_all=True))
+        self.plugin_menu = more_menu.addMenu("Plugins")
+        more_menu.aboutToShow.connect(self._fill_plugin_menu)
         more_menu.addAction("Remove selected from the library (files aren't touched)", self._forget)
         more.setMenu(more_menu)
         for b in (self.open_button, self.add_tag_button, self.remove_tag_button, self.rating_button,
@@ -272,19 +279,63 @@ class LibraryWindow(QDialog):
     def refresh(self):
         self.tag_model.setStringList([t.name for t in self.db.tags()])
         self.records = self.db.library()
+        self._fill_library_pick()
         self._apply()
+
+    def _fill_plugin_menu(self):
+        """Actions plugins added for the Library; each gets the selected videos."""
+        self.plugin_menu.clear()
+        host = getattr(self.host, "plugins", None)
+        actions = list(host.library_actions) if host is not None else []
+        for act in actions:
+            self.plugin_menu.addAction(act.text, lambda a=act: self._run_library_plugin(a))
+        self.plugin_menu.menuAction().setVisible(bool(actions))
+
+    def _run_library_plugin(self, act):
+        paths = [Path(p) for p in self.selected_paths()]
+        try:
+            act.callback(paths)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Plugin", f"{act.plugin} hit a problem:\n\n{exc}")
+
+    # ---------------------------------------------------------------- libraries (0.7.0)
+    def _fill_library_pick(self):
+        self.library_pick.blockSignals(True)
+        self.library_pick.clear()
+        names = [lib["name"] for lib in self.settings.libraries]
+        if len(names) != 1:
+            self.library_pick.addItem("All libraries", "")
+        for name in names:
+            self.library_pick.addItem(name, name)
+        at = self.library_pick.findData(self.settings.library_shown)
+        self.library_pick.setCurrentIndex(max(0, at))
+        self.library_pick.setVisible(len(names) > 1)
+        self.library_pick.blockSignals(False)
+
+    def _library_picked(self, _index: int):
+        self.settings.library_shown = self.library_pick.currentData() or ""
+        self.settings.save()
+        self._apply()
+
+    def _shown_library(self) -> dict | None:
+        return L.library_named(self.settings, self.settings.library_shown) if self.settings.library_shown else None
+
+    def _in_view(self, records: list[FileRecord]) -> list[FileRecord]:
+        lib = self._shown_library()
+        return records if lib is None else [r for r in records if L.in_library(r.path, lib)]
 
     def _apply(self):
         self._search_timer.stop()
         keep = {str(p).casefold() for p in self.selected_paths()}  # still selected after a change or rescan
-        shown = [r for r in self.records if L.matches(r, self.search)]
+        in_view = self._in_view(self.records)
+        shown = [r for r in in_view if L.matches(r, self.search)]
         self.model.faint = _color(theme.current().faint)
         self.model.set_records(shown)
         if keep:
             self._select_paths(keep)
-        total = len(self.records)
+        total = len(in_view)
         self.count.setText(f"{len(shown)} of {total} video{'s' if total != 1 else ''}")
-        inbox = sum(1 for r in self.records if r.in_inbox)
+        inbox = sum(1 for r in in_view if r.in_inbox)
         at = self.filter.findData(L.FILTER_INBOX)
         if at >= 0:
             self.filter.setItemText(at, f"Inbox · {inbox}" if inbox else "Inbox (empty)")
@@ -395,33 +446,121 @@ class LibraryWindow(QDialog):
 
     # ---------------------------------------------------------------- folders and scanning
     def _fill_folders_menu(self):
-        self.folders_menu.clear()
-        self.folders_menu.addAction(theme.icon("folder_plus", size=16), "Add a folder…", self._add_folder)
-        if self.settings.library_folders:
-            self.folders_menu.addSeparator()
-            for folder in self.settings.library_folders:
-                sub = self.folders_menu.addMenu(folder)
-                sub.addAction("Remove from the library (files aren't touched)",
-                              lambda f=folder: self._remove_folder(f))
+        """One section per library: its folders, the subfolders it leaves out, and what can be done with it."""
+        menu = self.folders_menu
+        menu.clear()
+        libs = self.settings.libraries
+        if not libs:
+            menu.addAction(theme.icon("folder_plus", size=16), "Add a folder…", lambda: self._add_folder(None))
+        for lib in libs:
+            sub = menu.addMenu(theme.icon("folder", size=16), lib["name"]) if len(libs) > 1 else menu
+            sub.addAction(theme.icon("folder_plus", size=16), "Add a folder…", lambda n=lib["name"]: self._add_folder(n))
+            for folder in lib["folders"]:
+                fm = sub.addMenu(folder)
+                fm.addAction("Remove from this library (files aren't touched)",
+                             lambda n=lib["name"], f=folder: self._remove_folder(n, f))
+            sub.addSeparator()
+            sub.addAction("Leave out a subfolder…", lambda n=lib["name"]: self._add_skip(n))
+            for skip in lib["skip"]:
+                sub.addAction(f"Include again: {skip}", lambda n=lib["name"], f=skip: self._remove_skip(n, f))
+            sub.addSeparator()
+            sub.addAction("Rename library…", lambda n=lib["name"]: self._rename_library(n))
+            if len(libs) > 1:
+                sub.addAction("Delete library (files aren't touched)", lambda n=lib["name"]: self._delete_library(n))
+        menu.addSeparator()
+        menu.addAction("New library…", self._new_library)
 
-    def _add_folder(self):
+    def _library(self, name: str | None) -> dict:
+        """The named library, or the only/first one, created ("Library") when there's none yet."""
+        lib = L.library_named(self.settings, name) if name else None
+        if lib is None:
+            if not self.settings.libraries:
+                self.settings.libraries.append({"name": "Library", "folders": [], "skip": []})
+            lib = self.settings.libraries[0]
+        return lib
+
+    def _add_folder(self, name: str | None = None):
         folder = QFileDialog.getExistingDirectory(self, "Add a folder of videos", self.settings.last_folder or "")
         if not folder:
             return
         folder = str(Path(folder))
-        if folder.casefold() not in {f.casefold() for f in self.settings.library_folders}:
-            self.settings.library_folders.append(folder)
+        lib = self._library(name)
+        if folder.casefold() not in {f.casefold() for f in lib["folders"]}:
+            lib["folders"].append(folder)
             self.settings.save()
         self.scan()
 
-    def _remove_folder(self, folder: str):
-        answer = QMessageBox.question(self, "Remove folder", f"Stop including {folder} in the library?\n\n"
+    def _remove_folder(self, name: str, folder: str):
+        answer = QMessageBox.question(self, "Remove folder", f"Stop including {folder} in {name}?\n\n"
                                       "The videos stay where they are, with their tags.")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.settings.library_folders = [f for f in self.settings.library_folders if f != folder]
+        lib = self._library(name)
+        lib["folders"] = [f for f in lib["folders"] if f != folder]
         self.settings.save()
-        self.db.forget_folder(folder)
+        if not any(L.in_library(os.path.join(folder, "x"), other) for other in self.settings.libraries):
+            self.db.forget_folder(folder)          # no other library has it: drop its videos from the list
+        self.refresh()
+
+    def _add_skip(self, name: str):
+        lib = self._library(name)
+        start = lib["folders"][0] if lib["folders"] else ""
+        folder = QFileDialog.getExistingDirectory(self, f"A subfolder to leave out of {name}", start)
+        if not folder:
+            return
+        folder = str(Path(folder))
+        if not any(L._inside(folder, f) for f in lib["folders"]):
+            QMessageBox.information(self, "Leave out a subfolder", f"{folder} isn't inside one of {name}'s folders.")
+            return
+        if folder.casefold() not in {f.casefold() for f in lib["skip"]}:
+            lib["skip"].append(folder)
+            self.settings.save()
+        self.refresh()
+
+    def _remove_skip(self, name: str, folder: str):
+        lib = self._library(name)
+        lib["skip"] = [f for f in lib["skip"] if f != folder]
+        self.settings.save()
+        self.scan()
+
+    def _ask_library_name(self, title: str, current: str = "") -> str | None:
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, title, "Name:", text=current)
+        text = " ".join(text.split())
+        if not ok or not text:
+            return None
+        if any(lib["name"].casefold() == text.casefold() for lib in self.settings.libraries
+               if lib["name"].casefold() != current.casefold()):
+            QMessageBox.information(self, title, f"There's already a library called {text}.")
+            return None
+        return text
+
+    def _new_library(self):
+        name = self._ask_library_name("New library")
+        if name:
+            self.settings.libraries.append({"name": name, "folders": [], "skip": []})
+            self.settings.save()
+            self._add_folder(name)
+            self.refresh()
+
+    def _rename_library(self, name: str):
+        new = self._ask_library_name("Rename library", name)
+        if new:
+            self._library(name)["name"] = new
+            if self.settings.library_shown.casefold() == name.casefold():
+                self.settings.library_shown = new
+            self.settings.save()
+            self.refresh()
+
+    def _delete_library(self, name: str):
+        answer = QMessageBox.question(self, "Delete library", f"Delete the library {name}?\n\n"
+                                      "Only the library goes: the videos and their tags stay where they are.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.settings.libraries = [lib for lib in self.settings.libraries if lib["name"] != name]
+        if self.settings.library_shown.casefold() == name.casefold():
+            self.settings.library_shown = ""
+        self.settings.save()
         self.refresh()
 
     def _scan_clicked(self):
@@ -446,6 +585,7 @@ class LibraryWindow(QDialog):
         if self._scan_job is not None:
             return
         folders = list(self.settings.library_folders)
+        skip = L.scan_skips(self.settings)
         self.scan_button.setText("Stop scan")
         self.count.setText("Scanning…")
 
@@ -476,7 +616,7 @@ class LibraryWindow(QDialog):
         def work(job):
             db = self.db_for_thread()
             try:
-                return L.scan(db, folders, progress=job.report, cancel=job.cancel, rescan_all=rescan_all)
+                return L.scan(db, folders, progress=job.report, cancel=job.cancel, rescan_all=rescan_all, skip=skip)
             finally:
                 db.close()
 

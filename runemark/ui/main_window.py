@@ -133,7 +133,156 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(QByteArray.fromBase64(settings.window_geometry.encode()))
         if settings.splitter_state:
             self.splitter.restoreState(QByteArray.fromBase64(settings.splitter_state.encode()))
+        self._load_plugins()
         self._refresh_ui()
+
+    # ================================================================ plugins (0.7.0, docs/plugins.md)
+    def _load_plugins(self):
+        from .. import plugins
+        self.plugin_actions_menu.clear()
+        try:
+            self.plugins = plugins.load_all(self, self.settings.plugins_disabled)
+        except Exception:  # noqa: BLE001
+            log.exception("plugins couldn't be loaded")
+            self.plugins = plugins.PluginHost()
+        self.plugin_actions_menu.menuAction().setVisible(bool(self.plugin_actions_menu.actions()))
+
+    def manage_plugins(self):
+        from .. import plugins
+        from .plugins_dialog import PluginsDialog
+        PluginsDialog(getattr(self, "plugins", None) or plugins.PluginHost(), self.settings, self).exec()
+
+    def add_plugin_pane(self, title: str, widget):
+        self.tabs.addTab(widget, theme.icon("plugin", size=16), title)
+
+    def add_plugin_action(self, text: str, callback, shortcut: str | None = None):
+        act = QAction(text, self)
+        if shortcut:
+            act.setShortcut(QKeySequence(shortcut))
+            act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        act.triggered.connect(lambda _=False: self._run_plugin(callback))
+        self.addAction(act)
+        self.plugin_actions_menu.addAction(act)
+        self.plugin_actions_menu.menuAction().setVisible(True)
+
+    def _run_plugin(self, callback, *args):
+        try:
+            callback(*args)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("plugin action failed")
+            QMessageBox.warning(self, "Plugin", f"The plugin hit a problem:\n\n{exc}")
+
+    def _emit(self, event: str, *args):
+        host = getattr(self, "plugins", None)
+        if host is not None:
+            host.emit(event, *args)
+
+    def plugin_details(self) -> dict | None:
+        doc = self.doc
+        if doc is None:
+            return None
+        m = doc.meta
+        people = [(p["name"] if isinstance(p, dict) else p.name) for p, _s in doc.people]
+        return {"path": doc.path, "title": m.title, "year": m.year, "date": m.full_date(), "studio": m.studio or "",
+                "description": m.description, "rating": m.rating, "links": list(m.links or []),
+                "tags": list(doc.tags), "people": people, "has_cover": bool(doc.whole_cover()),
+                "container": doc.container}
+
+    def plugin_apply(self, changes: dict) -> list[str]:
+        """apply_details for plugins: the same edits a person could make, left unsaved."""
+        from ..media.mp4meta import clean_links, parse_date
+        doc = self.doc
+        if doc is None or self._busy:
+            return []
+        done: list[str] = []
+        meta = VideoMeta(**vars(doc.meta))
+        for key in ("title", "studio", "description"):
+            if key in changes and changes[key] is not None:
+                setattr(meta, key, " ".join(str(changes[key]).split()) if key != "description"
+                        else str(changes[key]).strip())
+                done.append(key)
+        if changes.get("date") and parse_date(changes["date"]):
+            meta.date = parse_date(changes["date"])
+            meta.year = int(meta.date[:4])
+            done.append("date")
+        elif changes.get("year"):
+            meta.year = int(changes["year"])
+            done.append("year")
+        if changes.get("rating") is not None:
+            meta.rating = max(0, min(5, int(changes["rating"])))
+            done.append("rating")
+        if changes.get("links") is not None:
+            meta.links = clean_links(changes["links"])
+            done.append("links")
+        if changes.get("add_links"):
+            meta.links = clean_links(list(meta.links or []) + list(changes["add_links"]))
+            done.append("links")
+        doc.meta = meta
+        self.details.meta.set_meta(doc.meta, doc.container)
+        if changes.get("add_tags"):
+            tags = merge_unique(doc.tags, [self.db.canonical(t) for t in changes["add_tags"]])
+            if tags != doc.tags:
+                doc.tags = tags
+                self.tag_editor.set_tags(doc.tags)
+                done.append("tags")
+        added = 0
+        for name in changes.get("people") or []:
+            person = self.db.find_person(name) or self.db.add_person(name)
+            if not any((p["id"] if isinstance(p, dict) else p.uid) == person.uid for p, _s in doc.people):
+                doc.people = doc.people + [(person, [])]
+                added += 1
+        if added:
+            self.tag_editor.refresh_database()
+            self._refresh_people()
+            done.append("people")
+        if changes.get("cover"):
+            data = changes["cover"]
+            doc.cover = data if data[:3] == b"\xff\xd8\xff" else frames.image_bytes_to_jpeg(
+                data, max_edge=self.settings.thumbnail_max_edge or None, quality=self.settings.jpeg_quality)
+            doc.cover_note = "From a plugin"
+            self._refresh_thumbs()
+            done.append("thumbnail")
+        self._refresh_ui()
+        return done
+
+    def plugin_move(self, path: Path, folder: Path, new_name: str | None, then):
+        """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it."""
+        from ..plugins import move_with_sidecars
+        reopen = self.doc is not None and file_key(self.doc.path) == file_key(path)
+
+        def finish(new_path, reason):
+            if then:
+                self._run_plugin(then, new_path, reason)
+
+        def go():
+            try:
+                new_path, moved = move_with_sidecars(path, folder, new_name)
+            except Exception as exc:  # noqa: BLE001
+                if reopen:
+                    self._load(path, 0)
+                finish(None, str(exc))
+                return
+            self.db.move_file(path, new_path)
+            self._emit("file_closed", path) if reopen else None
+            if reopen:
+                self.doc = None
+            self.files_moved([(str(path), str(new_path))])
+            library.reindex(self.db, new_path)
+            if self.library_window is not None:
+                self.library_window.refresh()
+            if reopen:
+                self._load(new_path, 0, status=f"Moved to {folder}")
+            finish(new_path, "")
+
+        if reopen:
+            if self.doc.dirty():
+                QMessageBox.information(self, "Unsaved changes", f"{path.name} has unsaved changes. Save it (or "
+                                        "undo the changes) first.")
+                finish(None, "unsaved changes")
+                return
+            self._release_then(lambda _position: go())
+        else:
+            go()
 
     # ================================================================ layout
     def _build_header(self):
@@ -333,6 +482,8 @@ class MainWindow(QMainWindow):
         self.act_tag_keys = action("Tag keys…", self.edit_tag_keys, None, "edit")
         self.act_palette = action("Go to anything…", self.show_palette, "Ctrl+K", "search")
         self.recent_menu = QMenu("Open recent", self)
+        self.plugin_actions_menu = QMenu("Plugins", self)
+        self.act_plugins = action("Manage plugins…", self.manage_plugins, None, "plugin")
         menu = QMenu(self)
         menu.addAction(self.act_palette)
         menu.addAction(self.act_open)
@@ -345,6 +496,9 @@ class MainWindow(QMainWindow):
         menu.addAction(self.act_tag_keys)
         menu.addAction(self.act_people)
         menu.addAction(self.act_settings)
+        menu.addSeparator()
+        menu.addMenu(self.plugin_actions_menu)
+        menu.addAction(self.act_plugins)
         menu.addSeparator()
         menu.addAction(self.act_activity)
         menu.addAction(self.act_selftest)
@@ -487,6 +641,13 @@ class MainWindow(QMainWindow):
             if value and not getattr(meta, field_name):
                 setattr(meta, field_name, value)
                 got.append(field_name)
+        if details.date and not meta.full_date() and meta.year in (None, int(details.date[:4])):
+            meta.date = details.date
+            if "year" not in got:
+                got.append("date")
+        if details.links and not meta.links:
+            meta.links = list(details.links)
+            got.append("links")
         have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _s in doc.people}
         added = 0
         for name in details.people:
@@ -539,6 +700,7 @@ class MainWindow(QMainWindow):
         doc = self.doc
         if doc is None:
             return
+        QTimer.singleShot(0, lambda p=doc.path: self._emit("file_opened", p))
         self.player.reset_message()
         self.player.load(doc.path, doc.info, position_ms)
         if self.settings.filmstrip_count:
@@ -1308,6 +1470,7 @@ class MainWindow(QMainWindow):
     def _library_saved(self, *paths: Path):
         for path in paths:
             library.reindex(self.db, path)
+            self._emit("file_saved", path)
         if self.library_window is not None:
             self.library_window.refresh()
 
@@ -1782,11 +1945,12 @@ class MainWindow(QMainWindow):
         if getattr(self, "_quiet_scan", None) is not None:
             return
         db_path, folders = self.db.path, list(self.settings.library_folders)
+        skip = library.scan_skips(self.settings)
 
         def work(job):
             db = TagDB(db_path)
             try:
-                result = library.scan(db, folders, cancel=job.cancel)
+                result = library.scan(db, folders, cancel=job.cancel, skip=skip)
                 inbox = sum(1 for r in db.library() if r.in_inbox)
                 return result, inbox
             finally:

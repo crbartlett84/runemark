@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .media.mp4meta import parse_year
+from .media.mp4meta import clean_links, parse_date, parse_year
 from .media.probe import VIDEO_EXTENSIONS
 
 log = logging.getLogger(__name__)
@@ -29,10 +29,19 @@ class NfoDetails:
     studio: str = ""
     description: str = ""
     people: list[str] = field(default_factory=list)
+    date: str | None = None                          # full release date, when the .nfo has one
+    links: list[str] = field(default_factory=list)   # web addresses: <uniqueid> entries that are links, <website>
+    ids: dict = field(default_factory=dict)          # <uniqueid type="...">: {"stash": "...", "tmdb": "..."}
 
     @property
     def empty(self) -> bool:
-        return not (self.title or self.year or self.studio or self.description or self.people)
+        return not (self.title or self.year or self.studio or self.description or self.people or self.links)
+
+
+# <uniqueid type="..."> values that name an entry in a known online database, and that entry's web address
+ID_LINKS = {"stash": "https://stashdb.org/scenes/{}", "stashdb": "https://stashdb.org/scenes/{}",
+            "imdb": "https://www.imdb.com/title/{}/",
+            "tmdb": "https://www.themoviedb.org/movie/{}"}
 
 
 def find_nfo(video: str | Path) -> Path | None:
@@ -81,6 +90,26 @@ def parse_nfo(path: str | Path) -> NfoDetails | None:
         details.year = parse_year(_text(root.find(key)))
         if details.year:
             break
+    for key in ("premiered", "releasedate", "aired"):
+        details.date = parse_date(_text(root.find(key)))
+        if details.date:
+            if details.year is None or int(details.date[:4]) != details.year:
+                details.year = int(details.date[:4])
+            break
+    links = []
+    for uid in root.findall("uniqueid"):
+        kind, value = (uid.get("type") or "").strip().casefold(), _text(uid)
+        if not value:
+            continue
+        if value.lower().startswith(("http://", "https://")):
+            links.append(value)
+        else:
+            details.ids.setdefault(kind, value)
+            if kind in ID_LINKS:
+                links.append(ID_LINKS[kind].format(value))
+    for key in ("website", "url"):
+        links.append(_text(root.find(key)))
+    details.links = clean_links(links)
     details.studio = _text(root.find("studio"))
     # keep paragraph breaks in the description
     plot = root.findtext("plot") or root.findtext("outline") or ""
@@ -116,6 +145,8 @@ def plan_nfo(paths: list[str]):
             plan.studio = details.studio or None
             plan.description = details.description or None
             plan.people = list(details.people)
+            plan.links = list(details.links) or None
+            plan.date = details.date
             plan.source = details.path.name
         plans.append(plan)
     return plans

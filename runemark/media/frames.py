@@ -179,6 +179,12 @@ def to_jpeg(image: Image.Image, *, max_edge: int | None = 1280, quality: int = 9
     return out.getvalue()
 
 
+def image_bytes_to_jpeg(data: bytes, *, max_edge: int | None = 1280, quality: int = 90) -> bytes:
+    """Like image_file_to_jpeg, for a picture already in memory (a plugin's download)."""
+    with image_from_bytes(data) as image:
+        return to_jpeg(image, max_edge=max_edge, quality=quality)
+
+
 def image_file_to_jpeg(path: str | os.PathLike, *, max_edge: int | None = 1280, quality: int = 90) -> bytes:
     with Image.open(path) as image:
         image.load()

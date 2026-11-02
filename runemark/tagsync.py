@@ -19,8 +19,8 @@ from typing import Callable
 
 from . import explorer
 from .media import xtra
-from .media.mp4meta import (MIN_PADDING, UNCHANGED, VideoMeta, estimate_growth, edit_moves_media, parse_year,
-                            read_mp4_tags, split_values, stars_to_value, value_to_stars, write_mp4_tags)
+from .media.mp4meta import (MIN_PADDING, UNCHANGED, VideoMeta, clean_links, estimate_growth, edit_moves_media,
+                            parse_year, read_mp4_tags, split_values, stars_to_value, value_to_stars, write_mp4_tags)
 from .media.probe import MediaInfo, MKV_EXTENSIONS, MP4_EXTENSIONS
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def read_state(path: str | os.PathLike, info: MediaInfo | None = None,
             rating = value_to_stars(explorer.read_rating(path))
         except Exception as exc:  # noqa: BLE001
             log.info("couldn't read the rating of %s: %s", path, exc)
-        meta = VideoMeta(tags.title, tags.year, tags.description, rating, tags.studio or None)
+        meta = VideoMeta(tags.title, tags.year, tags.description, rating, tags.studio or None, tags.links, tags.date)
         return FileState(path, kind, tags.keywords, tags.genre, explorer_tags, tags.cover, error, meta, tags.data)
     # MKV (or anything else ffprobe can read): Matroska tags, cover from an image attachment
     keywords: list[str] = []
@@ -273,6 +273,10 @@ def verify_meta(target: Path, meta) -> list[str]:
         problems.append("The description didn't read back correctly.")
     if meta.studio is not None and tags.studio != " ".join(meta.studio.split()):
         problems.append(f"Studio read back as: {tags.studio or '(none)'}")
+    if meta.links is not None and tags.links != clean_links(meta.links):
+        problems.append("The links didn't read back correctly.")
+    if meta.full_date() and tags.date != meta.full_date():
+        problems.append(f"Date read back as: {tags.date or '(none)'}")
     try:
         stars = value_to_stars(explorer.read_rating(target))
     except Exception as exc:  # noqa: BLE001

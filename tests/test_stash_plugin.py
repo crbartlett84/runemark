@@ -98,6 +98,10 @@ class FakeStash:
             new = str(100 + len(self.tags))
             self.tags[new] = v["n"]
             return {"tagCreate": {"id": new}}
+        if "findPerformers" in query and "stash_id_endpoint" in query:
+            hits = [p for p in self.performers.values()
+                    if {"endpoint": v["e"], "stash_id": v["i"]} in (p.get("stash_ids") or [])]
+            return {"findPerformers": {"performers": hits}}
         if "findPerformers" in query:
             field = "aliases" if "aliases:" in query else "name"
             hits = [p for p in self.performers.values()
@@ -230,3 +234,37 @@ def test_studio_is_imported_matching_names_and_aliases(tmp_path, media):
     assert other.scene["studio"] == {"id": "9"}                      # Stash's own studio kept
     I.import_scene(other, other.scene, {**I.DEFAULTS, "overwrite": True})
     assert other.scene["studio"] == {"id": "50"}                     # matched by alias, not created
+
+
+def test_links_become_urls_and_stash_ids_and_unlinked_people_stay_tags(tmp_path, media):
+    """0.7.0: a video's links become the scene's URLs (database pages also become stash ids), a full date is used,
+    a person's StashDB link finds their performer; with "Add performers" off, someone Stash doesn't have stays a tag."""
+    path = tmp_path / "scene.mp4"
+    shutil.copy2(media["mp4_cover"], path)
+    db = TagDB(tmp_path / "t.db")
+    star = db.add_person("Star One")
+    db.set_person_links(star.id, ["https://stashdb.org/performers/779ce296-dcfc-4e83-a5fe-a309f592be2a"])
+    costar = db.add_person("Co Star")
+    scene_id = "bffb88f3-726d-4ef8-ab81-703281c19c3f"
+    links = ["https://example.com/videos/123", f"https://stashdb.org/scenes/{scene_id}"]
+    save_mp4(path, keywords=["Beach"], genre=[], meta=VideoMeta("T", 2022, "", 0, None, links, "2022-12-16"))
+    P.save_people(db, path, [(db.person(star.id), []), (db.person(costar.id), [])], label="t")
+    db.close()
+    info = R.read(str(path))
+    assert info["links"] == links and info["date"].startswith("2022-12-16")
+
+    stash = FakeStash(path)
+    stash._tags = {}
+    stash.tag_id = I.Stash.tag_id.__get__(stash)
+    stash.performers["7"] = {"id": "7", "name": "Stage Name", "alias_list": [],
+                             "stash_ids": [{"endpoint": "https://stashdb.org/graphql",
+                                            "stash_id": "779ce296-dcfc-4e83-a5fe-a309f592be2a"}]}
+    settings = dict(I.DEFAULTS, createPerformers=False)
+    I.import_scene(stash, stash.scene, settings)
+    s = stash.scene
+    assert s["date"] == "2022-12-16" and s["urls"] == links
+    assert s["stash_ids"] == [{"endpoint": "https://stashdb.org/graphql", "stash_id": scene_id}]
+    assert [p["id"] for p in s["performers"]] == ["7"]               # found by their StashDB id, not by name
+    assert sorted(t["name"] for t in s["tags"]) == ["Beach", "Co Star"]   # not a performer here: still a tag
+    assert len(stash.performers) == 1
+    assert I.import_scene(stash, stash.scene, settings) == ""        # again: nothing new

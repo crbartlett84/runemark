@@ -4,6 +4,15 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-02
+
+### Added
+- **Libraries.** The Library can hold several named libraries, each with its own folders and subfolders it leaves out (**Folders → New library…**, **Leave out a subfolder…**). Pick which one to show at the top of the Library; one video can be in more than one. Your existing folders become a library called "Library".
+- **Links.** A **Links** box in Details for web addresses about a video (where it came from, its page in an online database), written into the file (`URL`, one value each) and filled in from a `.nfo`'s `<uniqueid>` entries. People get **Links** too, carried in their videos' data block.
+- **Full release dates.** The Year box also takes a date (2019-07-14), written to `©day`; a `.nfo`'s premiered date is used too.
+- **Plugins** (⋯ → Manage plugins…). Add features without changing Runemark: a pane beside Details, actions in the ⋯ menu and the Library, things that happen when a video opens or is saved. See [docs/plugins.md](docs/plugins.md).
+- **Stash plugin 0.2.0:** links become the scene's URLs, and StashDB pages link the scene and performers to those entries; performers are found by those links first; full dates are imported; with *Add performers* off, people Stash doesn't have stay as tags so they can still be found.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added

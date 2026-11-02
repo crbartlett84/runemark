@@ -18,6 +18,8 @@ from the files alone.
 | Year | `©day` (a full date is kept if only the year is unchanged) | most players and media servers |
 | Description | `desc`, and `©cmt` (Explorer's Comments) when that was empty or matched | Plex, Jellyfin, Explorer |
 | Studio | `----:com.apple.iTunes:STUDIO` (UTF-8 text) | ffprobe (as `STUDIO`), Mp3tag, ExifTool, Runemark |
+| Links | `----:com.apple.iTunes:URL`, one UTF-8 value per web address (0.7.0) | ExifTool, ffprobe, Runemark |
+| Release date | `©day` as `YYYY-MM-DD` when a full date is known, else the year | most players and media servers |
 | Rating | Explorer's rating (`System.Rating`, 1–99; 1, 25, 50, 75, 99 = 1–5 stars) in the `Xtra` box | Explorer, Windows |
 | Thumbnail | `covr` (JPEG or PNG) | Explorer, players, media servers |
 | Chapters | the MP4's chapters, as FFmpeg writes them | players, media servers |
@@ -86,6 +88,7 @@ there is no extra whitespace, but readers must not rely on either. A file withou
 | `values` | array | The person's attribute values (all of them, including ones skipped for this video or outside its years). |
 | `skip` | array of strings | Ids of values that don't apply to this video ("not in this video"). |
 | `photo` | string | Optional (0.6.0+). The person's photo: a small square JPEG, base64. |
+| `links` | array of strings | Optional (0.7.0+). Web addresses about them (their site, an online database entry such as `https://stashdb.org/performers/<id>`). |
 
 **Value**
 
@@ -124,3 +127,5 @@ share stays while either of them is there.
 - Version 1 (Runemark 0.4.0): first version.
 - Runemark 0.5.0 adds the studio (`STUDIO`). The data block is unchanged.
 - Runemark 0.6.0 adds an optional `photo` to each person. Still version 1: readers that don't know it ignore it.
+- Runemark 0.7.0 adds links (`URL`), full release dates in `©day`, and an optional `links` list to each person.
+  Still version 1.

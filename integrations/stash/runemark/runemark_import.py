@@ -92,19 +92,30 @@ class Stash:
         return tag_id
 
 
-SCENE_FIELDS = ("id title details date rating100 files { path } tags { id name } performers { id name } studio { id } "
+SCENE_FIELDS = ("id title details date rating100 urls stash_ids { endpoint stash_id } files { path } tags { id name } "
+                "performers { id name } studio { id } "
                 "scene_markers { id seconds title primary_tag { name } } paths { screenshot }")
 
 
 # ------------------------------------------------------------------ people → performers
+PERFORMER_FIELDS = ("id name alias_list custom_fields hair_color ethnicity eye_color country height_cm weight measurements "
+                    "tattoos piercings career_length details birthdate disambiguation gender death_date image_path "
+                    "urls stash_ids { endpoint stash_id }")
+
+
 def find_performer(stash: Stash, person: dict) -> dict | None:
-    """By name, then by any alias (Runemark's aliases may be Stash's name, or listed as Stash aliases)."""
+    """By a database id in their links (StashDB and others), then by name, then by any alias (Runemark's aliases may
+    be Stash's name, or listed as Stash aliases)."""
+    for sid in R.stash_ids(person.get("links") or [], "performers"):
+        found = stash.q("query($e: String!, $i: String!) { findPerformers(performer_filter: {stash_id_endpoint: "
+                        "{endpoint: $e, stash_id: $i, modifier: EQUALS}}) { performers { %s } } }" % PERFORMER_FIELDS,
+                        {"e": sid["endpoint"], "i": sid["stash_id"]})["findPerformers"]["performers"]
+        if found:
+            return found[0]
     for name in [person["name"], *person.get("aliases", [])]:
         for field in ("name", "aliases"):
             found = stash.q("query($n: String!) { findPerformers(performer_filter: {%s: {value: $n, modifier: EQUALS}}) "
-                            "{ performers { id name alias_list custom_fields hair_color ethnicity eye_color country "
-                            "height_cm weight measurements tattoos piercings career_length details birthdate "
-                            "disambiguation gender death_date image_path } } }" % field, {"n": name})["findPerformers"]["performers"]
+                            "{ performers { %s } } }" % (field, PERFORMER_FIELDS), {"n": name})["findPerformers"]["performers"]
             if found:
                 return found[0]
     return None
@@ -153,11 +164,22 @@ def performer_fields(person: dict, existing: dict | None, overwrite: bool) -> di
                 out[field] = value
     if custom_changed:
         out["custom_fields"] = custom
+    # their links: web pages, and database entries (StashDB and others) as stash ids. Added, never removed.
+    links = [x for x in person.get("links") or [] if x not in (have.get("urls") or [])]
+    if links:
+        out["urls"] = list(have.get("urls") or []) + links
+    ids = [x for x in R.stash_ids(person.get("links") or [], "performers") if x not in _ids(have)]
+    if ids:
+        out["stash_ids"] = _ids(have) + ids
     # the photo Runemark carries, when Stash shows its placeholder (a performer without an image of their own)
     photo = person.get("photo")
     if photo and (existing is None or "default=true" in (have.get("image_path") or "") or not have.get("image_path")):
         out["image"] = "data:image/jpeg;base64," + photo
     return out
+
+
+def _ids(record: dict) -> list[dict]:
+    return [{"endpoint": x["endpoint"], "stash_id": x["stash_id"]} for x in record.get("stash_ids") or []]
 
 
 def performer_id(stash: Stash, person: dict, settings: dict) -> str | None:
@@ -188,7 +210,7 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
     hand, profile = R.hand_and_profile_tags(info)
     people = R.people(info)
     if not (info["keywords"] or info["title"] or info["data"] or info["rating"] or info["description"]
-            or info.get("studio")):
+            or info.get("studio") or info.get("links")):
         return ""
     overwrite = settings["overwrite"]
     update: dict = {"id": scene["id"]}
@@ -205,24 +227,32 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
             update["studio_id"] = sid
     if info["rating"] and (overwrite or not scene.get("rating100")):
         update["rating100"] = info["rating"] * 20
-    # people's names are performers, not tags; everything else (hand tags, attribute tags, genre) is a tag
-    names = {p["name"].casefold() for p in people}
-    for p in people:
-        if p.get("aliases_as_tags"):
-            names |= {a.casefold() for a in p.get("aliases", [])}
+    # links: web addresses become the scene's URLs; database pages (StashDB…) also link it there. Added, never removed.
+    new_urls = [x for x in info.get("links") or [] if x not in (scene.get("urls") or [])]
+    if new_urls:
+        update["urls"] = list(scene.get("urls") or []) + new_urls
+    new_ids = [x for x in R.stash_ids(info.get("links") or [], "scenes") if x not in _ids(scene)]
+    if new_ids:
+        update["stash_ids"] = _ids(scene) + new_ids
+    # people who are (or become) performers aren't tags; people Stash doesn't have as performers (with "Add
+    # performers" off) keep their name as a tag, so they're still findable. Everything else is a tag.
+    current_people = {p["id"] for p in scene.get("performers") or []}
+    performer_ids = set(current_people)
+    names: set[str] = set()
+    for person in people:
+        pid = performer_id(stash, person, settings)
+        if pid:
+            performer_ids.add(pid)
+            names.add(person["name"].casefold())
+            if person.get("aliases_as_tags"):
+                names |= {a.casefold() for a in person.get("aliases", [])}
+    if performer_ids != current_people:
+        update["performer_ids"] = sorted(performer_ids)
     wanted = [t for t in dict.fromkeys(hand + profile + info["genre"]) if t.casefold() not in names]
     current = {t["id"] for t in scene.get("tags") or []}
     tag_ids = list(current | {stash.tag_id(t) for t in wanted})
     if set(tag_ids) != current:
         update["tag_ids"] = tag_ids
-    current_people = {p["id"] for p in scene.get("performers") or []}
-    performer_ids = set(current_people)
-    for person in people:
-        pid = performer_id(stash, person, settings)
-        if pid:
-            performer_ids.add(pid)
-    if performer_ids != current_people:
-        update["performer_ids"] = sorted(performer_ids)
     if settings["importCover"] and info["cover"] and (overwrite or not _has_custom_cover(scene)):
         data, mime = info["cover"]
         update["cover_image"] = f"data:{mime};base64," + base64.b64encode(data).decode()

@@ -1,12 +1,12 @@
-"""Right-hand panels: file details (with title, year, studio, description and rating) and thumbnail."""
+"""Right-hand panels: file details (title, year or date, studio, description, rating, links) and thumbnail."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, QStringListModel, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QIntValidator, QPixmap
+from PySide6.QtCore import QRegularExpression, QSize, QStringListModel, Qt, Signal
+from PySide6.QtGui import QGuiApplication, QPixmap, QRegularExpressionValidator
 from PySide6.QtWidgets import (QCompleter, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
                                QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from ..media.mp4meta import VideoMeta
+from ..media.mp4meta import VideoMeta, clean_links, parse_date
 from ..media.probe import Section, sections_as_text
 from . import theme
 from .player import _strip_label
@@ -61,7 +61,7 @@ class StarRating(QWidget):
 
 
 class MetaEditor(Card):
-    """Title, year, description and star rating."""
+    """Title, year (or full date), studio, rating, description and links."""
     changed = Signal()
 
     def __init__(self, parent=None):
@@ -72,9 +72,11 @@ class MetaEditor(Card):
         self.title = QLineEdit()
         self.title.setPlaceholderText("Shown as Title in Explorer, Plex and Jellyfin")
         self.year = QLineEdit()
-        self.year.setValidator(QIntValidator(1800, 2199, self.year))
-        self.year.setMaximumWidth(80)
-        self.year.setPlaceholderText("Year")
+        self.year.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,4}(-\d{0,2}(-\d{0,2})?)?"),
+                                                           self.year))
+        self.year.setMaximumWidth(110)
+        self.year.setPlaceholderText("Year or date")
+        self.year.setToolTip("A year (2019) or a full release date (2019-07-14)")
         self.studio = QLineEdit()
         self.studio.setPlaceholderText("Studio or channel")
         self.studio_names = QStringListModel(self)
@@ -86,11 +88,15 @@ class MetaEditor(Card):
         self.description = QPlainTextEdit()
         self.description.setPlaceholderText("A short description (Explorer shows it as Comments)")
         self.description.setFixedHeight(84)
+        self.links = QPlainTextEdit()
+        self.links.setPlaceholderText("Web addresses, one per line: where it came from, its page in an online database")
+        self.links.setFixedHeight(52)
         form.addRow("Title", self.title)
         form.addRow("Year", self.year)
         form.addRow("Studio", self.studio)
         form.addRow("Rating", self.rating)
         form.addRow("Description", self.description)
+        form.addRow("Links", self.links)
         self.body.addLayout(form)
         self.note = QLabel("")
         self.note.setObjectName("Faint")
@@ -100,19 +106,23 @@ class MetaEditor(Card):
         for widget in (self.title, self.year, self.studio):
             widget.textChanged.connect(self._edited)
         self.description.textChanged.connect(self._edited)
+        self.links.textChanged.connect(self._edited)
         self.rating.changed.connect(self._edited)
+        self._shown = VideoMeta()
         self.set_meta(None)
 
     def set_meta(self, meta: VideoMeta | None, container: str | None = None):
         self._filling = True
         meta = meta or VideoMeta()
+        self._shown = meta
         self.title.setText(meta.title)
-        self.year.setText(str(meta.year) if meta.year else "")
+        self.year.setText(meta.full_date() or (str(meta.year) if meta.year else ""))
         self.studio.setText(meta.studio or "")
         self.description.setPlainText(meta.description)
+        self.links.setPlainText("\n".join(meta.links or []))
         self.rating.set_value(meta.rating)
         enabled = meta is not None and container is not None
-        for widget in (self.title, self.year, self.studio, self.description, self.rating):
+        for widget in (self.title, self.year, self.studio, self.description, self.rating, self.links):
             widget.setEnabled(enabled)
         self.note.setText("Saved into the MP4 when this MKV is converted." if container == "mkv" else "")
         self.note.setVisible(container == "mkv")
@@ -120,9 +130,15 @@ class MetaEditor(Card):
 
     def value(self) -> VideoMeta:
         text = self.year.text().strip()
-        year = int(text) if text.isdigit() and len(text) == 4 else None
+        date = parse_date(text)
+        year = int(text[:4]) if text[:4].isdigit() and len(text) >= 4 else None
+        if not date and year and self._shown.full_date() and int(self._shown.full_date()[:4]) == year:
+            date = self._shown.full_date()          # only the year shown? keep the file's full date
+        links = clean_links(self.links.toPlainText().splitlines())
+        if not links and self._shown.links is None:
+            links = None                               # none before, none now: leave the file alone
         return VideoMeta(" ".join(self.title.text().split()), year, self.description.toPlainText().strip(),
-                         self.rating.value(), " ".join(self.studio.text().split()))
+                         self.rating.value(), " ".join(self.studio.text().split()), links, date)
 
     def set_studios(self, names: list[str]):
         self.studio_names.setStringList(names)

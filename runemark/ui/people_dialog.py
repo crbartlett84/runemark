@@ -100,9 +100,13 @@ class PeopleDialog(QDialog):
         self.write_aliases.setToolTip("Off: only the main name is written as a tag (aliases still find them in "
                                       "Runemark and are kept in the file's record). On: every alias is a tag too.")
         self.write_aliases.toggled.connect(self._save_write_aliases)
+        self.links = QLineEdit()
+        self.links.setPlaceholderText("Web addresses about them, separated by spaces (a site, a database entry)")
+        self.links.editingFinished.connect(self._save_links)
         form.addRow("Name", self.name)
         form.addRow("Aliases", self.aliases)
         form.addRow("", self.write_aliases)
+        form.addRow("Links", self.links)
         right_layout.addLayout(form)
         self.usage = QLabel("")
         self.usage.setObjectName("Faint")
@@ -210,12 +214,13 @@ class PeopleDialog(QDialog):
         person = self._person()
         self._filling = True
         for widget in (self.name, self.aliases, self.write_aliases, self.values, self.attr_combo, self.value_edit,
-                       self.tag_edit, self.from_edit, self.to_edit, self.delete_button):
+                       self.tag_edit, self.from_edit, self.to_edit, self.delete_button, self.links):
             widget.setEnabled(person is not None)
         self.name.setText(person.name if person else "")
         self._show_photo(person)
         self.aliases.setText(", ".join(person.aliases) if person else "")
         self.write_aliases.setChecked(bool(person and person.write_aliases))
+        self.links.setText(" ".join(person.links) if person else "")
         self.values.setRowCount(0)
         if person:
             for v in person.values:
@@ -311,6 +316,17 @@ class PeopleDialog(QDialog):
         else:
             self._changed()
         self._fill_list()
+        self._fill_person()
+
+    def _save_links(self):
+        person = self._person()
+        if person is None or self._filling:
+            return
+        links = self.links.text().split()
+        if links == person.links:
+            return
+        self.db.set_person_links(person.id, links)
+        self._changed()
         self._fill_person()
 
     def _save_write_aliases(self, on: bool):

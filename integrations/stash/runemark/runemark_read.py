@@ -77,6 +77,11 @@ def _data_value(buf: bytes, start: int, end: int):
     return kind, buf[s + 8:e]
 
 
+def _data_values(buf: bytes, start: int, end: int) -> list[bytes]:
+    """Every 'data' child of an ilst item (an item can hold several values, like Runemark's links)."""
+    return [buf[s + 8:e] for k, s, e in _boxes(buf, start, end) if k == b"data" and e - s >= 8]
+
+
 def _xtra_rating(payload: bytes) -> int:
     """Explorer's star rating (1-99) from a Microsoft Xtra box; 0 if none."""
     pos = 0
@@ -112,7 +117,7 @@ def read(path: str) -> dict | None:
     if moov is None:
         return None
     out = {"title": "", "date": "", "description": "", "comment": "", "keywords": [], "genre": [], "cover": None,
-           "rating": 0, "data": None, "studio": ""}
+           "rating": 0, "data": None, "studio": "", "links": []}
     udta = _child(moov, 8, len(moov), b"udta")
     if not udta:
         return out
@@ -138,6 +143,11 @@ def read(path: str) -> dict | None:
                             pass
                     elif key.casefold() == "com.apple.itunes:studio":
                         out["studio"] = " ".join(text.split())
+                    elif key.casefold() == "com.apple.itunes:url":
+                        for raw in _data_values(moov, s, e):
+                            link = raw.decode("utf-8", "replace").strip()
+                            if link.lower().startswith(("http://", "https://")) and link not in out["links"]:
+                                out["links"].append(link)
                     elif key.rsplit(":", 1)[-1].casefold() == "keywords":
                         out["keywords"] += [t.strip() for t in text.split(";") if t.strip()]
                     continue
@@ -211,3 +221,20 @@ def people(info: dict) -> list[dict]:
     if data.get("format") != "runemark-data":
         return []
     return [p for p in data.get("people", []) if isinstance(p, dict) and p.get("name")]
+
+
+# Pages in online databases that Stash links scenes and performers to (stash_ids), from a web address
+STASH_BOXES = {"stashdb.org": "https://stashdb.org/graphql"}
+
+
+def stash_ids(links: list[str], kind: str) -> list[dict]:
+    """[{endpoint, stash_id}] for links like https://stashdb.org/scenes/<id> (kind: "scenes" or "performers")."""
+    import re
+    out = []
+    for link in links or []:
+        m = re.match(r"https?://(?:www\.)?([^/]+)/%s/([0-9a-fA-F-]{36})\b" % kind, link)
+        if m and m.group(1).lower() in STASH_BOXES:
+            item = {"endpoint": STASH_BOXES[m.group(1).lower()], "stash_id": m.group(2).lower()}
+            if item not in out:
+                out.append(item)
+    return out

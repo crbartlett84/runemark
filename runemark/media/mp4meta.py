@@ -19,6 +19,7 @@ COVER_KEY = "covr"
 TITLE_KEY = "\xa9nam"
 YEAR_KEY = "\xa9day"
 STUDIO_KEY = "----:com.apple.iTunes:STUDIO"   # ffprobe shows it as STUDIO
+LINKS_KEY = "----:com.apple.iTunes:URL"       # web addresses about the video, one value each (0.7.0)
 DATA_KEY = "----:com.runemark:data"     # Runemark's own record (people, where tags came from): JSON, docs/data-format.md
 DESCRIPTION_KEYS = ("desc", "\xa9cmt")   # Plex/Jellyfin read desc; Explorer shows ©cmt as Comments
 SEPARATOR = "; "
@@ -38,16 +39,51 @@ UNCHANGED = _Unchanged()
 
 @dataclass
 class VideoMeta:
-    """Title, year, description, star rating (0 = not rated, 1-5 stars) and studio.
-    studio=None means "not known here": writing leaves the file's studio alone. "" removes it."""
+    """Title, year, description, star rating (0 = not rated, 1-5 stars), studio, links and release date.
+    studio=None means "not known here": writing leaves the file's studio alone. "" removes it.
+    links (web addresses about the video: where it came from, its page in an online database) work the same way:
+    None leaves the file's links alone, [] removes them.
+    date: a full release date (YYYY-MM-DD) or None. Written to ©day when its year matches `year`; otherwise
+    the year alone is written, as before."""
     title: str = ""
     year: int | None = None
     description: str = ""
     rating: int = 0
     studio: str | None = None
+    links: list[str] | None = None
+    date: str | None = None
 
     def key(self) -> tuple:
-        return (self.title.strip(), self.year, self.description.strip(), self.rating, (self.studio or "").strip())
+        base = (self.title.strip(), self.year, self.description.strip(), self.rating, (self.studio or "").strip())
+        extra = (tuple(clean_links(self.links or [])), self.full_date() or "")
+        return base + extra if any(extra) else base
+
+    def full_date(self) -> str | None:
+        """The release date, if it's a real date in the same year as `year`."""
+        d = parse_date(self.date)
+        return d if d and (self.year is None or int(d[:4]) == self.year) else None
+
+
+def parse_date(text) -> str | None:
+    """YYYY-MM-DD from a date or timestamp ("2019-07-14", "2019-07-14T10:00:00Z"), else None."""
+    import re
+    match = re.match(r"\s*((?:1[89]|2[0-9])\d\d)-(\d\d)-(\d\d)", str(text or ""))
+    if not match:
+        return None
+    y, m, d = (int(x) for x in match.groups())
+    return f"{y:04d}-{m:02d}-{d:02d}" if 1 <= m <= 12 and 1 <= d <= 31 else None
+
+
+def clean_links(links: Iterable[str]) -> list[str]:
+    """Web addresses, trimmed, http(s) only, without duplicates (first spelling kept)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for link in links:
+        link = str(link or "").strip()
+        if link.lower().startswith(("http://", "https://")) and " " not in link and link.casefold() not in seen:
+            seen.add(link.casefold())
+            out.append(link)
+    return out
 
 
 # Explorer stores ratings as 1-99; these are the values it writes for 1 to 5 stars
@@ -83,6 +119,8 @@ class Mp4Tags:
     description: str = ""
     data: dict | None = None     # Runemark's data block, if the file has one
     studio: str = ""
+    links: list[str] | None = None   # None when the file has none
+    date: str | None = None          # the full date in ©day, if it holds one
 
 
 def split_values(values: Iterable[str]) -> list[str]:
@@ -131,8 +169,10 @@ def read_mp4_tags(path: str | os.PathLike, mp4: MP4 | None = None) -> Mp4Tags:
     studio = ""
     if tags.get(STUDIO_KEY):
         studio = bytes(tags[STUDIO_KEY][0]).decode("utf-8", "replace").strip()
+    links = clean_links(bytes(v).decode("utf-8", "replace") for v in tags.get(LINKS_KEY, []))
+    date = parse_date(tags.get(YEAR_KEY, [""])[0]) if tags.get(YEAR_KEY) else None
     return Mp4Tags(split_values(keywords), split_values(genre), cover, title, year, description, _read_data(tags),
-                   studio)
+                   studio, links or None, date)
 
 
 def _read_data(tags) -> dict | None:
@@ -194,7 +234,10 @@ def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[
             del tags[COVER_KEY]
     if isinstance(meta, VideoMeta):
         _set_text(tags, TITLE_KEY, meta.title)
-        _write_year(tags, meta.year)
+        if meta.full_date():
+            _set_text(tags, YEAR_KEY, meta.full_date())
+        else:
+            _write_year(tags, meta.year)
         _write_description(tags, meta.description)
         if meta.studio is not None:
             studio = " ".join(meta.studio.split())
@@ -202,6 +245,12 @@ def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[
                 tags[STUDIO_KEY] = [MP4FreeForm(studio.encode("utf-8"), dataformat=AtomDataType.UTF8)]
             elif STUDIO_KEY in tags:
                 del tags[STUDIO_KEY]
+        if meta.links is not None:
+            links = clean_links(meta.links)
+            if links:
+                tags[LINKS_KEY] = [MP4FreeForm(x.encode("utf-8"), dataformat=AtomDataType.UTF8) for x in links]
+            elif LINKS_KEY in tags:
+                del tags[LINKS_KEY]
     if not isinstance(data, _Unchanged):
         if data:
             tags[DATA_KEY] = [MP4FreeForm(encode_data(data), dataformat=AtomDataType.UTF8)]
@@ -250,7 +299,8 @@ def estimate_growth(path: str | os.PathLike, *, keywords: list[str], genre: list
     """Rough number of extra bytes a write needs beyond the current tag list."""
     current = read_mp4_tags(path)
     if isinstance(meta, VideoMeta):
-        growth_meta = len((meta.title + meta.description * 2 + (meta.studio or "")).encode("utf-8")) + 160 \
+        growth_meta = len((meta.title + meta.description * 2 + (meta.studio or "")
+                           + "".join(meta.links or [])).encode("utf-8")) + 160 + 32 * len(meta.links or []) \
             - len((current.title + current.description * 2).encode("utf-8"))
     else:
         growth_meta = 0

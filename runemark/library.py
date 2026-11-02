@@ -87,14 +87,53 @@ def matches(record: FileRecord, search: Search) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ libraries (0.7.0)
+# A library is a name, its folders, and subfolders left out of it ("skip"). One video can belong to several
+# libraries (a folder of favourites inside a bigger collection). Scans walk every library's folders once.
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _inside(path: str, folder: str) -> bool:
+    p, f = _norm(path), _norm(folder)
+    return p == f or p.startswith(f.rstrip(os.sep) + os.sep)
+
+
+def in_library(path: str, library: dict) -> bool:
+    """Is this file in that library: under one of its folders and not under a subfolder it leaves out?"""
+    return any(_inside(path, f) for f in library.get("folders", [])) \
+        and not any(_inside(path, s) for s in library.get("skip", []))
+
+
+def library_named(settings, name: str) -> dict | None:
+    return next((lib for lib in settings.libraries if lib.get("name", "").casefold() == (name or "").casefold()), None)
+
+
+def libraries_of(settings, path: str) -> list[str]:
+    """Names of the libraries a file belongs to."""
+    return [lib["name"] for lib in settings.libraries if in_library(path, lib)]
+
+
+def scan_skips(settings) -> list[str]:
+    """Subfolders a scan doesn't go into: those left out of a library, unless another library includes them."""
+    out = []
+    for lib in settings.libraries:
+        for skip in lib.get("skip", []):
+            if not any(in_library(os.path.join(skip, "x"), other) for other in settings.libraries if other is not lib):
+                out.append(skip)
+    return out
+
+
 # ------------------------------------------------------------------ scanning
-def find_videos(folders: list[str], cancel: threading.Event | None = None) -> list[Path]:
+def find_videos(folders: list[str], cancel: threading.Event | None = None, skip: list[str] = ()) -> list[Path]:
     found: list[Path] = []
+    skipped = {_norm(x) for x in skip}
     for folder in folders:
         for root, dirs, files in os.walk(folder):
             if cancel is not None and cancel.is_set():
                 return found
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() != "$recycle.bin"]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() != "$recycle.bin"
+                       and _norm(os.path.join(root, d)) not in skipped]
             for name in files:
                 if Path(name).suffix.lower() in VIDEO_EXTENSIONS and ".runemark-" not in name:
                     found.append(Path(root) / name)
@@ -180,11 +219,11 @@ def split_tag_input(text: str, known: list[str] | None = None) -> list[str]:
 
 
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
-         cancel: threading.Event | None = None, rescan_all: bool = False) -> ScanResult:
+         cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = ()) -> ScanResult:
     result = ScanResult()
     if progress:
         progress(-1, "Looking for videos…")
-    paths = {file_key(p): p for p in find_videos(folders, cancel)}
+    paths = {file_key(p): p for p in find_videos(folders, cancel, skip)}
     if cancel is not None and cancel.is_set():
         result.stopped = True
         return result

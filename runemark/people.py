@@ -54,6 +54,8 @@ def person_entry(db: TagDB, person: Person, skip: list[str] | tuple = ()) -> dic
     photo = db.person_photo(person.id)
     if photo:
         entry["photo"] = base64.b64encode(photo).decode("ascii")     # a small JPEG, so the photo travels too
+    if person.links:
+        entry["links"] = list(person.links)                          # 0.7.0: their pages (a site, a database entry)
     return entry
 
 
@@ -180,6 +182,8 @@ def _import_person(db: TagDB, entry: dict) -> Person | None:
                                 uid=value.get("id") if not _value_uid_taken(db, value.get("id")) else None)
         except (TagDBError, KeyError, ValueError) as exc:
             log.info("skipped a value for %s from a file: %s", person.name, exc)
+    if entry.get("links"):
+        db.set_person_links(person.id, [str(x) for x in entry["links"]])
     return db.person(person.id)
 
 

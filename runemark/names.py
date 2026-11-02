@@ -68,6 +68,8 @@ class ReadPlan:
     studio: str | None = None
     description: str | None = None      # from a .nfo (names never hold one)
     source: str = ""                    # where it was read from, for the preview (a .nfo's name)
+    links: list[str] | None = None      # from a .nfo: web addresses, database entries
+    date: str | None = None             # from a .nfo: the full release date
 
 
 def plan_read(paths: list[str], pattern: str) -> list[ReadPlan]:
@@ -271,7 +273,7 @@ def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_peo
     One undoable batch. Returns problems."""
     from . import people as P
     from .library import new_batch_id
-    from .media.mp4meta import VideoMeta
+    from .media.mp4meta import VideoMeta, clean_links
     from .tagsync import read_state
     batch = new_batch_id()
     problems = []
@@ -298,6 +300,10 @@ def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_peo
                 meta.studio = plan.studio
             if plan.description and (overwrite or not meta.description):
                 meta.description = plan.description
+            if plan.links and (overwrite or not meta.links):
+                meta.links = clean_links(list(meta.links or []) + list(plan.links))
+            if plan.date and (overwrite or not meta.full_date()) and (meta.year in (None, int(plan.date[:4]))):
+                meta.date, meta.year = plan.date, int(plan.date[:4])
             people = P.current_people(db, state.data)
             have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _ in people}
             for name in plan.people:

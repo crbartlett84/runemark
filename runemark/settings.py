@@ -28,7 +28,9 @@ class Settings:
     splitter_state: str = ""
     backup_folder: str = ""               # "" = the backups folder inside the data folder
     backup_keep: int = 10
-    library_folders: list[str] = field(default_factory=list)
+    library_folders: list[str] = field(default_factory=list)  # every library's folders together (kept in sync)
+    libraries: list[dict] = field(default_factory=list)       # [{"name", "folders": [...], "skip": [...]}] (0.7.0)
+    library_shown: str = ""                                   # the library the Library window shows ("" = all)
     saved_searches: dict = field(default_factory=dict)   # name -> {"tags": [...], "text": "", "filter": ""}
     library_geometry: str = ""
     library_last_search: dict = field(default_factory=dict)   # the Library reopens with this search/filter
@@ -42,6 +44,8 @@ class Settings:
     last_update_check: str = ""           # ISO date of the last check
     skipped_version: str = ""             # "don't tell me about this one"
     library_view: str = "list"            # "list" or "grid"
+    plugins_disabled: list[str] = field(default_factory=list)   # plugin folder names turned off (0.7.0)
+    plugin_settings: dict = field(default_factory=dict)         # plugin folder name -> that plugin's own settings
 
     @classmethod
     def path(cls) -> Path:
@@ -57,9 +61,26 @@ class Settings:
             log.warning("settings unreadable, using defaults: %s", exc)
             return cls()
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        settings = cls(**{k: v for k, v in data.items() if k in known})
+        settings.sync_libraries()
+        return settings
+
+    def sync_libraries(self) -> None:
+        """Before 0.7.0 there was one list of folders: it becomes a library called "Library". Afterwards
+        library_folders is always every library's folders together (what a scan walks)."""
+        if not self.libraries and self.library_folders:
+            self.libraries = [{"name": "Library", "folders": list(self.library_folders), "skip": []}]
+        all_folders: list[str] = []
+        for lib in self.libraries:
+            lib.setdefault("folders", [])
+            lib.setdefault("skip", [])
+            for folder in lib["folders"]:
+                if folder.casefold() not in {f.casefold() for f in all_folders}:
+                    all_folders.append(folder)
+        self.library_folders = all_folders
 
     def save(self) -> None:
+        self.sync_libraries()
         try:
             tmp = self.path().with_suffix(".tmp")
             tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")

@@ -11,7 +11,7 @@ import os
 import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SCHEMA_VERSION = 5
@@ -225,6 +225,7 @@ class Person:
     aliases: list
     write_aliases: bool
     values: list
+    links: list = field(default_factory=list)   # web addresses about them (0.7.0): a site, a database entry
 
 
 def new_uid() -> str:
@@ -347,6 +348,9 @@ class TagDB:
             self.conn.execute("ALTER TABLE file_history ADD COLUMN data TEXT")
         if "studio" not in history_cols:
             self.conn.execute("ALTER TABLE file_history ADD COLUMN studio TEXT")
+        people_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(people)").fetchall()}
+        if "links" not in people_cols:
+            self.conn.execute("ALTER TABLE people ADD COLUMN links TEXT")          # 0.7.0: JSON list of addresses
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                           (str(SCHEMA_VERSION),))
         self.conn.commit()
@@ -1054,6 +1058,12 @@ class TagDB:
         self.conn.executemany("INSERT INTO person_aliases(person_id, alias) VALUES(?, ?)",
                               [(person_id, a) for a in clean])
 
+    def set_person_links(self, person_id: int, links: list[str]) -> None:
+        from .media.mp4meta import clean_links
+        clean = clean_links(links)
+        self.conn.execute("UPDATE people SET links = ? WHERE id = ?", (json.dumps(clean) if clean else None, person_id))
+        self.conn.commit()
+
     def update_person(self, person_id: int, *, name: str | None = None, aliases: list[str] | None = None,
                       write_aliases: bool | None = None) -> Person:
         current = self.person(person_id)
@@ -1085,7 +1095,11 @@ class TagDB:
             "SELECT person_values.*, attributes.name AS attr_name FROM person_values JOIN attributes "
             "ON attributes.id = person_values.attribute_id WHERE person_id = ? "
             "ORDER BY attributes.name COLLATE NOCASE, value COLLATE NOCASE", (row["id"],))]
-        return Person(row["id"], row["uid"], row["name"], aliases, bool(row["write_aliases"]), values)
+        try:
+            links = json.loads(row["links"]) if "links" in row.keys() and row["links"] else []
+        except ValueError:
+            links = []
+        return Person(row["id"], row["uid"], row["name"], aliases, bool(row["write_aliases"]), values, links)
 
     def person(self, person_id: int) -> Person:
         row = self.conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()

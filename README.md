@@ -7,7 +7,8 @@ A Windows desktop app for tagging your MP4 and MKV videos.
 - **Tag from your own tag database**: tags are organised in categories and subcategories. The categories only organise the list inside the app; just the tags are written to the file.
 - **Keep everything in sync**: every save writes the same tags to Explorer's **Tags** field and to the file's own tags, then reads both back to check them.
 - **Chapters**: mark chapters on exact frames. They're numbered automatically, or named after a tag (which also tags the file) or anything you type. Number keys add a named chapter in one press.
-- **Title, year, studio, description and star rating**: Explorer shows them, and Plex and Jellyfin read them. Details can be filled in from a `.nfo` file beside the video.
+- **Title, date, studio, description, star rating and links**: Explorer shows them, and Plex and Jellyfin read them. Details can be filled in from a `.nfo` file beside the video.
+- **Several libraries**, each with its own folders, and **plugins** that add panes and actions of their own.
 - **Thumbnail suggestions**: Runemark looks through the video and offers sharp, well-lit, varied frames.
 - **Library**: every video in your folders in one list or as a grid of thumbnails. Search by tags, work through new videos in the **Inbox**, find what's untagged or has no thumbnail, tag, rate or set details on many files at once, run a **health check** and see **stats**.
 - **Fast keys**: Alt+1–9 add your most-used tags, 1–9 add named chapters, Ctrl+K finds any action, tag, person or video.
@@ -43,6 +44,7 @@ Optional: **⋯ → Settings → Add "Tag with Runemark"** puts the app in Explo
 | Thumbnail | `covr` cover art (Explorer shows it) | Converted to MP4 on save |
 | Title / Year | `©nam` / `©day` | Converted to MP4 on save |
 | Studio | `STUDIO` (iTunes-style text, like `KEYWORDS`) | Converted to MP4 on save |
+| Links | `URL` (iTunes-style text, one value per web address) | Converted to MP4 on save |
 | Description | `desc` and `©cmt` (Explorer shows it as Comments) | Converted to MP4 on save |
 | Star rating | `WM/SharedUserRating` in the `Xtra` box (Explorer's Rating) | Converted to MP4 on save |
 | Chapters | A chapter track (VLC, Plex, Jellyfin) | Converted to MP4 on save |
@@ -86,7 +88,7 @@ Open the **Chapters** tab, pause on the frame where a chapter starts (step with 
 
 Existing chapters in a file show up in the list, so you can correct them without losing them. Saving changed chapters writes the whole file again (nothing is re-encoded, and data tracks such as camera GPS aren't kept; Runemark asks first if there are any). It checks the new file before replacing the original. Explorer doesn't show chapters; VLC, Plex and Jellyfin do.
 
-## Title, year, studio, description and rating
+## Title, year, studio, description, rating and links
 
 They're at the top of the **Details** tab. Click a star to rate, and click the same star again to clear the rating. The library can also rate many files at once. The studio box suggests studios already in your library.
 
@@ -109,6 +111,36 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **More → Stats…**: how much of the library is tagged, has people, chapters, thumbnails and studios; the most used tags, people and studios; ratings; and how many new videos arrived each month.
 - **Scan on start:** Runemark looks for new and changed videos in the background when it opens, so the inbox is up to date without **Scan for changes** (turn it off in Settings).
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
+
+## Libraries
+
+The Library can hold more than one library: say *Movies* and *Home videos*, or a big collection and a smaller one kept
+inside it. Each has a name, its folders, and subfolders it leaves out. **Folders → New library…** adds one; each
+library's menu adds or removes folders, leaves out a subfolder (**Leave out a subfolder…**, undone with **Include
+again**), and renames or deletes the library (the videos stay where they are). The box at the top of the Library picks
+which library to show, or all of them. A video can be in several libraries; a scan reads it once.
+
+## Links and release dates
+
+The **Links** box in Details holds web addresses about the video, one per line: the page it came from, its entry in an
+online database. They're written into the file (as `URL`, one value each, which ExifTool and ffprobe show), filled in from
+a `.nfo` beside the video (its `<uniqueid>` entries and `<website>`), and media tools that read them can link the video to
+those pages. The [Stash plugin](integrations/stash/README.md) turns them into the scene's URLs, and StashDB entries into
+Stash's links to StashDB.
+
+The **Year** box also takes a full release date (2019-07-14). It's written to `©day`, which already holds full dates in
+many files; typing just the year keeps a date that's already there when the year matches.
+
+People have **Links** too (in the People window), for their own pages. They travel with their videos like the rest of
+their profile.
+
+## Plugins
+
+Plugins add features to Runemark without changing it: a pane beside Tags, Chapters, Thumbnail and Details, actions in the
+⋯ menu and the Library's More menu, and things that happen when a video is opened or saved. **⋯ → Manage plugins…**
+lists them, turns them on and off and opens the plugins folder; changes apply when Runemark restarts. A plugin that
+fails to load is listed with its error and doesn't stop Runemark. Plugins are Python code with the same access to your
+files as Runemark, so only install ones you trust. Writing one: [docs/plugins.md](docs/plugins.md).
 
 ## People
 
