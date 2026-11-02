@@ -92,6 +92,9 @@ class LibraryModel(QAbstractTableModel):
         super().__init__(parent)
         self.rows: list[FileRecord] = []
         self.faint = None                     # QColor for missing files (set by the window from the theme)
+        self.covers: dict = {}                # path -> QPixmap (or None: no cover), for the grid
+        self.want_covers = False
+        self.request_cover = None             # callable(path): load a cover in the background
         self._sort: tuple[int, Qt.SortOrder] | None = None
 
     # ---- data
@@ -101,6 +104,14 @@ class LibraryModel(QAbstractTableModel):
         if self._sort is not None:
             self._sort_rows(*self._sort)
         self.endResetModel()
+
+    def set_cover(self, path: str, pixmap) -> None:
+        self.covers[path] = pixmap
+        for row, rec in enumerate(self.rows):
+            if rec.path == path:
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+                break
 
     def record(self, row: int) -> FileRecord:
         return self.rows[row]
@@ -126,6 +137,12 @@ class LibraryModel(QAbstractTableModel):
             return _text(rec, col)
         if role == PATH_ROLE:
             return rec.path
+        if role == Qt.ItemDataRole.DecorationRole and col == 0 and self.want_covers:
+            if rec.path in self.covers:
+                return self.covers[rec.path]
+            if self.request_cover is not None:
+                self.request_cover(rec.path)
+            return None
         if role == Qt.ItemDataRole.ToolTipRole:
             if col == 0:
                 if rec.missing:

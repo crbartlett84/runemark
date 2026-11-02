@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QItemSelection, QItemSelectionModel, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtCore import (QByteArray, QItemSelection, QItemSelectionModel, QSize, QStringListModel, Qt, QTimer,
+                            Signal)
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
@@ -105,7 +106,30 @@ class LibraryWindow(QDialog):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(150)
         self._search_timer.timeout.connect(self._apply)
-        layout.addWidget(self.table, 1)
+        # ---- grid: the same rows as cover pictures, sharing the table's selection
+        from PySide6.QtWidgets import QListView, QStackedWidget
+        self.grid = QListView()
+        self.grid.setViewMode(QListView.ViewMode.IconMode)
+        self.grid.setResizeMode(QListView.ResizeMode.Adjust)
+        self.grid.setMovement(QListView.Movement.Static)
+        self.grid.setUniformItemSizes(True)
+        self.grid.setWordWrap(True)
+        self.grid.setIconSize(QSize(224, 126))
+        self.grid.setGridSize(QSize(244, 176))
+        self.grid.setSpacing(6)
+        self.grid.setModel(self.model)
+        self.grid.setModelColumn(0)
+        self.grid.setSelectionModel(self.table.selectionModel())
+        self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.grid.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.grid.doubleClicked.connect(lambda *_: self._open())
+        self.views = QStackedWidget()
+        self.views.addWidget(self.table)
+        self.views.addWidget(self.grid)
+        layout.addWidget(self.views, 1)
+        self._cover_queue: list[str] = []
+        self._cover_busy = False
+        self.model.request_cover = self._want_cover
 
         self.empty = QLabel("")
         self.empty.setObjectName("Muted")
@@ -122,12 +146,16 @@ class LibraryWindow(QDialog):
         self.folders_menu = QMenu(self.folders_button)
         self.folders_menu.aboutToShow.connect(self._fill_folders_menu)
         self.folders_button.setMenu(self.folders_menu)
+        self.view_button = text_button("Grid", "library")
+        self.view_button.setToolTip("Switch between the list and a grid of thumbnails")
+        self.view_button.clicked.connect(lambda: self._set_view("list" if self.views.currentIndex() else "grid"))
         self.scan_button = text_button("Scan for changes", "sync")
         self.scan_button.clicked.connect(self._scan_clicked)
         self.count = QLabel("")
         self.count.setObjectName("Faint")
         bottom.addWidget(self.folders_button)
         bottom.addWidget(self.scan_button)
+        bottom.addWidget(self.view_button)
         bottom.addWidget(self.count, 1)
         self.open_button = text_button("Open", "open", primary=True)
         self.open_button.clicked.connect(self._open)
@@ -149,6 +177,8 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Mark as done (out of the inbox)", lambda: self._mark_done(True))
         more_menu.addAction("Put back in the inbox", lambda: self._mark_done(False))
         more_menu.addAction("Find duplicates…", self.find_duplicates)
+        more_menu.addAction("Health check…", self.health_check)
+        more_menu.addAction("Stats…", self.show_stats)
         more_menu.addSeparator()
         more_menu.addAction("Read details from file names…", lambda: self.file_names("read"))
         more_menu.addAction("Read details from .nfo files…", lambda: self.file_names("nfo"))
@@ -168,22 +198,71 @@ class LibraryWindow(QDialog):
         if settings.library_last_search:
             self._set_search(L.Search.from_dict(settings.library_last_search))
         self._add_shortcuts()
+        self._set_view(getattr(settings, "library_view", "list"), save=False)
         self.refresh()
 
     def _add_shortcuts(self):
         """Keys that act on the selected rows while the list has focus (not while typing in the search boxes)."""
         def key(sequence, slot):
-            sc = QShortcut(QKeySequence(sequence), self.table)
-            sc.setContext(Qt.ShortcutContext.WidgetShortcut)
-            sc.activated.connect(slot)
-            return sc
+            for view in (self.table, self.grid):          # the list and the grid both
+                sc = QShortcut(QKeySequence(sequence), view)
+                sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+                sc.activated.connect(slot)
         for n in range(6):
             key(str(n), lambda n=n: self._rate_selected(n))
         key(Qt.Key.Key_Return, lambda: self._open())
         key(Qt.Key.Key_Enter, lambda: self._open())
         key("T", lambda: self._bulk_add())
         key("D", lambda: self._mark_done(True))
-        self.table.setToolTip("Enter opens · 0-5 rates · T adds tags · D marks done (to the selected files)")
+        tip = "Enter opens · 0-5 rates · T adds tags · D marks done (to the selected files)"
+        self.table.setToolTip(tip)
+        self.grid.setToolTip(tip)
+
+    def _set_view(self, view: str, save: bool = True):
+        grid = view == "grid"
+        self.views.setCurrentIndex(1 if grid else 0)
+        self.model.want_covers = grid
+        self.view_button.setText("List" if grid else "Grid")
+        if grid:
+            self.model.layoutChanged.emit()          # ask for the covers now on screen
+        if save and hasattr(self.settings, "library_view"):
+            self.settings.library_view = view
+            self.settings.save()
+
+    def _want_cover(self, path: str):
+        if path not in self._cover_queue:
+            self._cover_queue.append(path)
+        if not self._cover_busy:
+            QTimer.singleShot(30, self._load_covers)
+
+    def _load_covers(self):
+        if self._cover_busy or not self._cover_queue or self._closing:
+            return
+        batch, self._cover_queue = self._cover_queue[:24], self._cover_queue[24:]
+        self._cover_busy = True
+        from .. import covers
+
+        def work(job):
+            return [(p, covers.thumbnail(p)) for p in batch]
+
+        def done(results):
+            self._cover_busy = False
+            if self._closing:
+                return
+            from PySide6.QtGui import QPixmap
+            for path, data in results:
+                pix = None
+                if data:
+                    pix = QPixmap()
+                    pix.loadFromData(data)
+                self.model.set_cover(path, pix)
+            if self._cover_queue:
+                QTimer.singleShot(0, self._load_covers)
+
+        def failed(_exc, _tb):
+            self._cover_busy = False
+
+        workers.start(work, on_done=done, on_error=failed)
 
     def _rate_selected(self, stars_: int):
         if self.selected_paths():
@@ -234,7 +313,8 @@ class LibraryWindow(QDialog):
         self.table.selectionModel().select(selection, flags)
 
     def selected_paths(self) -> list[Path]:
-        rows = sorted(i.row() for i in self.table.selectionModel().selectedRows())
+        # rows with any cell selected: the grid selects only the first column
+        rows = sorted({i.row() for i in self.table.selectionModel().selectedIndexes()})
         return [Path(self.model.record(r).path) for r in rows if r < self.model.rowCount()]
 
     def _selection_changed(self):
@@ -432,6 +512,22 @@ class LibraryWindow(QDialog):
         window.changed.connect(self.refresh)
         window.exec()
         self.refresh()
+
+    def health_check(self):
+        from .health_dialog import HealthDialog
+        records = [r for r in self.records if L.matches(r, self.search)] if self.search.filter != L.FILTER_ALL \
+            or self.search.tags or self.search.text else list(self.records)
+        dialog = HealthDialog(self.db, records, self.settings, host=self.host, parent=self)
+        dialog.openRequested.connect(self.openRequested)
+        dialog.changed.connect(self.refresh)
+        dialog.show()
+        dialog.run_check()
+        dialog.exec()
+        self.refresh()
+
+    def show_stats(self):
+        from .stats_dialog import StatsDialog
+        StatsDialog(self.db.library(), self).exec()
 
     def _targets(self) -> list:
         """The selected videos, or every video shown when nothing is selected."""
