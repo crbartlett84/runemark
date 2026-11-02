@@ -1,15 +1,27 @@
 """The Chapters tab: mark chapters on the paused frame, name them by tag or freely."""
 from __future__ import annotations
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
+from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QMenu, QStyledItemDelegate, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..media.chapters import ChapterMark, add_mark, renumber
 from ..media.probe import fmt_duration
 from .widgets import Banner, text_button
 
 COL_TIME, COL_NAME = 0, 1
+CHAPTER_KEYS = [str(n) for n in range(1, 10)]
+
+
+def _completer(model: QStringListModel, parent) -> QCompleter:
+    """Suggestions in the model's own order (likeliest first), matching anywhere in the name."""
+    completer = QCompleter(model, parent)
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.setModelSorting(QCompleter.ModelSorting.UnsortedModel)
+    completer.setMaxVisibleItems(12)
+    return completer
 
 
 class _NameDelegate(QStyledItemDelegate):
@@ -21,9 +33,7 @@ class _NameDelegate(QStyledItemDelegate):
 
     def createEditor(self, parent, option, index):  # noqa: N802
         editor = QLineEdit(parent)
-        completer = QCompleter(self.model, editor)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer = _completer(self.model, editor)
         editor.setCompleter(completer)
         editor.setPlaceholderText("A tag, or any name")
 
@@ -34,7 +44,51 @@ class _NameDelegate(QStyledItemDelegate):
             self.closeEditor.emit(editor)
 
         completer.activated.connect(picked)
+
+        def show_likely():
+            # the likeliest names (used before with this video's people or studio) straight away, before typing
+            if not editor.text() or index.data() and str(index.data()).startswith("Chapter "):
+                editor.selectAll()
+                completer.setCompletionPrefix("")
+                completer.complete()
+        QTimer.singleShot(0, show_likely)
         return editor
+
+
+class ChapterKeysDialog(QDialog):
+    """Which chapter name each number key adds (1-9)."""
+
+    def __init__(self, keys: dict, names: QStringListModel, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Chapter keys")
+        layout = QVBoxLayout(self)
+        intro = QLabel("Pause on a frame and press a number key to add a chapter there with that name, in one "
+                       "key. Pick a tag (the file gets that tag too) or type any name. Leave a key empty to not "
+                       "use it.")
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.edits: dict[str, QLineEdit] = {}
+        for key in CHAPTER_KEYS:
+            edit = QLineEdit(keys.get(key, ""))
+            edit.setPlaceholderText("(not used)")
+            edit.setCompleter(_completer(names, edit))
+            form.addRow(f"Key {key}", edit)
+            self.edits[key] = edit
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def keys(self) -> dict:
+        out = {}
+        for key, edit in self.edits.items():
+            name = " ".join(edit.text().split()).replace(";", ",")
+            if name:
+                out[key] = name
+        return out
 
 
 class ChaptersPanel(QWidget):
@@ -42,6 +96,7 @@ class ChaptersPanel(QWidget):
     seekRequested = Signal(float)
     changed = Signal()                      # the chapter list was edited
     nameTagged = Signal(str)                # a chapter was named: tag the file with that name
+    keysChanged = Signal(dict)              # the chapter keys were set up: {"1": "name", ...}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +104,7 @@ class ChaptersPanel(QWidget):
         self._filling = False
         self._enabled = False
         self.names = QStringListModel(self)
+        self.chapter_keys: dict = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 10, 8, 10)
@@ -56,9 +112,9 @@ class ChaptersPanel(QWidget):
         self.banner = Banner()
         self.banner.hide()
         layout.addWidget(self.banner)
-        intro = QLabel("Pause on the frame where a chapter starts and click <b>Add chapter</b> (or press M). "
-                       "New chapters are numbered automatically. Double-click a name to change it: pick a tag "
-                       "(the file gets that tag too) or type any name.")
+        intro = QLabel("Pause on the frame where a chapter starts and click <b>Add chapter</b> (or press M), or "
+                       "press a number key to add a named one. New chapters are numbered automatically. "
+                       "Double-click a name to change it: pick a tag (the file gets that tag too) or type any name.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -74,11 +130,20 @@ class ChaptersPanel(QWidget):
         self.number_button.clicked.connect(self._make_auto)
         self.delete_button = text_button("Delete", "trash")
         self.delete_button.clicked.connect(self._delete)
+        self.keys_button = text_button("Keys…", "edit")
+        self.keys_button.setToolTip("Choose the chapter name each number key (1-9) adds")
+        self.keys_button.clicked.connect(self.edit_keys)
         for b in (self.add_button, self.rename_button, self.number_button, self.delete_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             buttons.addWidget(b)
         buttons.addStretch(1)
+        self.keys_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        buttons.addWidget(self.keys_button)
         layout.addLayout(buttons)
+        self.keys_line = QLabel("")
+        self.keys_line.setObjectName("Faint")
+        self.keys_line.setWordWrap(True)
+        layout.addWidget(self.keys_line)
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Starts at", "Name"])
@@ -93,6 +158,8 @@ class ChaptersPanel(QWidget):
         self.table.itemChanged.connect(self._item_changed)
         self.table.cellClicked.connect(self._clicked)
         self.table.itemSelectionChanged.connect(self._update_buttons)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
 
         self.note = QLabel("")
@@ -103,7 +170,39 @@ class ChaptersPanel(QWidget):
 
     # ---------------------------------------------------------------- setup
     def set_tag_names(self, names: list[str]):
+        """Names offered when naming a chapter, likeliest first."""
         self.names.setStringList(names)
+
+    def set_chapter_keys(self, keys: dict):
+        self.chapter_keys = dict(keys or {})
+        used = [f"{k} {self.chapter_keys[k]}" for k in CHAPTER_KEYS if self.chapter_keys.get(k)]
+        self.keys_line.setText("Keys: " + " · ".join(used) if used else
+                               "Tip: set up number keys that add a named chapter in one press (Keys…).")
+
+    def edit_keys(self):
+        dialog = ChapterKeysDialog(self.chapter_keys, self.names, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.set_chapter_keys(dialog.keys())
+            self.keysChanged.emit(dict(self.chapter_keys))
+
+    def _context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if not 0 <= row < len(self.marks) or self.marks[row].auto:
+            return
+        name = self.marks[row].name
+        menu = QMenu(self)
+        sub = menu.addMenu(f"Put “{name}” on a key")
+        for key in CHAPTER_KEYS:
+            now = self.chapter_keys.get(key)
+            act = sub.addAction(f"Key {key}" + (f"  (now {now})" if now else ""))
+            act.triggered.connect(lambda _=False, k=key: self._set_key(k, name))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _set_key(self, key: str, name: str):
+        keys = {k: v for k, v in self.chapter_keys.items() if v.casefold() != name.casefold()}
+        keys[key] = name
+        self.set_chapter_keys(keys)
+        self.keysChanged.emit(dict(self.chapter_keys))
 
     def set_enabled(self, enabled: bool, container: str | None = None):
         self._enabled = enabled
@@ -123,10 +222,18 @@ class ChaptersPanel(QWidget):
         self._fill()
 
     # ---------------------------------------------------------------- editing
-    def add_at(self, pts: float):
+    def add_at(self, pts: float, name: str | None = None):
+        """Start a chapter at pts, numbered, or named `name` (which also tags the file)."""
         self.marks, mark = add_mark(self.marks, pts)
+        if name:
+            match = next((n for n in self.names.stringList() if n.casefold() == name.casefold()), None)
+            mark.name, mark.auto = (match or name), False
+            self.marks = renumber(self.marks)
         self._fill(select=mark)
         self.changed.emit()
+        if name:
+            self.nameTagged.emit(mark.name)
+        return mark
 
     def _selected(self) -> list[ChapterMark]:
         rows = sorted({i.row() for i in self.table.selectedIndexes()})

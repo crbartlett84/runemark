@@ -29,7 +29,7 @@ def test_read_people_title_and_year_from_names():
     assert not c.matched and c.title is None
 
 
-@pytest.mark.parametrize("pattern", ["no fields", "{Title} {Title}", "{Studio} - {Title}"])
+@pytest.mark.parametrize("pattern", ["no fields", "{Title} {Title}", "{Director} - {Title}"])
 def test_bad_patterns(pattern):
     with pytest.raises(N.PatternError):
         N.name_regex(pattern)
@@ -168,7 +168,7 @@ def test_names_dialog_previews_and_renames(tmp_path, media, monkeypatch):
                 for r in range(dialog.table.rowCount())}
         assert rows["a.mp4"][0] == "Beach Day (2019).mp4" and "no title" in rows["c.mp4"][1]
         assert dialog.apply_button.text() == "Rename 2 video(s)"
-        dialog.pattern.setCurrentText("{Studio}")
+        dialog.pattern.setCurrentText("{Director}")
         dialog._refresh()
         assert "Unknown field" in dialog.error.text() and not dialog.apply_button.isEnabled()
         dialog.pattern.setCurrentText("{Title} ({Year})")

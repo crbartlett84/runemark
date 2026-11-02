@@ -33,9 +33,11 @@ FILTER_NO_COVER = "no_cover"
 FILTER_MKV = "mkv"
 FILTER_UNRATED = "unrated"
 FILTER_MISSING = "missing"
+FILTER_INBOX = "inbox"
 
 FILTERS = [
     (FILTER_ALL, "All videos"),
+    (FILTER_INBOX, "Inbox (new, not saved yet)"),
     (FILTER_UNTAGGED, "No tags yet"),
     (FILTER_NO_COVER, "No thumbnail"),
     (FILTER_UNRATED, "Not rated"),
@@ -64,6 +66,7 @@ def matches(record: FileRecord, search: Search) -> bool:
         return False
     text = search.text.strip().casefold()
     if text and text not in Path(record.path).name.casefold() and text not in record.title.casefold() \
+            and text not in record.studio.casefold() \
             and not any(text in n.casefold() for n in record.people + record.people_aliases):
         return False
     f = search.filter
@@ -71,6 +74,8 @@ def matches(record: FileRecord, search: Search) -> bool:
         return record.missing
     if record.missing and f != FILTER_ALL:
         return False
+    if f == FILTER_INBOX:
+        return record.in_inbox
     if f == FILTER_UNTAGGED:
         return not record.tags
     if f == FILTER_NO_COVER:
@@ -112,15 +117,32 @@ def read_for_index(path: Path) -> dict:
             rating = value_to_stars(xtra.rating_from_payload(payload))
         except Exception:  # noqa: BLE001
             explorer_tags, rating = [], 0
+        chapters = getattr(mp4, "chapters", None)
         return dict(container="mp4", tags=merge_unique(tags.keywords, explorer_tags, tags.genre),
                     title=tags.title, year=tags.year, rating=rating, has_cover=bool(tags.cover),
-                    duration=duration, genre=tags.genre, data=tags.data)
+                    duration=duration, genre=tags.genre, data=tags.data, studio=tags.studio,
+                    chapters=len(chapters) if chapters is not None else 0,
+                    chapter_names=named_chapters(c.title for c in (chapters or [])))
     info = probe(path)
     keywords = split_values([info.tag("keywords")]) if info.tag("keywords") else []
     genre = split_values([info.tag("genre")]) if info.tag("genre") else []
     return dict(container="mkv" if ext in MKV_EXTENSIONS else "other", tags=merge_unique(keywords, genre),
                 title=info.tag("title"), year=parse_year(info.tag("date") or info.tag("year")), rating=0,
-                has_cover=bool(info.cover_sources), duration=info.duration, genre=genre, data=None)
+                has_cover=bool(info.cover_sources), duration=info.duration, genre=genre, data=None,
+                studio=info.tag("studio") or info.tag("publisher"), chapters=len(info.chapters),
+                chapter_names=named_chapters(c.title for c in info.chapters))
+
+
+def named_chapters(titles) -> list[str]:
+    """Chapter names worth suggesting again: not blank, not "Chapter 3", once each."""
+    from .media.chapters import is_auto_name
+    out, seen = [], set()
+    for title in titles:
+        name = " ".join(str(title or "").split())
+        if name and not is_auto_name(name) and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+    return out
 
 
 @dataclass
@@ -271,7 +293,8 @@ def apply_bulk(db: TagDB, paths: list[Path], change: BulkChange, *, explorer_mod
             keywords, genre = route_fields(tags, is_genre=is_genre, is_known=is_known, original_genre=state.genre)
             meta = None
             if change.rating is not None:
-                meta = VideoMeta(state.meta.title, state.meta.year, state.meta.description, change.rating)
+                meta = VideoMeta(state.meta.title, state.meta.year, state.meta.description, change.rating,
+                                 state.meta.studio)
             kwargs = {"meta": meta} if meta is not None else {}
             outcome = save_mp4(path, keywords=keywords, genre=genre, explorer_mode=explorer_mode,
                                preserve_mtime=preserve_mtime, **kwargs)
@@ -290,7 +313,8 @@ def history_fields(state) -> dict:
     """What record_history needs from a FileState read before a save."""
     return {"keywords": merge_unique(state.keywords, state.explorer or []), "genre": list(state.genre),
             "title": state.meta.title, "year": state.meta.year, "description": state.meta.description,
-            "rating": state.meta.rating or 0, "data": getattr(state, "data", None)}
+            "rating": state.meta.rating or 0, "data": getattr(state, "data", None),
+            "studio": state.meta.studio or ""}
 
 
 def new_batch_id() -> str:
@@ -305,7 +329,7 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
         raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
     outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
                        preserve_mtime=preserve_mtime,
-                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating),
+                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating, entry.studio),
                        data=entry.data)      # people too (None removes a block the save added)
     db.remember_file(path, entry.keywords)
     reindex(db, path)
@@ -351,6 +375,8 @@ def nfo_text(record: FileRecord, description: str = "", collection: str = "") ->
         lines.append(f"  <plot>{escape(description)}</plot>")
     if record.rating:
         lines.append(f"  <userrating>{record.rating * 2}</userrating>")
+    if record.studio:
+        lines.append(f"  <studio>{escape(record.studio)}</studio>")
     for g in record.genre:
         lines.append(f"  <genre>{escape(g)}</genre>")
     for t in record.tags:

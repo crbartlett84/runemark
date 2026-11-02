@@ -6,10 +6,10 @@ A Windows desktop app for tagging your MP4 and MKV videos.
 - **Pick the thumbnail**: choose any frame, or an image file, and Runemark embeds it as the file's cover image. Windows Explorer shows it as the thumbnail.
 - **Tag from your own tag database**: tags are organised in categories and subcategories. The categories only organise the list inside the app; just the tags are written to the file.
 - **Keep everything in sync**: every save writes the same tags to Explorer's **Tags** field and to the file's own tags, then reads both back to check them.
-- **Chapters**: mark chapters on exact frames. They're numbered automatically, or named after a tag (which also tags the file) or anything you type.
-- **Title, year, description and star rating**: Explorer shows them, and Plex and Jellyfin read them.
+- **Chapters**: mark chapters on exact frames. They're numbered automatically, or named after a tag (which also tags the file) or anything you type. Number keys add a named chapter in one press.
+- **Title, year, studio, description and star rating**: Explorer shows them, and Plex and Jellyfin read them. Details can be filled in from a `.nfo` file beside the video.
 - **Thumbnail suggestions**: Runemark looks through the video and offers sharp, well-lit, varied frames.
-- **Library**: every video in your folders in one list. Search by tags, find what's untagged or has no thumbnail, and tag or rate many files at once.
+- **Library**: every video in your folders in one list. Search by tags, work through new videos in the **Inbox**, find what's untagged or has no thumbnail, and tag or rate many files at once.
 
 ## Download
 
@@ -40,6 +40,7 @@ Optional: **⋯ → Settings → Add "Tag with Runemark"** puts the app in Explo
 | **Genre** (Plex, Jellyfin, Explorer's Genre column) | `©gen`: only tags from categories marked "write to Genre" | Converted to MP4 on save |
 | Thumbnail | `covr` cover art (Explorer shows it) | Converted to MP4 on save |
 | Title / Year | `©nam` / `©day` | Converted to MP4 on save |
+| Studio | `STUDIO` (iTunes-style text, like `KEYWORDS`) | Converted to MP4 on save |
 | Description | `desc` and `©cmt` (Explorer shows it as Comments) | Converted to MP4 on save |
 | Star rating | `WM/SharedUserRating` in the `Xtra` box (Explorer's Rating) | Converted to MP4 on save |
 | Chapters | A chapter track (VLC, Plex, Jellyfin) | Converted to MP4 on save |
@@ -75,22 +76,29 @@ If Explorer keeps showing an old thumbnail, that's its cache. Leave "Keep each f
 
 Open the **Chapters** tab, pause on the frame where a chapter starts (step with ← →) and click **Add chapter** or press **M**. The first chapter you add also gets a chapter at 0:00, because players expect the first chapter to start at the beginning. New chapters are called "Chapter 1, 2, 3…" and renumber themselves when you add or delete one. Double-click a name to change it: pick a tag from your database, and the file gets that tag too, or type any name, which is also added to the file's tags (shown dashed until you file it). Removing or renaming a chapter leaves the file's tags alone. **Number** turns a named chapter back into a numbered one. Click a chapter to see its first frame.
 
+**Chapter keys.** Press **1**–**9** to add a chapter at the frame on screen with a name you chose for that key (for chapters you add all the time). Set them up with **Keys…** on the Chapters tab, or right-click a chapter's name → **Put on a key**. The keys in use are listed under the buttons.
+
+**Name suggestions.** When you name a chapter, the names you've used before come first: first those used in videos with the same people or studio, then your other chapter names, then the rest of your tags. Runemark learns them from the Library, so scan your folders for the best suggestions.
+
 Existing chapters in a file show up in the list, so you can correct them without losing them. Saving changed chapters writes the whole file again (nothing is re-encoded, and data tracks such as camera GPS aren't kept; Runemark asks first if there are any). It checks the new file before replacing the original. Explorer doesn't show chapters; VLC, Plex and Jellyfin do.
 
-## Title, year, description and rating
+## Title, year, studio, description and rating
 
-They're at the top of the **Details** tab. Click a star to rate, and click the same star again to clear the rating. The library can also rate many files at once.
+They're at the top of the **Details** tab. Click a star to rate, and click the same star again to clear the rating. The library can also rate many files at once. The studio box suggests studios already in your library.
+
+**From a `.nfo` file.** Media managers such as Radarr and Sonarr (with Kodi metadata turned on), Jellyfin and tinyMediaManager write a `.nfo` beside each video, `Movie.nfo` for `Movie.mp4`. When you open a video Runemark hasn't saved yet, its empty title, year, studio, description and people are filled in from that file (people who aren't in your People list are added). Nothing is written until you save, so check them first. `movie.nfo` is used too when the video is alone in its folder. Turn it off in **Settings**. For many videos at once: **Library → More → Read details from .nfo files…**.
 
 ## Library
 
 **Library** (Ctrl+B) lists every video in the folders you add (**Folders → Add a folder…**), plus every file you've saved in Runemark. Scans only read files that are new or changed.
 
-- **Search** by file name or title, and add tags under **Must have tag…**. Every tag you add must match.
-- **Filters** show videos with no tags, no thumbnail, no rating, MKVs that aren't converted yet, or files that have moved or been deleted.
+- **Search** by file name, title, studio or people, and add tags under **Must have tag…**. Every tag you add must match.
+- **Filters** show the inbox, videos with no tags, no thumbnail, no rating, MKVs that aren't converted yet, or files that have moved or been deleted.
+- **Inbox**: videos the Library has found that you haven't saved in Runemark yet, so new arrivals are easy to work through. Open one (Enter) and the rest of the inbox opens after it: tag it, then **Ctrl+Enter** saves and moves to the next. Saving takes a video out of the inbox; **D** (or **More → Mark as done**) takes it out without saving, and **More → Put back in the inbox** undoes that. The **Still to do** column shows what each video is missing: tags, people, thumbnail, chapters, studio, or converting.
 - **Saved searches** keep a search under a name.
 - Select several videos and use **Add tag…** (type several, separated by commas), **Remove tag…** or **Rate…**. Each file is saved and checked like a normal save. MKVs are skipped, since they need converting first.
 - The Library reopens with the search and filter you last used. A scan can be stopped with **Stop scan**; what it has read so far is kept.
-- **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
+- **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, studio, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
 - **Remove from the library** only changes Runemark's list; the files aren't touched.
 
 ## People
@@ -119,8 +127,9 @@ Tag the people in a video once, and everything you've recorded about them follow
 
 Both work on the selected videos in the Library (or all shown, if none are selected) and show a preview first.
 
-- **More → Read details from file names…** fills in title, year, rating and people from names that follow a pattern, such as `{People} - {Title} ({Year})`. People can be separated by commas, "&" or "and", and are matched to your People list by name or alias (new ones can be added). Details already filled in are kept unless you choose to replace them. Undo with **Undo last bulk change**.
-- **More → Rename from details…** renames from a pattern such as `{Title} ({Year})`, and `\` sorts into folders (`{Year}\{Title}`). Characters Windows doesn't allow are replaced, empty fields leave no stray brackets or dashes, videos without a title are skipped, and clashes are shown and skipped. Subtitles and `.nfo` files with the same name move along, and Runemark's library, undo history and people follow. **More → Undo last rename…** puts them back.
+- **More → Read details from file names…** fills in title, year, studio, rating and people from names that follow a pattern, such as `{People} - {Title} ({Year})`. People can be separated by commas, "&" or "and", and are matched to your People list by name or alias (new ones can be added). Details already filled in are kept unless you choose to replace them. Undo with **Undo last bulk change**.
+- **More → Read details from .nfo files…** does the same from the `.nfo` beside each video (see above).
+- **More → Rename from details…** renames from a pattern such as `{Title} ({Year})`, and `\` sorts into folders (`{Studio}\{Title}`). Characters Windows doesn't allow are replaced, empty fields leave no stray brackets or dashes, videos without a title are skipped, and clashes are shown and skipped. Subtitles and `.nfo` files with the same name move along, and Runemark's library, undo history and people follow. **More → Undo last rename…** puts them back.
 - If Sonarr, Radarr or Plex manage a folder, let them rename, or rescan them afterwards.
 
 ## Undo
@@ -157,6 +166,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Shift+← → | Back / forward 5 seconds |
 | Ctrl+T | Use this frame as the thumbnail |
 | M | Add a chapter at this frame |
+| 1–9 | Add a chapter at this frame with that key's name (Chapters → Keys…) |
 | Ctrl+B | Library |
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and go to the next file |
@@ -170,7 +180,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 
 You can open several files at once (or drop them on the window). Move between them with the arrows next to the file name.
 
-In the Library list: **Enter** opens the selected files, **0–5** sets their rating and **T** adds tags.
+In the Library list: **Enter** opens the selected files, **0–5** sets their rating, **T** adds tags and **D** marks them done (out of the inbox).
 
 ## Safety
 

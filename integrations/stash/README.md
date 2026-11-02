@@ -6,6 +6,7 @@ doesn't read tags embedded in video files on its own, so without it, files you t
 | Runemark | Stash |
 |---|---|
 | Title, description, rating | Scene title, details, rating |
+| Studio | Scene studio, matched by name or alias (created if missing) |
 | Date (`©day`) | Scene date (full dates; year-only dates only if you turn that on) |
 | Tags you typed, and attribute tags such as *Red hair* | Scene tags (created if missing) |
 | People | Performers, matched by name or alias (created if missing), with their aliases |

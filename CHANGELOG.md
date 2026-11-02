@@ -4,11 +4,22 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-02
+
 ### Added
+- **Inbox** (Library filter). Videos the Library has found that you haven't saved in Runemark yet, so new arrivals are easy to work through: open one and the rest of the inbox follows, so **Ctrl+Enter** (Save and next) goes straight through it. **D** or **More → Mark as done** takes a video out without saving. A **Still to do** column shows what each video is missing (tags, people, thumbnail, chapters, studio, converting).
+- **Studio.** A Studio field in the Details tab, with suggestions from your library. Written to the file (`STUDIO`), shown and searchable in the Library, in `.nfo` exports, as `{Studio}` in file-name patterns, and filled in from duplicates when merging.
+- **Details from .nfo files.** Opening a video Runemark hasn't saved yet fills its empty title, year, studio, description and people from the `.nfo` beside it (the Kodi format Radarr, Sonarr and Jellyfin write); nothing is saved until you save. **Library → More → Read details from .nfo files…** does many at once, undoably. Can be turned off in Settings.
+- **Chapter keys.** **1**–**9** add a chapter at the frame on screen with a name you've set for that key (**Chapters → Keys…**, or right-click a chapter → **Put on a key**).
+- **Chapter name suggestions.** Naming a chapter offers the names you've used before first, starting with those used in videos with the same people or studio.
+- **Stash plugin** (`integrations/stash`): imports the tags, details, studio, people (as performers, with their attributes) and chapters (as markers named by tag) that Runemark wrote into your videos. It fills blanks and never removes anything, and runs by itself when a Stash scan adds a video.
 - **Find duplicates** (Library → More). Finds copies of a video even when re-encoded, resized, converted, letterboxed, trimmed, with scenes cut out or reordered, and says how each copy differs ("Missing 2:40 at 12:30"). Suggests the best-quality copy to keep, can copy the others' tags and people into it, and sends the rest to the Recycle Bin when you say. Videos are read once and remembered. Videos that only share a section are listed separately when asked for.
 - **Read details from file names** (Library → More): fill in title, year, rating and people from names like `Ana Lee - Beach Day (2019)`.
 - **Rename from details** (Library → More): rename and sort into folders from a pattern like `{Year}\{Title}`, with a preview, clash checks, subtitles and `.nfo` files moving along, and **Undo last rename**.
-- Self-test checks for finding duplicates.
+- Self-test checks for finding duplicates, and for the studio.
+
+### Changed
+- The first Library scan after updating reads every file again, to pick up studios and chapters.
 
 ## [0.4.0] - 2026-11-01
 

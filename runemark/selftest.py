@@ -37,7 +37,7 @@ def run(progress: Callable[[int, str], None] | None = None) -> list[Check]:
         ("Explorer Tags (Windows property system)", _explorer_windows),
         ("Explorer Tags (Runemark's own writer, read by Windows)", _explorer_builtin),
         ("Full save with verification", _full_save),
-        ("Title, year, description and star rating", _details),
+        ("Title, year, studio, description and star rating", _details),
         ("Chapters (written into an MP4)", _chapters),
         ("Thumbnail suggestions", _suggestions),
         ("MKV to MP4 conversion", _convert),
@@ -163,7 +163,7 @@ def _full_save(ctx):
 def _details(ctx):
     path = ctx["dir"] / "details.mp4"
     path.write_bytes(_make_mp4(ctx).read_bytes())
-    meta = mp4meta.VideoMeta("Self-test Title", 2024, "A description.", 4)
+    meta = mp4meta.VideoMeta("Self-test Title", 2024, "A description.", 4, "Self-test Studio")
     outcome = save_mp4(path, keywords=["Tag"], genre=[], meta=meta)
     state = read_state(path)
     detail = f"Read back: {state.meta}"

@@ -247,6 +247,8 @@ class MainWindow(QMainWindow):
         self.chapters.seekRequested.connect(self._seek_paused)
         self.chapters.changed.connect(self._chapters_edited)
         self.chapters.nameTagged.connect(self._chapter_named)
+        self.chapters.keysChanged.connect(self._chapter_keys_changed)
+        self.chapters.set_chapter_keys(self.settings.chapter_keys)
         self.tabs.addTab(self.tag_editor, theme.icon("tag", size=16), "Tags")
         self.tabs.addTab(self.chapters, theme.icon("chapters", size=16), "Chapters")
         self.tabs.addTab(self.thumbs, theme.icon("image", size=16), "Thumbnail")
@@ -355,6 +357,9 @@ class MainWindow(QMainWindow):
             if key == Qt.Key.Key_M and not event.modifiers():
                 self.add_chapter()
                 return
+            if Qt.Key.Key_1 <= key <= Qt.Key.Key_9 and not (event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
+                self.add_chapter(key=str(key - Qt.Key.Key_0))
+                return
         super().keyPressEvent(event)
 
     def dragEnterEvent(self, event):  # noqa: N802
@@ -412,18 +417,30 @@ class MainWindow(QMainWindow):
             sources = info.cover_sources
             return frames.dump_attachment(info.path, sources[0]) if sources else None
 
+        read_nfo = self.settings.read_nfo and status is None      # not when reopening after a save
+
         def work(job):
             info = probe(path)
             state = read_state(path, info, cover_reader)
-            return info, state
+            details = None
+            if read_nfo:
+                from .. import nfo
+                try:
+                    details = nfo.read_for(path)
+                except Exception as exc:  # noqa: BLE001
+                    log.info("couldn't read a .nfo for %s: %s", path, exc)
+            return info, state, details
 
         def done(result):
             if token != self._open_token:
                 return
-            info, state = result
+            info, state, details = result
             self.doc = Document(path, info, state, self.db)
+            filled = ""
+            if details is not None and not self.db.was_saved(path):
+                filled = self._fill_from_nfo(self.doc, details)
             self._show_document(position_ms)
-            self.set_status(status or f"Opened {path.name}")
+            self.set_status(filled or status or f"Opened {path.name}")
             QTimer.singleShot(0, lambda: self._offer_leftover_cleanup(path))
 
         def failed(exc, _tb):
@@ -436,6 +453,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Open", f"Couldn't open {path.name}:\n\n{exc}")
 
         workers.start(work, on_done=done, on_error=failed)
+
+    def _fill_from_nfo(self, doc: Document, details) -> str:
+        """Fill the empty details of a video Runemark hasn't saved yet from the .nfo beside it (unsaved, so it can
+        be checked first). People in it are added, and added to the People list if they're new.
+        Returns a status line ("" if there was nothing to fill)."""
+        got = []
+        meta = doc.meta
+        for field_name in ("title", "year", "studio", "description"):
+            value = getattr(details, field_name)
+            if value and not getattr(meta, field_name):
+                setattr(meta, field_name, value)
+                got.append(field_name)
+        have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _s in doc.people}
+        added = 0
+        for name in details.people:
+            try:
+                person = self.db.find_person(name) or self.db.add_person(name)
+            except Exception as exc:  # noqa: BLE001
+                log.info("couldn't add %s from the .nfo: %s", name, exc)
+                continue
+            if person.uid not in have:
+                have.add(person.uid)
+                doc.people = doc.people + [(person, [])]
+                added += 1
+        if added:
+            got.append(f"{added} {'person' if added == 1 else 'people'}")
+            self.tag_editor.refresh_database()
+        if not got:
+            return ""
+        return f"Filled in {', '.join(got)} from {details.path.name}: check them, then save"
 
     def _offer_leftover_cleanup(self, path: Path):
         """A crash or power cut mid-save leaves a near-complete working copy (<name>.runemark-*) beside the
@@ -485,6 +532,7 @@ class MainWindow(QMainWindow):
         self.thumbs.set_container(doc.container)
         self._refresh_thumbs()
         self.thumbs.clear_suggestions()
+        self.details.meta.set_studios(self.db.studios())
         self.details.meta.set_meta(doc.meta, doc.container)
         self._refresh_tag_names()
         self.chapters.set_enabled(True, doc.container)
@@ -689,6 +737,7 @@ class MainWindow(QMainWindow):
             row["skipped"] = not row.pop("given")
             out.append(row)
         self.tag_editor.set_people(rows, out)
+        self._refresh_tag_names()            # chapter names used with these people come first
 
     def _add_person(self, text: str):
         doc = self.doc
@@ -995,18 +1044,31 @@ class MainWindow(QMainWindow):
         self.capture_frame(pts)
 
     # ================================================================ chapters and details
-    def add_chapter(self):
+    def add_chapter(self, key: str | None = None):
+        """Start a chapter at the frame on screen: numbered, or named by a chapter key (1-9)."""
         doc = self.doc
         if doc is None:
             return
+        name = None
+        if key is not None:
+            name = self.settings.chapter_keys.get(key)
+            if not name:
+                self.toast(f"Key {key} doesn't add a chapter yet: set it up in Chapters → Keys…, or right-click "
+                           "a chapter's name → Put on a key.")
+                return
         self.player.pause()
         pts = self.player.current_pts()
         if pts is None:
             pts = self.player.player.position() / 1000
         if self.tabs.currentWidget() is not self.chapters:
             self.tabs.setCurrentWidget(self.chapters)
-        self.chapters.add_at(pts)
-        self.set_status(f"Chapter added at {fmt_duration(pts, millis=True)}")
+        mark = self.chapters.add_at(pts, name)
+        self.set_status(f"Chapter “{mark.name}” added at {fmt_duration(pts, millis=True)}" if name else
+                        f"Chapter added at {fmt_duration(pts, millis=True)}")
+
+    def _chapter_keys_changed(self, keys: dict):
+        self.settings.chapter_keys = dict(keys)
+        self.settings.save()
 
     def _chapters_edited(self):
         if self.doc is not None:
@@ -1020,14 +1082,25 @@ class MainWindow(QMainWindow):
 
     def _meta_edited(self):
         if self.doc is not None:
-            year_before = self.doc.meta.year
+            year_before, studio_before = self.doc.meta.year, self.doc.meta.studio
             self.doc.meta = self.details.meta.value()
             if self.doc.meta.year != year_before and self.doc.people:
                 self._refresh_people()            # values limited to some years may now apply (or not)
+            elif (self.doc.meta.studio or "") != (studio_before or ""):
+                self._refresh_tag_names()
             self._refresh_ui()
 
     def _refresh_tag_names(self):
-        self.chapters.set_tag_names([t.name for t in self.db.tags()])
+        """Chapter names on offer, likeliest first: names used before in videos with these people or this studio,
+        then other chapter names used before, then the rest of the tag database."""
+        doc = self.doc
+        uids, studio, path = [], "", None
+        if doc is not None:
+            uids = [(p["id"] if isinstance(p, dict) else p.uid) for p, _s in doc.people]
+            studio, path = doc.meta.studio or "", doc.path
+        used = self.db.chapter_names(uids, studio, exclude=path)
+        seen = {n.casefold() for n in used}
+        self.chapters.set_tag_names(used + [t.name for t in self.db.tags() if t.name.casefold() not in seen])
 
     # ================================================================ library
     def show_library(self):

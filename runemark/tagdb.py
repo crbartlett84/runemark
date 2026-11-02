@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS renames(
     at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_renames_batch ON renames(batch);
+-- 0.5.0: the names of each file's chapters (numbered "Chapter N" ones left out), to suggest names for new ones.
+CREATE TABLE IF NOT EXISTS file_chapters(
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name TEXT NOT NULL COLLATE NOCASE
+);
+CREATE INDEX IF NOT EXISTS idx_file_chapters_file ON file_chapters(file_id);
 """
 
 # Columns added in schema 2 for the library (what Runemark last read from each file)
@@ -130,6 +136,8 @@ LIBRARY_COLUMNS = {
     "container": "TEXT", "title": "TEXT", "year": "INTEGER", "rating": "INTEGER", "has_cover": "INTEGER",
     "duration": "REAL", "genre": "TEXT", "indexed_size": "INTEGER", "indexed_mtime": "REAL",
     "missing": "INTEGER NOT NULL DEFAULT 0",
+    # 0.5.0: studio; how many chapters; when the file was first seen; and "done" for the inbox without saving
+    "studio": "TEXT", "chapters": "INTEGER", "first_seen": "TEXT", "inbox_done": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -149,6 +157,15 @@ class FileRecord:
     saved_at: str | None
     people: list = None             # main names of the people in it (from its data block)
     people_aliases: list = None     # their aliases, so searching any name finds the video
+    studio: str = ""
+    chapters: int | None = None     # None: not read yet (MKV, or indexed before 0.5.0)
+    first_seen: str | None = None
+    inbox_done: bool = False
+
+    @property
+    def in_inbox(self) -> bool:
+        """New to the library and not dealt with yet: never saved in Runemark and not marked done."""
+        return not self.saved_at and not self.inbox_done and not self.missing
 
     def __post_init__(self):
         self.people = self.people or []
@@ -234,6 +251,7 @@ class HistoryEntry:
     description: str
     rating: int
     data: dict | None = None      # Runemark's data block before the save (schema 4+)
+    studio: str | None = None     # None: recorded before 0.5.0 (undo leaves the studio alone)
 
     def summary(self) -> str:
         bits = ["; ".join(self.keywords + [g for g in self.genre if g.casefold() not in
@@ -300,9 +318,14 @@ class TagDB:
         for name, kind in LIBRARY_COLUMNS.items():
             if name not in have:
                 self.conn.execute(f"ALTER TABLE files ADD COLUMN {name} {kind}")
+        if have and "chapters" not in have:
+            # 0.5.0 reads studios and chapters during scans: the next scan reads every file again to fill them in
+            self.conn.execute("UPDATE files SET indexed_mtime = NULL")
         history_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(file_history)").fetchall()}
         if "data" not in history_cols:
             self.conn.execute("ALTER TABLE file_history ADD COLUMN data TEXT")
+        if "studio" not in history_cols:
+            self.conn.execute("ALTER TABLE file_history ADD COLUMN studio TEXT")
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                           (str(SCHEMA_VERSION),))
         self.conn.commit()
@@ -552,6 +575,55 @@ class TagDB:
                               [(file_id, t) for t in tags])
         self.conn.commit()
 
+    def was_saved(self, path: str | os.PathLike) -> bool:
+        """True once Runemark has saved this file (the editor, a bulk change, an undo...)."""
+        row = self.conn.execute("SELECT saved_at FROM files WHERE key = ?", (file_key(path),)).fetchone()
+        return bool(row and row["saved_at"])
+
+    def set_inbox_done(self, paths, done: bool = True) -> None:
+        """Take files out of the inbox without saving them (or put them back)."""
+        self.conn.executemany("UPDATE files SET inbox_done = ? WHERE key = ?",
+                              [(int(done), file_key(p)) for p in paths])
+        self.conn.commit()
+
+    def chapter_names(self, people_uids: list[str] | None = None, studio: str = "",
+                      exclude: str | os.PathLike | None = None) -> list[str]:
+        """Chapter names used before, likeliest first: those used in videos with any of these people or this
+        studio (most used first), then the rest (most used first). `exclude`: leave out this file's own."""
+        skip = file_key(exclude) if exclude else None
+        rows = self.conn.execute("SELECT files.id, files.key, files.studio, file_chapters.name FROM file_chapters "
+                                 "JOIN files ON files.id = file_chapters.file_id").fetchall()
+        related: set[int] = set()
+        uids = [u for u in (people_uids or []) if u]
+        if uids:
+            marks = ",".join("?" for _ in uids)
+            related = {r[0] for r in self.conn.execute(
+                f"SELECT file_people.file_id FROM file_people JOIN people ON people.id = file_people.person_id "
+                f"WHERE people.uid IN ({marks})", uids)}
+        studio_f = (studio or "").strip().casefold()
+        near: dict[str, int] = {}
+        anywhere: dict[str, int] = {}
+        spelling: dict[str, str] = {}
+        for file_id, key, file_studio, name in rows:
+            if key == skip:
+                continue
+            folded = name.casefold()
+            spelling.setdefault(folded, name)
+            anywhere[folded] = anywhere.get(folded, 0) + 1
+            if file_id in related or (studio_f and (file_studio or "").casefold() == studio_f):
+                near[folded] = near.get(folded, 0) + 1
+        first = sorted(near, key=lambda f: (-near[f], -anywhere[f], f))
+        rest = sorted((f for f in anywhere if f not in near), key=lambda f: (-anywhere[f], f))
+        return [spelling[f] for f in first + rest]
+
+    def studios(self) -> list[str]:
+        """Every studio in the library, for suggestions (first spelling of each)."""
+        seen: dict[str, str] = {}
+        for (name,) in self.conn.execute("SELECT studio FROM files WHERE studio IS NOT NULL AND studio != '' "
+                                         "ORDER BY id"):
+            seen.setdefault(name.casefold(), name)
+        return sorted(seen.values(), key=str.casefold)
+
     def forget_file(self, path: str | os.PathLike) -> None:
         self.conn.execute("DELETE FROM files WHERE key = ?", (file_key(path),))
         self.conn.commit()
@@ -559,14 +631,15 @@ class TagDB:
     # ------------------------------------------------------------------ history (undo)
     def record_history(self, path: str | os.PathLike, *, keywords: list[str], genre: list[str], title: str = "",
                        year: int | None = None, description: str = "", rating: int = 0, label: str = "",
-                       batch: str | None = None, data: dict | None = None) -> None:
+                       batch: str | None = None, data: dict | None = None, studio: str | None = None) -> None:
         """Remember a file's state from just before a save. Keeps the newest HISTORY_KEEP per file."""
         key = file_key(path)
         self.conn.execute(
             "INSERT INTO file_history(key, path, saved_at, batch, label, keywords, genre, title, year, description,"
-            " rating, data) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rating, data, studio) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (key, str(path), _now(), batch, label, json.dumps(list(keywords)), json.dumps(list(genre)),
-             title or "", year, description or "", int(rating or 0), json.dumps(data) if data else None))
+             title or "", year, description or "", int(rating or 0), json.dumps(data) if data else None,
+             studio))
         self.conn.execute(
             "DELETE FROM file_history WHERE key = ? AND id NOT IN "
             "(SELECT id FROM file_history WHERE key = ? ORDER BY id DESC LIMIT ?)", (key, key, HISTORY_KEEP))
@@ -576,7 +649,8 @@ class TagDB:
     def _history_entry(row) -> HistoryEntry:
         return HistoryEntry(row["id"], row["path"], row["saved_at"], row["batch"], row["label"],
                             json.loads(row["keywords"]), json.loads(row["genre"]), row["title"], row["year"],
-                            row["description"], row["rating"], json.loads(row["data"]) if row["data"] else None)
+                            row["description"], row["rating"], json.loads(row["data"]) if row["data"] else None,
+                            row["studio"])
 
     def history(self, path: str | os.PathLike) -> list[HistoryEntry]:
         """Earlier states of a file, newest first."""
@@ -651,25 +725,31 @@ class TagDB:
                    year: int | None = None, rating: int = 0, has_cover: bool = False,
                    duration: float | None = None, genre: list[str] | None = None,
                    size: int | None = None, mtime: float | None = None, commit: bool = True,
-                   people: list[int] | None = None) -> None:
+                   people: list[int] | None = None, studio: str = "", chapters: int | None = None,
+                   chapter_names: list[str] | None = None) -> None:
         """Record what a file holds (from a library scan). `people`: person ids found in its data block."""
         key = file_key(path)
         row = self.conn.execute("SELECT id FROM files WHERE key = ?", (key,)).fetchone()
         values = (str(path), size, mtime, container, title, year, rating, int(has_cover), duration,
-                  "; ".join(genre or []), size, mtime)
+                  "; ".join(genre or []), size, mtime, studio or "", chapters)
         if row:
             file_id = row["id"]
             self.conn.execute("UPDATE files SET path = ?, size = ?, mtime = ?, container = ?, title = ?, year = ?, "
                               "rating = ?, has_cover = ?, duration = ?, genre = ?, indexed_size = ?, "
-                              "indexed_mtime = ?, missing = 0 WHERE id = ?", values + (file_id,))
+                              "indexed_mtime = ?, studio = ?, chapters = ?, missing = 0 WHERE id = ?",
+                              values + (file_id,))
             self.conn.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
         else:
             cur = self.conn.execute("INSERT INTO files(key, path, size, mtime, container, title, year, rating, "
-                                    "has_cover, duration, genre, indexed_size, indexed_mtime) "
-                                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (key,) + values)
+                                    "has_cover, duration, genre, indexed_size, indexed_mtime, studio, chapters, "
+                                    "first_seen) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (key,) + values + (_now(),))
             file_id = cur.lastrowid
         self.conn.executemany("INSERT OR IGNORE INTO file_tags(file_id, tag_name) VALUES(?, ?)",
                               [(file_id, t) for t in tags])
+        self.conn.execute("DELETE FROM file_chapters WHERE file_id = ?", (file_id,))
+        self.conn.executemany("INSERT INTO file_chapters(file_id, name) VALUES(?, ?)",
+                              [(file_id, n) for n in (chapter_names or [])])
         self.conn.execute("DELETE FROM file_people WHERE file_id = ?", (file_id,))
         self.conn.executemany("INSERT OR IGNORE INTO file_people(file_id, person_id) VALUES(?, ?)",
                               [(file_id, p) for p in (people or [])])
@@ -721,7 +801,8 @@ class TagDB:
                                   r["title"] or "", r["year"], r["rating"] or 0, bool(r["has_cover"]),
                                   r["duration"], [g for g in (r["genre"] or "").split("; ") if g],
                                   bool(r["missing"]), r["saved_at"], people.get(r["id"], []),
-                                  aliases.get(r["id"], [])))
+                                  aliases.get(r["id"], []), r["studio"] or "", r["chapters"], r["first_seen"],
+                                  bool(r["inbox_done"])))
         return out
 
     # ------------------------------------------------------------------ backup / import / export

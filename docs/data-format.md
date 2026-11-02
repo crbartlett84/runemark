@@ -17,6 +17,7 @@ from the files alone.
 | Title | `©nam` | most players and media servers |
 | Year | `©day` (a full date is kept if only the year is unchanged) | most players and media servers |
 | Description | `desc`, and `©cmt` (Explorer's Comments) when that was empty or matched | Plex, Jellyfin, Explorer |
+| Studio | `----:com.apple.iTunes:STUDIO` (UTF-8 text) | ffprobe (as `STUDIO`), Mp3tag, ExifTool, Runemark |
 | Rating | Explorer's rating (`System.Rating`, 1–99; 1, 25, 50, 75, 99 = 1–5 stars) in the `Xtra` box | Explorer, Windows |
 | Thumbnail | `covr` (JPEG or PNG) | Explorer, players, media servers |
 | Chapters | the MP4's chapters, as FFmpeg writes them | players, media servers |
@@ -120,3 +121,4 @@ share stays while either of them is there.
 ## Changes
 
 - Version 1 (Runemark 0.4.0): first version.
+- Runemark 0.5.0 adds the studio (`STUDIO`). The data block is unchanged.

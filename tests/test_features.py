@@ -24,7 +24,7 @@ def test_rating_lives_in_xtra_beside_the_tags(copy_of):
     assert xtra.read_rating(path) == 99 and xtra.read_category(path) == ["A"]
     save_mp4(path, keywords=["A"], genre=[], meta=mp4meta.VideoMeta())
     state = read_state(path)
-    assert xtra.read_rating(path) == 0 and state.meta.key() == ("", None, "", 0)
+    assert xtra.read_rating(path) == 0 and state.meta.key() == ("", None, "", 0, "")
 
 
 def test_star_values_match_explorer():
@@ -72,7 +72,7 @@ def test_write_chapters_keeps_everything_else(copy_of, media):
     assert [c.title for c in after.chapters] == ["Chapter 1", "Part = Two, really"]
     assert abs(after.chapters[1].start - 2.0) < 0.05
     assert len(after.audio_streams) == 1 and len(after.video_streams) == 1
-    assert new_state.cover == cover and new_state.meta.key() == ("A Title", 2020, "Words", 4)
+    assert new_state.cover == cover and new_state.meta.key() == ("A Title", 2020, "Words", 4, "")
     assert new_state.sync().in_sync and new_state.genre == ["Keep"]
     assert not CH.temp_path(path).exists()
     # reading them back gives the same marks (named ones stay named, numbered ones stay automatic)

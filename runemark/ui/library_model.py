@@ -9,7 +9,26 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from ..media.probe import fmt_duration
 from ..tagdb import FileRecord
 
-COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder", "People"]
+COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder", "People", "Studio", "Still to do"]
+COL_TODO = 10
+
+
+def still_to_do(rec: FileRecord) -> list[str]:
+    """What a video doesn't have yet, for working through the inbox."""
+    out = []
+    if not rec.tags:
+        out.append("tags")
+    if not rec.people:
+        out.append("people")
+    if not rec.has_cover:
+        out.append("thumbnail")
+    if rec.chapters == 0:
+        out.append("chapters")
+    if not rec.studio:
+        out.append("studio")
+    if rec.container == "mkv":
+        out.append("convert")
+    return out
 PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
@@ -35,6 +54,10 @@ def _text(rec: FileRecord, col: int) -> str:
         return fmt_duration(rec.duration) if rec.duration else ""
     if col == 8:
         return "; ".join(rec.people)
+    if col == 9:
+        return rec.studio
+    if col == COL_TODO:
+        return ", ".join(still_to_do(rec))
     return str(path.parent)
 
 
@@ -57,6 +80,10 @@ def _key(rec: FileRecord, col: int):
         return rec.duration
     if col == 8:
         return "; ".join(rec.people).casefold() or None
+    if col == 9:
+        return rec.studio.casefold() or None
+    if col == COL_TODO:
+        return len(still_to_do(rec)) or None
     return str(path.parent).casefold()
 
 

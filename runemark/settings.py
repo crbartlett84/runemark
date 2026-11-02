@@ -34,6 +34,8 @@ class Settings:
     library_last_search: dict = field(default_factory=dict)   # the Library reopens with this search/filter
     name_patterns: dict = field(default_factory=dict)         # "read" / "rename" -> the last pattern used
     suggestions_count: int = 8
+    read_nfo: bool = True                 # fill empty details from a .nfo beside a video the first time it opens
+    chapter_keys: dict = field(default_factory=dict)          # "1".."9" -> the chapter name that key adds
 
     @classmethod
     def path(cls) -> Path:

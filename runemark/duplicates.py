@@ -438,7 +438,7 @@ def relation(keeper: str, other: str, found: list[Found]) -> str:
 
 def merge_into(db, keeper: str, others: list[str], *, explorer_mode=None, preserve_mtime: bool = False) -> list[str]:
     """Give the kept copy everything the others had: their hand-typed tags and people are added, and its
-    title, year, description and rating are filled in where it has none. Nothing is taken away. Undoable
+    title, year, description, rating and studio are filled in where it has none. Nothing is taken away. Undoable
     (one history entry). Returns problems reading the file back."""
     from . import explorer, people as P
     from .library import history_fields, reindex
@@ -463,6 +463,7 @@ def merge_into(db, keeper: str, others: list[str], *, explorer_mode=None, preser
         meta.year = meta.year or st.meta.year
         meta.description = meta.description or st.meta.description
         meta.rating = meta.rating or st.meta.rating
+        meta.studio = meta.studio or st.meta.studio
     block = P.block_for(db, people, meta.year)
     tags = [db.canonical(t) for t in P.combine(hand, None, block)]
     keywords, genre = route_fields(tags, is_genre=db.is_genre_tag, is_known=lambda n: db.find_tag(n) is not None,

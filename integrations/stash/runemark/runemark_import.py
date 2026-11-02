@@ -45,6 +45,7 @@ class Stash:
         if conn.get("ApiKey"):
             self.headers["ApiKey"] = conn["ApiKey"]
         self._tags: dict[str, str] = {}
+        self._studios: dict[str, str] = {}
 
     def q(self, query: str, variables: dict | None = None) -> dict:
         body = json.dumps({"query": query, "variables": variables or {}}).encode()
@@ -59,6 +60,22 @@ class Stash:
         data = self.q("{ configuration { plugins } }")
         mine = (data["configuration"].get("plugins") or {}).get(PLUGIN_ID) or {}
         return {**DEFAULTS, **{k: v for k, v in mine.items() if v is not None}}
+
+    def studio_id(self, name: str) -> str:
+        """The studio with this name (or alias), created if Stash doesn't have it."""
+        key = name.casefold()
+        if key in self._studios:
+            return self._studios[key]
+        found = []
+        for field in ("name", "aliases"):
+            found = self.q("query($n: String!) { findStudios(studio_filter: {%s: {value: $n, modifier: EQUALS}}) "
+                           "{ studios { id } } }" % field, {"n": name})["findStudios"]["studios"]
+            if found:
+                break
+        studio_id = found[0]["id"] if found else self.q(
+            "mutation($n: String!) { studioCreate(input: {name: $n}) { id } }", {"n": name})["studioCreate"]["id"]
+        self._studios[key] = studio_id
+        return studio_id
 
     def tag_id(self, name: str) -> str:
         key = name.casefold()
@@ -75,7 +92,7 @@ class Stash:
         return tag_id
 
 
-SCENE_FIELDS = ("id title details date rating100 files { path } tags { id name } performers { id name } "
+SCENE_FIELDS = ("id title details date rating100 files { path } tags { id name } performers { id name } studio { id } "
                 "scene_markers { id seconds title primary_tag { name } } paths { screenshot }")
 
 
@@ -166,7 +183,8 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
     info = R.read(path)
     hand, profile = R.hand_and_profile_tags(info)
     people = R.people(info)
-    if not (info["keywords"] or info["title"] or info["data"] or info["rating"] or info["description"]):
+    if not (info["keywords"] or info["title"] or info["data"] or info["rating"] or info["description"]
+            or info.get("studio")):
         return ""
     overwrite = settings["overwrite"]
     update: dict = {"id": scene["id"]}
@@ -177,6 +195,10 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
     date = R.date_of(info["date"], settings["yearOnlyDates"])
     if date and (overwrite or not scene.get("date")):
         update["date"] = date
+    if info.get("studio") and (overwrite or not scene.get("studio")):
+        sid = stash.studio_id(info["studio"])
+        if sid != (scene.get("studio") or {}).get("id"):
+            update["studio_id"] = sid
     if info["rating"] and (overwrite or not scene.get("rating100")):
         update["rating100"] = info["rating"] * 20
     # people's names are performers, not tags; everything else (hand tags, attribute tags, genre) is a tag

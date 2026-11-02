@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-FIELDS = ("Title", "Year", "People", "Rating", "Name")     # Name = the current file name (without extension)
+FIELDS = ("Title", "Year", "People", "Studio", "Rating", "Name")     # Name = the current file name (without extension)
 PEOPLE_SEPARATORS = r"\s*(?:,|&|;|\band\b)\s*"
 WINDOWS_ILLEGAL = '<>:"/\\|?*'
 # the usual stand-ins for characters Windows doesn't allow in names
@@ -65,6 +65,9 @@ class ReadPlan:
     people: list[str] = field(default_factory=list)
     rating: int | None = None
     matched: bool = False
+    studio: str | None = None
+    description: str | None = None      # from a .nfo (names never hold one)
+    source: str = ""                    # where it was read from, for the preview (a .nfo's name)
 
 
 def plan_read(paths: list[str], pattern: str) -> list[ReadPlan]:
@@ -82,6 +85,8 @@ def plan_read(paths: list[str], pattern: str) -> list[ReadPlan]:
                 plan.year = int(groups["Year"])
             if groups.get("Rating"):
                 plan.rating = int(groups["Rating"])
+            if groups.get("Studio"):
+                plan.studio = " ".join(groups["Studio"].split())
             if groups.get("People"):
                 plan.people = [" ".join(x.split()) for x in re.split(PEOPLE_SEPARATORS, groups["People"]) if x.strip()]
         out.append(plan)
@@ -131,6 +136,7 @@ class RenamePlan:
 
 def values_for(record) -> dict[str, str]:
     return {"Title": record.title or "", "Year": str(record.year or ""), "People": ", ".join(record.people),
+            "Studio": getattr(record, "studio", "") or "",
             "Rating": str(record.rating or ""), "Name": Path(record.path).stem}
 
 
@@ -259,7 +265,7 @@ def undo_renames(db, batch: str | None = None) -> list[tuple[str, str]]:
 
 
 def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_people: bool = True,
-               progress=None, cancel=None) -> list[tuple[str, str]]:
+               progress=None, cancel=None, label: str = "Details read from file names") -> list[tuple[str, str]]:
     """Write what was read from the names into the files: title, year and rating fill blanks (or replace them,
     with overwrite), and people are added (matched by name or alias; new ones created when create_people).
     One undoable batch. Returns problems."""
@@ -288,6 +294,10 @@ def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_peo
                 meta.year = plan.year
             if plan.rating is not None and (overwrite or not meta.rating):
                 meta.rating = plan.rating
+            if plan.studio and (overwrite or not meta.studio):
+                meta.studio = plan.studio
+            if plan.description and (overwrite or not meta.description):
+                meta.description = plan.description
             people = P.current_people(db, state.data)
             have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _ in people}
             for name in plan.people:
@@ -297,7 +307,7 @@ def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_peo
                 if person is not None and person.uid not in have:
                     have.add(person.uid)
                     people.append((person, []))
-            issues = _save_with_meta(db, plan.path, state, people, meta, batch)
+            issues = _save_with_meta(db, plan.path, state, people, meta, batch, label)
             if issues:
                 problems.append((plan.path, "; ".join(issues)))
         except Exception as exc:  # noqa: BLE001
@@ -305,7 +315,7 @@ def apply_read(db, plans: list[ReadPlan], *, overwrite: bool = False, create_peo
     return problems
 
 
-def _save_with_meta(db, path, state, people, meta, batch) -> list[str]:
+def _save_with_meta(db, path, state, people, meta, batch, label="Details read from file names") -> list[str]:
     from . import explorer
     from . import people as P
     from .library import history_fields, reindex
@@ -319,7 +329,7 @@ def _save_with_meta(db, path, state, people, meta, batch) -> list[str]:
     keywords, genre = route_fields(tags, is_genre=db.is_genre_tag, is_known=lambda n: db.find_tag(n) is not None,
                                    original_genre=state.genre)
     outcome = save_mp4(path, keywords=keywords, genre=genre, meta=meta, data=block, explorer_mode=explorer.MODE_AUTO)
-    db.record_history(path, **history_fields(state), label="Details read from file names", batch=batch)
+    db.record_history(path, **history_fields(state), label=label, batch=batch)
     db.remember_file(path, keywords)
     reindex(db, path)
     return outcome.problems

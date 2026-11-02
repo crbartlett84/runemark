@@ -250,6 +250,16 @@ class SettingsDialog(QDialog):
         form.addRow("", self.preserve)
         form.addRow("", note)
 
+        self.read_nfo = QCheckBox("Fill in details from a .nfo beside the video")
+        self.read_nfo.setChecked(settings.read_nfo)
+        nfo_note = QLabel("When a video Runemark hasn't saved yet opens, empty title, year, studio, description and "
+                          "people are filled in from Movie.nfo beside Movie.mp4 (the format Kodi, Jellyfin, Radarr "
+                          "and Sonarr write). Nothing is saved until you save.")
+        nfo_note.setObjectName("Faint")
+        nfo_note.setWordWrap(True)
+        form.addRow("", self.read_nfo)
+        form.addRow("", nfo_note)
+
         self.writer = QComboBox()
         self.writer.addItem("Windows (falls back to Runemark's own writer)", "auto")
         self.writer.addItem("Runemark's own writer only", "builtin")
@@ -415,6 +425,7 @@ class SettingsDialog(QDialog):
         s.jpeg_quality = self.quality.value()
         s.filmstrip_count = self.film.value()
         s.preserve_modified_date = self.preserve.isChecked()
+        s.read_nfo = self.read_nfo.isChecked()
         s.explorer_writer = self.writer.currentData()
         s.save()
         if not self._apply_portable():

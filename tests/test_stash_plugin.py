@@ -81,6 +81,7 @@ class FakeStash:
 
     def __init__(self, scene_path, scene=None):
         self.tags, self.performers, self.markers, self.updates = {}, {}, [], []
+        self.studios = {"50": {"id": "50", "name": "Old Studio", "aliases": ["Sunny"]}}
         self.scene = {"id": "1", "title": "", "details": "", "date": None, "rating100": None,
                       "files": [{"path": str(scene_path)}], "tags": [], "performers": [], "scene_markers": [],
                       **(scene or {})}
@@ -103,6 +104,15 @@ class FakeStash:
                     if (p["name"].casefold() == v["n"].casefold() if field == "name"
                         else v["n"].casefold() in [a.casefold() for a in p.get("alias_list", [])])]
             return {"findPerformers": {"performers": hits}}
+        if "findStudios" in query:
+            hits = [{"id": i} for i, st in self.studios.items()
+                    if (st["name"].casefold() == v["n"].casefold() if "name:" in query
+                        else v["n"].casefold() in [a.casefold() for a in st["aliases"]])]
+            return {"findStudios": {"studios": hits}}
+        if "studioCreate" in query:
+            new = str(60 + len(self.studios))
+            self.studios[new] = {"id": new, "name": v["n"], "aliases": []}
+            return {"studioCreate": {"id": new}}
         if "performerCreate" in query:
             new = str(200 + len(self.performers))
             self.performers[new] = {"id": new, **v["i"]}
@@ -119,6 +129,8 @@ class FakeStash:
             for k, val in v["i"].items():
                 if k == "tag_ids":
                     self.scene["tags"] = [{"id": t, "name": self.tags.get(t, t)} for t in val]
+                elif k == "studio_id":
+                    self.scene["studio"] = {"id": val}
                 elif k == "performer_ids":
                     self.scene["performers"] = [{"id": p, "name": self.performers[p]["name"]} for p in val]
                 elif k != "id":
@@ -194,3 +206,27 @@ def test_chapters_from_the_old_version_are_not_added_again(tagged):
         {"id": "b", "seconds": 2.0, "title": "Swimming", "primary_tag": {"name": "Chapter"}},
     ]
     assert I.import_chapters(stash, stash.scene, str(tagged), dict(I.DEFAULTS)) == 0
+
+
+def test_studio_is_imported_matching_names_and_aliases(tmp_path, media):
+    path = tmp_path / "s.mp4"
+    shutil.copy2(media["mp4"], path)
+    save_mp4(path, keywords=["Lake"], genre=[], meta=VideoMeta("", None, "", 0, "Sunny Films"))
+    assert R.read(str(path))["studio"] == "Sunny Films"
+    stash = FakeStash(path)
+    stash._tags, stash._studios = {}, {}
+    stash.tag_id = I.Stash.tag_id.__get__(stash)
+    stash.studio_id = I.Stash.studio_id.__get__(stash)
+    I.import_scene(stash, stash.scene, dict(I.DEFAULTS))
+    assert stash.scene["studio"]["id"] == "61" and stash.studios["61"]["name"] == "Sunny Films"   # created
+    assert I.import_scene(stash, stash.scene, dict(I.DEFAULTS)) == ""                            # once
+
+    save_mp4(path, keywords=["Lake"], genre=[], meta=VideoMeta("", None, "", 0, "sunny"))
+    other = FakeStash(path, {"studio": {"id": "9"}})
+    other._tags, other._studios = {}, {}
+    other.tag_id = I.Stash.tag_id.__get__(other)
+    other.studio_id = I.Stash.studio_id.__get__(other)
+    I.import_scene(other, other.scene, dict(I.DEFAULTS))
+    assert other.scene["studio"] == {"id": "9"}                      # Stash's own studio kept
+    I.import_scene(other, other.scene, {**I.DEFAULTS, "overwrite": True})
+    assert other.scene["studio"] == {"id": "50"}                     # matched by alias, not created

@@ -18,6 +18,7 @@ GENRE_KEY = "\xa9gen"
 COVER_KEY = "covr"
 TITLE_KEY = "\xa9nam"
 YEAR_KEY = "\xa9day"
+STUDIO_KEY = "----:com.apple.iTunes:STUDIO"   # ffprobe shows it as STUDIO
 DATA_KEY = "----:com.runemark:data"     # Runemark's own record (people, where tags came from): JSON, docs/data-format.md
 DESCRIPTION_KEYS = ("desc", "\xa9cmt")   # Plex/Jellyfin read desc; Explorer shows ©cmt as Comments
 SEPARATOR = "; "
@@ -37,14 +38,16 @@ UNCHANGED = _Unchanged()
 
 @dataclass
 class VideoMeta:
-    """Title, year, description and star rating (0 = not rated, 1-5 stars)."""
+    """Title, year, description, star rating (0 = not rated, 1-5 stars) and studio.
+    studio=None means "not known here": writing leaves the file's studio alone. "" removes it."""
     title: str = ""
     year: int | None = None
     description: str = ""
     rating: int = 0
+    studio: str | None = None
 
     def key(self) -> tuple:
-        return (self.title.strip(), self.year, self.description.strip(), self.rating)
+        return (self.title.strip(), self.year, self.description.strip(), self.rating, (self.studio or "").strip())
 
 
 # Explorer stores ratings as 1-99; these are the values it writes for 1 to 5 stars
@@ -79,6 +82,7 @@ class Mp4Tags:
     year: int | None = None
     description: str = ""
     data: dict | None = None     # Runemark's data block, if the file has one
+    studio: str = ""
 
 
 def split_values(values: Iterable[str]) -> list[str]:
@@ -124,7 +128,11 @@ def read_mp4_tags(path: str | os.PathLike, mp4: MP4 | None = None) -> Mp4Tags:
         if tags.get(key):
             description = str(tags[key][0])
             break
-    return Mp4Tags(split_values(keywords), split_values(genre), cover, title, year, description, _read_data(tags))
+    studio = ""
+    if tags.get(STUDIO_KEY):
+        studio = bytes(tags[STUDIO_KEY][0]).decode("utf-8", "replace").strip()
+    return Mp4Tags(split_values(keywords), split_values(genre), cover, title, year, description, _read_data(tags),
+                   studio)
 
 
 def _read_data(tags) -> dict | None:
@@ -188,6 +196,12 @@ def write_mp4_tags(path: str | os.PathLike, *, keywords: list[str], genre: list[
         _set_text(tags, TITLE_KEY, meta.title)
         _write_year(tags, meta.year)
         _write_description(tags, meta.description)
+        if meta.studio is not None:
+            studio = " ".join(meta.studio.split())
+            if studio:
+                tags[STUDIO_KEY] = [MP4FreeForm(studio.encode("utf-8"), dataformat=AtomDataType.UTF8)]
+            elif STUDIO_KEY in tags:
+                del tags[STUDIO_KEY]
     if not isinstance(data, _Unchanged):
         if data:
             tags[DATA_KEY] = [MP4FreeForm(encode_data(data), dataformat=AtomDataType.UTF8)]
@@ -236,7 +250,7 @@ def estimate_growth(path: str | os.PathLike, *, keywords: list[str], genre: list
     """Rough number of extra bytes a write needs beyond the current tag list."""
     current = read_mp4_tags(path)
     if isinstance(meta, VideoMeta):
-        growth_meta = len((meta.title + meta.description * 2).encode("utf-8")) + 128 \
+        growth_meta = len((meta.title + meta.description * 2 + (meta.studio or "")).encode("utf-8")) + 160 \
             - len((current.title + current.description * 2).encode("utf-8"))
     else:
         growth_meta = 0

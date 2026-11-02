@@ -42,7 +42,7 @@ class LibraryWindow(QDialog):
         # ---- search row
         row = QHBoxLayout()
         self.text = QLineEdit()
-        self.text.setPlaceholderText("Search file names, titles and people")
+        self.text.setPlaceholderText("Search file names, titles, studios and people")
         self.text.setClearButtonEnabled(True)
         self.text.textChanged.connect(self._text_changed)
         self.tag_input = QLineEdit()
@@ -143,9 +143,12 @@ class LibraryWindow(QDialog):
         more_menu = QMenu(more)
         more_menu.addAction("Export for Jellyfin / Kodi (.nfo)…", self._export_nfo)
         more_menu.addAction("Show in File Explorer", self._reveal)
+        more_menu.addAction("Mark as done (out of the inbox)", lambda: self._mark_done(True))
+        more_menu.addAction("Put back in the inbox", lambda: self._mark_done(False))
         more_menu.addAction("Find duplicates…", self.find_duplicates)
         more_menu.addSeparator()
         more_menu.addAction("Read details from file names…", lambda: self.file_names("read"))
+        more_menu.addAction("Read details from .nfo files…", lambda: self.file_names("nfo"))
         more_menu.addAction("Rename from details…", lambda: self.file_names("rename"))
         more_menu.addAction("Undo last rename…", self._undo_rename)
         more_menu.addSeparator()
@@ -175,7 +178,8 @@ class LibraryWindow(QDialog):
         key(Qt.Key.Key_Return, lambda: self._open())
         key(Qt.Key.Key_Enter, lambda: self._open())
         key("T", lambda: self._bulk_add())
-        self.table.setToolTip("Enter opens · 0-5 rates · T adds tags (to the selected files)")
+        key("D", lambda: self._mark_done(True))
+        self.table.setToolTip("Enter opens · 0-5 rates · T adds tags · D marks done (to the selected files)")
 
     def _rate_selected(self, stars_: int):
         if self.selected_paths():
@@ -197,9 +201,17 @@ class LibraryWindow(QDialog):
             self._select_paths(keep)
         total = len(self.records)
         self.count.setText(f"{len(shown)} of {total} video{'s' if total != 1 else ''}")
+        inbox = sum(1 for r in self.records if r.in_inbox)
+        at = self.filter.findData(L.FILTER_INBOX)
+        if at >= 0:
+            self.filter.setItemText(at, f"Inbox · {inbox}" if inbox else "Inbox (empty)")
         if not total:
             self.empty.setText("Your library is empty. Use Folders → Add a folder… to bring in a folder of videos. "
                                "Files you save in Runemark appear here too.")
+            self.empty.show()
+        elif not shown and self.search.filter == L.FILTER_INBOX and not self.search.tags and not self.search.text:
+            self.empty.setText("The inbox is empty: every video has been saved in Runemark or marked done. New "
+                               "videos land here after a scan.")
             self.empty.show()
         elif not shown:
             self.empty.setText("Nothing matches this search.")
@@ -392,8 +404,21 @@ class LibraryWindow(QDialog):
     # ---------------------------------------------------------------- actions
     def _open(self):
         paths = [p for p in self.selected_paths() if p.exists()]
+        if len(paths) == 1 and self.search.filter == L.FILTER_INBOX:
+            # one video picked in the inbox: open the rest of the inbox after it, so Save and next
+            # (Ctrl+Enter) works straight through it
+            shown = [Path(self.model.record(r).path) for r in range(self.model.rowCount())]
+            shown = [p for p in shown if p.exists()]
+            at = next((i for i, p in enumerate(shown) if str(p).casefold() == str(paths[0]).casefold()), 0)
+            paths = shown[at:] + shown[:at]
         if paths:
             self.openRequested.emit(paths)
+
+    def _mark_done(self, done: bool):
+        paths = self.selected_paths()
+        if paths:
+            self.db.set_inbox_done(paths, done)
+            self.refresh()
 
     def find_duplicates(self):
         from .duplicates_window import DuplicatesWindow
@@ -418,7 +443,7 @@ class LibraryWindow(QDialog):
         dialog.exec()
         if dialog.applied:
             self.refresh()
-            if self.host is not None and mode == "read":
+            if self.host is not None and mode in ("read", "nfo"):
                 self.host.files_changed([Path(r.path) for r in records])
             elif self.host is not None and dialog.moved and hasattr(self.host, "files_moved"):
                 self.host.files_moved(dialog.moved)

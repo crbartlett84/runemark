@@ -112,7 +112,7 @@ def read(path: str) -> dict | None:
     if moov is None:
         return None
     out = {"title": "", "date": "", "description": "", "comment": "", "keywords": [], "genre": [], "cover": None,
-           "rating": 0, "data": None}
+           "rating": 0, "data": None, "studio": ""}
     udta = _child(moov, 8, len(moov), b"udta")
     if not udta:
         return out
@@ -136,6 +136,8 @@ def read(path: str) -> dict | None:
                             out["data"] = data if isinstance(data, dict) else None
                         except ValueError:
                             pass
+                    elif key.casefold() == "com.apple.itunes:studio":
+                        out["studio"] = " ".join(text.split())
                     elif key.rsplit(":", 1)[-1].casefold() == "keywords":
                         out["keywords"] += [t.strip() for t in text.split(";") if t.strip()]
                     continue

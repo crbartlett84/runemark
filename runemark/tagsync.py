@@ -104,7 +104,7 @@ def read_state(path: str | os.PathLike, info: MediaInfo | None = None,
             rating = value_to_stars(explorer.read_rating(path))
         except Exception as exc:  # noqa: BLE001
             log.info("couldn't read the rating of %s: %s", path, exc)
-        meta = VideoMeta(tags.title, tags.year, tags.description, rating)
+        meta = VideoMeta(tags.title, tags.year, tags.description, rating, tags.studio or None)
         return FileState(path, kind, tags.keywords, tags.genre, explorer_tags, tags.cover, error, meta, tags.data)
     # MKV (or anything else ffprobe can read): Matroska tags, cover from an image attachment
     keywords: list[str] = []
@@ -121,7 +121,8 @@ def read_state(path: str | os.PathLike, info: MediaInfo | None = None,
     meta = VideoMeta()
     if info is not None:
         meta = VideoMeta(info.tag("title"), parse_year(info.tag("date") or info.tag("date_released") or info.tag("year")),
-                         info.tag("description") or info.tag("synopsis") or info.tag("comment"), 0)
+                         info.tag("description") or info.tag("synopsis") or info.tag("comment"), 0,
+                         info.tag("studio") or info.tag("publisher") or None)
     return FileState(path, kind, keywords, genre, None, cover, meta=meta)
 
 
@@ -270,6 +271,8 @@ def verify_meta(target: Path, meta) -> list[str]:
         problems.append(f"Year read back as: {tags.year or '(none)'}")
     if tags.description != meta.description.strip():
         problems.append("The description didn't read back correctly.")
+    if meta.studio is not None and tags.studio != " ".join(meta.studio.split()):
+        problems.append(f"Studio read back as: {tags.studio or '(none)'}")
     try:
         stars = value_to_stars(explorer.read_rating(target))
     except Exception as exc:  # noqa: BLE001

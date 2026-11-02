@@ -28,15 +28,22 @@ def _button(text: str, slot) -> QPushButton:
 class NamesDialog(QDialog):
     def __init__(self, db: TagDB, records: list, mode: str, settings=None, host=None, parent=None):
         super().__init__(parent)
-        assert mode in ("read", "rename")
+        assert mode in ("read", "rename", "nfo")
+        self.from_nfo = mode == "nfo"
+        if self.from_nfo:
+            mode = "read"
         self.db, self.records, self.mode, self.settings, self.host = db, list(records), mode, settings, host
         self.plans = []
         self.applied = False
         self.moved: list[tuple[str, str]] = []      # (old, new) of what was renamed
-        self.setWindowTitle("Read details from file names" if mode == "read" else "Rename from details")
+        self.setWindowTitle("Read details from .nfo files" if self.from_nfo else
+                            "Read details from file names" if mode == "read" else "Rename from details")
         self.resize(1100, 620)
         layout = QVBoxLayout(self)
         intro = QLabel(
+            "Fill in title, year, studio, description and people from the .nfo file beside each video "
+            "(Movie.nfo for Movie.mp4, the format Kodi, Jellyfin, Radarr and Sonarr write). Only empty fields are "
+            "filled in, unless you choose to replace them." if self.from_nfo else
             "Fill in title, year and people from file names that follow a pattern. Fields: "
             + ", ".join("{" + f + "}" for f in N.FIELDS if f != "Name") + ". People can be separated by commas, "
             "“&” or “and”." if mode == "read" else
@@ -48,7 +55,8 @@ class NamesDialog(QDialog):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Pattern"))
+        pattern_label = QLabel("Pattern")
+        row.addWidget(pattern_label)
         self.pattern = QComboBox()
         self.pattern.setEditable(True)
         self.pattern.addItems(READ_PRESETS if mode == "read" else RENAME_PRESETS)
@@ -66,10 +74,15 @@ class NamesDialog(QDialog):
             b.clicked.connect(lambda _=False, f=f: self._insert(f))
             row.addWidget(b)
         layout.addLayout(row)
+        if self.from_nfo:                           # nothing to type: the .nfo files say it all
+            for i in range(row.count()):
+                if row.itemAt(i).widget() is not None:
+                    row.itemAt(i).widget().hide()
 
         opts = QHBoxLayout()
         if mode == "read":
-            self.overwrite = QCheckBox("Replace title, year and rating that are already filled in")
+            self.overwrite = QCheckBox("Replace details that are already filled in" if self.from_nfo else
+                                       "Replace title, year and rating that are already filled in")
             self.create_people = QCheckBox("Add people who aren't in your People list yet")
             self.create_people.setChecked(True)
             opts.addWidget(self.overwrite)
@@ -93,7 +106,7 @@ class NamesDialog(QDialog):
         self.error = QLabel("")
         self.error.setStyleSheet(f"color: {theme.current().danger};")
         layout.addWidget(self.error)
-        cols = ["File", "Title", "Year", "People", "Note"] if mode == "read" else ["File", "New name", "Note"]
+        cols = ["File", "Title", "Year", "Studio", "People", "Note"] if mode == "read" else ["File", "New name", "Note"]
         self.table = QTableWidget(0, len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.verticalHeader().hide()
@@ -141,7 +154,10 @@ class NamesDialog(QDialog):
         self.table.setRowCount(0)
         self.plans = []
         try:
-            if self.mode == "read":
+            if self.from_nfo:
+                from .. import nfo
+                self.plans = nfo.plan_nfo([r.path for r in self.records])
+            elif self.mode == "read":
                 self.plans = N.plan_read([r.path for r in self.records], pattern)
             else:
                 base = self.base.text().strip() if self.use_base.isChecked() and self.base.text().strip() else None
@@ -160,14 +176,17 @@ class NamesDialog(QDialog):
                 r = records.get(plan.path)
                 note = ""
                 if not plan.matched:
-                    note = "doesn't match the pattern"
+                    note = "no .nfo beside it" if self.from_nfo else "doesn't match the pattern"
+                elif self.from_nfo:
+                    note = f"from {plan.source}"
                 elif r is not None and not self.overwrite.isChecked() and r.title and plan.title and r.title != plan.title:
-                    note = f"keeps its title “{r.title}”"
+                    note = (note + "; " if note else "") + f"keeps its title “{r.title}”"
                 if plan.people:
                     new = [p for p in plan.people if self.db.find_person(p) is None]
                     if new:
                         note = (note + "; " if note else "") + "new: " + ", ".join(new)
-                cells = [Path(plan.path).name, plan.title or "", str(plan.year or ""), ", ".join(plan.people), note]
+                cells = [Path(plan.path).name, plan.title or "", str(plan.year or ""), plan.studio or "",
+                         ", ".join(plan.people), note]
             else:
                 cells = [Path(plan.old).name, str(Path(plan.new).relative_to(Path(plan.old).parent))
                          if Path(plan.new).is_relative_to(Path(plan.old).parent) else plan.new,
@@ -182,7 +201,8 @@ class NamesDialog(QDialog):
         self.table.resizeColumnsToContents()
         if self.mode == "read":
             n = sum(1 for p in self.plans if p.matched)
-            self.summary.setText(f"{n} of {len(self.plans)} file name(s) match")
+            self.summary.setText(f"{n} of {len(self.plans)} video(s) have a .nfo" if self.from_nfo else
+                                 f"{n} of {len(self.plans)} file name(s) match")
             self.apply_button.setText(f"Fill in {n} video(s)")
         else:
             n = sum(1 for p in self.plans if p.changes)
@@ -193,7 +213,7 @@ class NamesDialog(QDialog):
 
     # ---------------------------------------------------------------- applying
     def _apply(self):
-        if self.settings is not None:
+        if self.settings is not None and not self.from_nfo:
             patterns = dict(getattr(self.settings, "name_patterns", {}) or {})
             patterns[self.mode] = self.pattern.currentText().strip()
             self.settings.name_patterns = patterns
@@ -211,7 +231,9 @@ class NamesDialog(QDialog):
             try:
                 if self.mode == "read":
                     return N.apply_read(db, plans, overwrite=overwrite, create_people=create,
-                                        progress=job.report, cancel=job.cancel)
+                                        progress=job.report, cancel=job.cancel,
+                                        label="Details read from .nfo files" if self.from_nfo else
+                                        "Details read from file names")
                 batch, problems = N.apply_renames(db, plans, progress=job.report, cancel=job.cancel)
                 self.moved = db.renames(batch)
                 return problems
