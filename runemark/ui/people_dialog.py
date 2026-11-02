@@ -72,6 +72,24 @@ class PeopleDialog(QDialog):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        photo_row = QHBoxLayout()
+        self.photo = QLabel()
+        self.photo.setFixedSize(96, 96)
+        self.photo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.photo.setObjectName("Faint")
+        photo_row.addWidget(self.photo)
+        photo_buttons = QVBoxLayout()
+        self.photo_file = QPushButtonLike("Photo from a picture…", self._photo_from_file)
+        self.photo_remove = QPushButtonLike("Remove photo", self._remove_photo)
+        photo_note = QLabel("Or right-click them in the People box beside a video to use the frame on screen.")
+        photo_note.setObjectName("Faint")
+        photo_note.setWordWrap(True)
+        photo_buttons.addWidget(self.photo_file)
+        photo_buttons.addWidget(self.photo_remove)
+        photo_buttons.addWidget(photo_note)
+        photo_buttons.addStretch(1)
+        photo_row.addLayout(photo_buttons, 1)
+        right_layout.addLayout(photo_row)
         form = QFormLayout()
         self.name = QLineEdit()
         self.name.editingFinished.connect(self._save_names)
@@ -195,6 +213,7 @@ class PeopleDialog(QDialog):
                        self.tag_edit, self.from_edit, self.to_edit, self.delete_button):
             widget.setEnabled(person is not None)
         self.name.setText(person.name if person else "")
+        self._show_photo(person)
         self.aliases.setText(", ".join(person.aliases) if person else "")
         self.write_aliases.setChecked(bool(person and person.write_aliases))
         self.values.setRowCount(0)
@@ -215,6 +234,47 @@ class PeopleDialog(QDialog):
         else:
             self.usage.setText("Add a person with New person…, or from the People box beside a video.")
         self._filling = False
+
+    # ---------------------------------------------------------------- photo
+    def _show_photo(self, person):
+        from PySide6.QtGui import QPixmap
+        from .widgets import round_pixmap
+        jpeg = self.db.person_photo(person.id) if person else None
+        self.photo_file.setEnabled(person is not None)
+        self.photo_remove.setEnabled(bool(jpeg))
+        if jpeg:
+            pix = QPixmap()
+            pix.loadFromData(jpeg)
+            self.photo.setPixmap(round_pixmap(pix, 96))
+            self.photo.setText("")
+        else:
+            self.photo.setPixmap(QPixmap())
+            self.photo.setText("No photo" if person else "")
+
+    def _photo_from_file(self):
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QFileDialog
+        from .photo_crop import crop_photo
+        person = self._person()
+        if person is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Photo", "", "Pictures (*.jpg *.jpeg *.png *.webp *.bmp)")
+        if not path:
+            return
+        image = QImage(path)
+        if image.isNull():
+            QMessageBox.warning(self, "Photo", "Couldn't read that picture.")
+            return
+        jpeg = crop_photo(self, image, person.name)
+        if jpeg:
+            self.db.set_person_photo(person.id, jpeg)
+            self._show_photo(person)
+
+    def _remove_photo(self):
+        person = self._person()
+        if person is not None:
+            self.db.set_person_photo(person.id, None)
+            self._show_photo(person)
 
     # ---------------------------------------------------------------- editing
     def _changed(self):

@@ -29,6 +29,7 @@ class TagEditor(QWidget):
     createRequested = Signal(str)          # new tag typed in the box
     syncChoice = Signal(str)               # "explorer" or "keywords"
     impliedAdded = Signal(str, list)       # a tag's rules added these tags too
+    photoFromFrame = Signal(str)           # person uid: crop their photo from the frame on screen
     tagKeySet = Signal(str, str)           # (key "1"-"9", tag name): put this tag on Alt+key
 
     def __init__(self, parent=None):
@@ -275,6 +276,12 @@ class TagEditor(QWidget):
             act.triggered.connect(lambda _=False, k=key: self.tagKeySet.emit(k, name))
         menu.exec(pos)
 
+    def _person_menu(self, uid: str, name: str, pos):
+        menu = QMenu(self)
+        menu.addAction(f"Photo of {name} from this frame…", lambda: self.photoFromFrame.emit(uid))
+        menu.addAction("Open their profile", lambda: self.personOpened.emit(uid))
+        menu.exec(pos)
+
     def toggle_tag(self, name: str) -> bool:
         """Add the tag (with its rules) if it isn't on the file, otherwise remove it. True = added."""
         if name.casefold() in {t.casefold() for t in self.tags}:
@@ -290,14 +297,18 @@ class TagEditor(QWidget):
             widget.setEnabled(enabled)
         self.people_frame.set_placeholder("No people yet." if enabled else "")
 
-    def set_people(self, people: list[tuple[str, str, str]], profile: list[dict]):
+    def set_people(self, people: list[tuple[str, str, str]], profile: list[dict], photos: dict | None = None):
         """people: (uid, name, tooltip). profile: one dict per profile tag:
         {"tag", "skipped", "givers": [(person uid, person name, value uid or None, what it is)]}."""
         self._people = list(people)
         self._profile = list(profile)
         self.people_chips.clear()
+        photos = photos or {}
         for uid, name, tip in self._people:
-            chip = Chip(name, tooltip=tip, parent=self.people_frame)
+            chip = Chip(name, tooltip=tip, photo=photos.get(uid), parent=self.people_frame)
+            chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            chip.customContextMenuRequested.connect(
+                lambda pos, u=uid, n=name, c=chip: self._person_menu(u, n, c.mapToGlobal(pos)))
             chip.setProperty("person", "true")
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.removeClicked.connect(lambda _=None, u=uid: self.personRemoved.emit(u))

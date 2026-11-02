@@ -13,6 +13,7 @@ The tags themselves are always written as ordinary tags too (Keywords and Explor
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import threading
@@ -47,9 +48,13 @@ def person_entry(db: TagDB, person: Person, skip: list[str] | tuple = ()) -> dic
                        "value": v.value, "tag": v.tag, "as_tag": attr.write_tags,
                        "from_year": v.from_year, "to_year": v.to_year})
     known = {v["id"] for v in values}
-    return {"id": person.uid, "name": person.name, "aliases": list(person.aliases),
-            "aliases_as_tags": person.write_aliases, "values": values,
-            "skip": [s for s in skip if s in known]}
+    entry = {"id": person.uid, "name": person.name, "aliases": list(person.aliases),
+             "aliases_as_tags": person.write_aliases, "values": values,
+             "skip": [s for s in skip if s in known]}
+    photo = db.person_photo(person.id)
+    if photo:
+        entry["photo"] = base64.b64encode(photo).decode("ascii")     # a small JPEG, so the photo travels too
+    return entry
 
 
 def value_applies(value: dict, year: int | None) -> bool:
@@ -127,9 +132,22 @@ def resolve_people(db: TagDB, data: dict | None, *, create: bool = True) -> list
         person = db.person_by_uid(entry["id"]) or _match_by_name(db, entry)
         if person is None and create:
             person = _import_person(db, entry)
+        if person is not None and entry.get("photo") and db.person_photo(person.id) is None:
+            photo = photo_of(entry)
+            if photo:
+                db.set_person_photo(person.id, photo)          # a photo this database doesn't have yet
         if person is not None and person.id not in ids:
             ids.append(person.id)
     return ids
+
+
+def photo_of(entry: dict) -> bytes | None:
+    """The JPEG a file recorded for a person, or None."""
+    try:
+        data = base64.b64decode(entry.get("photo") or "", validate=True)
+    except (ValueError, TypeError):
+        return None
+    return data if data.startswith(b"\xff\xd8") and len(data) < 512 * 1024 else None
 
 
 def _match_by_name(db: TagDB, entry: dict) -> Person | None:

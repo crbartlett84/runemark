@@ -235,6 +235,7 @@ class MainWindow(QMainWindow):
         self.tag_editor.impliedAdded.connect(
             lambda tag, extra: self.set_status(f"“{tag}” also added " + ", ".join(f"“{t}”" for t in extra)))
         self.tag_editor.tagKeySet.connect(self._set_tag_key)
+        self.tag_editor.photoFromFrame.connect(self.person_photo_from_frame)
         self.tag_editor.set_tag_keys(self.settings.tag_keys)
         self.details = DetailsPanel()
         self.details.meta.changed.connect(self._meta_edited)
@@ -550,7 +551,9 @@ class MainWindow(QMainWindow):
         self.details.meta.set_meta(doc.meta, doc.container)
         self._refresh_tag_names()
         self.chapters.set_enabled(True, doc.container)
+        self.chapters.clear_thumbs()
         self.chapters.set_marks(doc.chapters)
+        self._load_chapter_thumbs()
         self._fill_combo()
         self._refresh_ui()
         self.player.frame.setFocus()
@@ -722,10 +725,15 @@ class MainWindow(QMainWindow):
         if doc is None:
             self.tag_editor.set_people([], [])
             return
-        rows, profile = [], {}
+        rows, profile, photos = [], {}, {}
         for person, skip in doc.people:
             entry = dict(person) if isinstance(person, dict) else people_io.person_entry(self.db, person)
             uid, name = entry["id"], entry["name"]
+            jpeg = people_io.photo_of(entry)
+            if jpeg:
+                pix = QPixmap()
+                pix.loadFromData(jpeg)
+                photos[uid] = pix
             tip = "Click to open their profile"
             if entry.get("aliases"):
                 tip = "Also known as " + ", ".join(entry["aliases"]) + "\n" + tip
@@ -750,7 +758,7 @@ class MainWindow(QMainWindow):
         for row in profile.values():
             row["skipped"] = not row.pop("given")
             out.append(row)
-        self.tag_editor.set_people(rows, out)
+        self.tag_editor.set_people(rows, out, photos)
         self._refresh_tag_names()            # chapter names used with these people come first
 
     def _add_person(self, text: str):
@@ -969,6 +977,38 @@ class MainWindow(QMainWindow):
 
         workers.start(work, on_done=done, on_error=failed)
 
+    def person_photo_from_frame(self, uid: str):
+        """Crop a person's photo out of the frame on screen."""
+        doc = self.doc
+        person = self.db.person_by_uid(uid)
+        if doc is None or self._busy or person is None:
+            if person is None:
+                self.toast("Add them to your People list first (click their name).")
+            return
+        self.player.pause()
+        pts = self.player.current_pts()
+        if pts is None:
+            pts = self.player.player.position() / 1000
+        self.set_status("Capturing frame…", busy=True)
+
+        def work(job):
+            return frames.grab_at_pts(doc.path, doc.info, pts, max_edge=None)
+
+        def done(image):
+            self.set_status("")
+            from .photo_crop import crop_photo
+            jpeg = crop_photo(self, pil_to_qimage(image), person.name)
+            if jpeg:
+                self.db.set_person_photo(person.id, jpeg)
+                self._refresh_people()
+                self.set_status(f"Photo of {person.name} saved. Their videos carry it from their next save.")
+
+        def failed(exc, _tb):
+            self.set_status("Couldn't capture the frame")
+            QMessageBox.warning(self, "Photo", f"Couldn't capture this frame:\n\n{exc}")
+
+        workers.start(work, on_done=done, on_error=failed)
+
     def choose_cover_file(self):
         doc = self.doc
         if doc is None:
@@ -1147,6 +1187,43 @@ class MainWindow(QMainWindow):
         if self.doc is not None:
             self.doc.chapters = [chapter_io.ChapterMark(m.start, m.name, m.auto) for m in self.chapters.marks]
             self._refresh_ui()
+            self._load_chapter_thumbs()
+
+    def _load_chapter_thumbs(self):
+        """Small pictures of each chapter's first frame, decoded in the background (a few at a time)."""
+        doc = self.doc
+        starts = self.chapters.missing_thumbs()[:40]
+        if doc is None or not starts or getattr(self, "_thumb_job_busy", False):
+            return
+        self._thumb_job_busy = True
+
+        def work(job):
+            out = []
+            for pts in starts:
+                if job.cancel.is_set():
+                    break
+                try:
+                    image = frames.grab_at_pts(doc.path, doc.info, pts, max_edge=192)
+                    out.append((pts, image))
+                    job.report(-1, "")
+                except Exception as exc:  # noqa: BLE001
+                    log.info("no chapter picture at %.3f: %s", pts, exc)
+            return out
+
+        def done(results):
+            self._thumb_job_busy = False
+            if self.doc is not doc:
+                return
+            for pts, image in results:
+                self.chapters.set_thumb(pts, QPixmap.fromImage(pil_to_qimage(image)))
+            tried = {round(p, 3) for p in starts}
+            if any(round(p, 3) not in tried for p in self.chapters.missing_thumbs()):
+                QTimer.singleShot(0, self._load_chapter_thumbs)     # chapters added meanwhile
+
+        def failed(_exc, _tb):
+            self._thumb_job_busy = False
+
+        workers.start(work, on_done=done, on_error=failed)
 
     def _chapter_named(self, name: str):
         if self.doc is not None and name.casefold() not in {t.casefold() for t in self.doc.tags}:

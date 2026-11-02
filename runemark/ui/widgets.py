@@ -84,13 +84,33 @@ class FlowLayout(QLayout):
                 widget.deleteLater()
 
 
+def round_pixmap(source, size: int):
+    """A square photo as a circle of `size` pixels (sharp on high-DPI screens)."""
+    from PySide6.QtGui import QGuiApplication, QPainter, QPainterPath, QPixmap
+    ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
+    px = int(size * ratio)
+    scaled = source.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                           Qt.TransformationMode.SmoothTransformation)
+    out = QPixmap(px, px)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(0, 0, px, px)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, scaled)
+    painter.end()
+    out.setDevicePixelRatio(ratio)
+    return out
+
+
 class Chip(QFrame):
     """A tag pill with a remove button. Unknown tags (not in the database) are dashed."""
     removeClicked = Signal(str)
     clicked = Signal(str)
 
     def __init__(self, text: str, *, unknown: bool = False, genre: bool = False, tooltip: str = "",
-                 removable: bool = True, parent=None):
+                 removable: bool = True, photo=None, parent=None):
         super().__init__(parent)
         self.text = text
         self.setObjectName("Chip")
@@ -99,6 +119,12 @@ class Chip(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(11, 3, 5 if removable else 11, 3)
         layout.setSpacing(5)
+        if photo is not None and not photo.isNull():        # a QPixmap: a person's photo, as a small round face
+            face = QLabel()
+            face.setPixmap(round_pixmap(photo, 20))
+            face.setFixedSize(QSize(20, 20))
+            layout.setContentsMargins(4, 3, 5 if removable else 11, 3)
+            layout.addWidget(face)
         label = QLabel(text)
         label.setObjectName("ChipText")
         layout.addWidget(label)

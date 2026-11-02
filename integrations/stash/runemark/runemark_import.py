@@ -104,7 +104,7 @@ def find_performer(stash: Stash, person: dict) -> dict | None:
             found = stash.q("query($n: String!) { findPerformers(performer_filter: {%s: {value: $n, modifier: EQUALS}}) "
                             "{ performers { id name alias_list custom_fields hair_color ethnicity eye_color country "
                             "height_cm weight measurements tattoos piercings career_length details birthdate "
-                            "disambiguation gender death_date } } }" % field, {"n": name})["findPerformers"]["performers"]
+                            "disambiguation gender death_date image_path } } }" % field, {"n": name})["findPerformers"]["performers"]
             if found:
                 return found[0]
     return None
@@ -153,6 +153,10 @@ def performer_fields(person: dict, existing: dict | None, overwrite: bool) -> di
                 out[field] = value
     if custom_changed:
         out["custom_fields"] = custom
+    # the photo Runemark carries, when Stash shows its placeholder (a performer without an image of their own)
+    photo = person.get("photo")
+    if photo and (existing is None or "default=true" in (have.get("image_path") or "") or not have.get("image_path")):
+        out["image"] = "data:image/jpeg;base64," + photo
     return out
 
 

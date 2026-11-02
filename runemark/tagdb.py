@@ -129,6 +129,12 @@ CREATE TABLE IF NOT EXISTS file_chapters(
     name TEXT NOT NULL COLLATE NOCASE
 );
 CREATE INDEX IF NOT EXISTS idx_file_chapters_file ON file_chapters(file_id);
+-- 0.6.0: a photo for each person (a small square JPEG), also carried in their videos' data blocks.
+CREATE TABLE IF NOT EXISTS person_photos(
+    person_id INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+    image BLOB NOT NULL,
+    updated_at TEXT
+);
 -- 0.6.0: tag rules ("Cowgirl" also adds "Sex"), applied when a tag is added.
 CREATE TABLE IF NOT EXISTS tag_rules(
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -1080,6 +1086,19 @@ class TagDB:
     def person_by_uid(self, uid: str) -> Person | None:
         row = self.conn.execute("SELECT * FROM people WHERE uid = ?", (uid,)).fetchone()
         return self._person_from_row(row) if row else None
+
+    def person_photo(self, person_id: int) -> bytes | None:
+        row = self.conn.execute("SELECT image FROM person_photos WHERE person_id = ?", (person_id,)).fetchone()
+        return bytes(row[0]) if row else None
+
+    def set_person_photo(self, person_id: int, jpeg: bytes | None) -> None:
+        """Set (or with None, remove) a person's photo."""
+        if jpeg:
+            self.conn.execute("INSERT OR REPLACE INTO person_photos(person_id, image, updated_at) VALUES(?, ?, ?)",
+                              (person_id, sqlite3.Binary(jpeg), _now()))
+        else:
+            self.conn.execute("DELETE FROM person_photos WHERE person_id = ?", (person_id,))
+        self.conn.commit()
 
     def find_person(self, name_or_alias: str) -> Person | None:
         owner = self._name_owner(" ".join(str(name_or_alias).split()))

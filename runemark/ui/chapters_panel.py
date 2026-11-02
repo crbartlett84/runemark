@@ -107,6 +107,7 @@ class ChaptersPanel(QWidget):
         self._enabled = False
         self.names = QStringListModel(self)
         self.chapter_keys: dict = {}
+        self.thumbs: dict[float, object] = {}       # round(start, 3) -> QIcon of the chapter's first frame
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 10, 8, 10)
@@ -155,6 +156,9 @@ class ChaptersPanel(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
                                    | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.horizontalHeader().setSectionResizeMode(COL_TIME, QHeaderView.ResizeMode.ResizeToContents)
+        from PySide6.QtCore import QSize
+        self.table.setIconSize(QSize(96, 54))
+        self.table.verticalHeader().setDefaultSectionSize(60)
         self.table.horizontalHeader().setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setItemDelegateForColumn(COL_NAME, _NameDelegate(self.names, self.table))
         self.table.itemChanged.connect(self._item_changed)
@@ -218,6 +222,20 @@ class ChaptersPanel(QWidget):
         else:
             self.banner.hide()
         self._update_buttons()
+
+    def missing_thumbs(self) -> list[float]:
+        """Chapter starts that don't have a picture yet."""
+        return [m.start for m in self.marks if round(m.start, 3) not in self.thumbs]
+
+    def set_thumb(self, start: float, pixmap) -> None:
+        from PySide6.QtGui import QIcon
+        self.thumbs[round(start, 3)] = QIcon(pixmap)
+        for row, mark in enumerate(self.marks):
+            if abs(mark.start - start) < 0.0005 and self.table.item(row, COL_TIME) is not None:
+                self.table.item(row, COL_TIME).setIcon(self.thumbs[round(start, 3)])
+
+    def clear_thumbs(self):
+        self.thumbs = {}
 
     def set_marks(self, marks: list[ChapterMark]):
         self.marks = [ChapterMark(m.start, m.name, m.auto) for m in marks]
@@ -290,6 +308,9 @@ class ChaptersPanel(QWidget):
         self.table.setRowCount(len(self.marks))
         for row, mark in enumerate(self.marks):
             when = QTableWidgetItem(fmt_duration(mark.start, millis=True))
+            icon = self.thumbs.get(round(mark.start, 3))
+            if icon is not None:
+                when.setIcon(icon)
             when.setFlags(when.flags() & ~Qt.ItemFlag.ItemIsEditable)
             when.setToolTip("Click to show this frame")
             name = QTableWidgetItem(mark.name)
