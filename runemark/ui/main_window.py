@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         return {"path": doc.path, "title": m.title, "year": m.year, "date": m.full_date(), "studio": m.studio or "",
                 "description": m.description, "rating": m.rating, "links": list(m.links or []),
                 "tags": list(doc.tags), "people": people, "has_cover": bool(doc.whole_cover()),
-                "container": doc.container}
+                "container": doc.container, "unsaved": doc.dirty()}
 
     def plugin_apply(self, changes: dict) -> list[str]:
         """apply_details for plugins: the same edits a person could make, left unsaved."""

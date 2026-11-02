@@ -65,7 +65,7 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | Call | What it does |
 |---|---|
 | `api.current_file()` | Its path, or `None`. |
-| `api.current_details()` | `{"path", "title", "year", "date", "studio", "description", "rating", "links", "tags", "people", "has_cover", "container"}` as shown now (unsaved edits included), or `None`. `tags` are the hand-typed ones; tags from people's profiles are added when saving. |
+| `api.current_details()` | `{"path", "title", "year", "date", "studio", "description", "rating", "links", "tags", "people", "has_cover", "container", "unsaved"}` as shown now (unsaved edits included), or `None`. `tags` are the hand-typed ones; tags from people's profiles are added when saving. |
 | `api.apply_details(**changes)` | Any of `title`, `year`, `date` (`"YYYY-MM-DD"`, sets the year too), `studio`, `description`, `rating` (0–5), `links` (replaces), `add_links`, `add_tags` (names; spelled as in the database when they exist there), `people` (names or aliases; new names are added to People), `cover` (JPEG or PNG bytes). Returns what changed. |
 | `api.save(then=None)` | Save, like Ctrl+S, then call `then()`. |
 
