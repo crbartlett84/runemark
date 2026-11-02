@@ -1,5 +1,5 @@
 name: Runemark Import
-description: Imports what Runemark wrote into your videos (tags, title, date, description, rating, cover, people as performers, chapters as markers). Fills in blanks; never removes anything.
+description: Imports the tags, details, studio, people and chapters Runemark wrote into your videos. Fills in blanks; never removes anything.
 version: 0.1.0
 url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
 exec:
