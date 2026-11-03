@@ -4,6 +4,8 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-03
+
 ### Added
 - Plugins can create category paths (and make one a genre category), move tags between categories, and read and set tag rules (`api.add_category`, `api.set_tag_category`, `api.tag_rules`, `api.set_tag_rule`).
 
