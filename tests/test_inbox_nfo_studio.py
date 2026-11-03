@@ -248,8 +248,8 @@ def test_chapter_panel_named_chapters_and_keys():
     assert dialog.keys() == {"1": "Intro", "2": "Picnic , lunch"}
 
 
-needs_player = pytest.mark.skipif(__import__("sys").platform != "win32",
-                                  reason="needs Qt Multimedia playback (Windows build)")
+needs_player = pytest.mark.skipif(__import__("sys").platform != "win32" or bool(__import__("os").environ.get("GITHUB_ACTIONS")),
+                                  reason="needs Qt Multimedia playback on a real Windows desktop (crashes on GitHub's runners)")
 
 
 @needs_player

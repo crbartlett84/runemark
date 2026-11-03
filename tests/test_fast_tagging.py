@@ -1,6 +1,7 @@
 """Round 3 (v0.3.0): faster tagging. Save and next, copy/paste tags, several tags at once, Library keys,
 and the Library remembering its search."""
 import shutil
+import os
 import sys
 import time
 
@@ -95,7 +96,8 @@ def test_library_number_keys_rate_and_t_adds_tags(tmp_path, media, qapp, monkeyp
 # --- main window: Save and next, copy and paste ------------------------------------------------------------
 # The main window builds a video player, which needs a working Qt Multimedia backend: present on Windows (the
 # build machine), missing on headless Linux, where creating it crashes. So these run on Windows only.
-needs_player = pytest.mark.skipif(sys.platform != "win32", reason="needs Qt Multimedia playback (Windows build)")
+needs_player = pytest.mark.skipif((sys.platform != "win32" or bool(os.environ.get("GITHUB_ACTIONS"))),
+                                  reason="needs Qt Multimedia playback on a real Windows desktop (crashes on GitHub's runners)")
 
 @needs_player
 def test_save_and_next_then_paste_tags(tmp_path, media, qapp):

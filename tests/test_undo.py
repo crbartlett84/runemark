@@ -2,6 +2,7 @@
 (last 10 per file); a file steps back one save at a time, and a bulk change can be undone as a whole."""
 import shutil
 import sqlite3
+import os
 import sys
 import time
 
@@ -138,7 +139,8 @@ def test_undo_bulk_reports_missing_files(tmp_path, media, db):
 
 
 # --- the editor's Undo last save (needs the video player: Windows build only) ------------------------------
-needs_player = pytest.mark.skipif(sys.platform != "win32", reason="needs Qt Multimedia playback (Windows build)")
+needs_player = pytest.mark.skipif((sys.platform != "win32" or bool(os.environ.get("GITHUB_ACTIONS"))),
+                                  reason="needs Qt Multimedia playback on a real Windows desktop (crashes on GitHub's runners)")
 
 
 @pytest.fixture

@@ -118,7 +118,8 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-@pytest.mark.skipif(__import__("sys").platform != "win32", reason="needs Qt Multimedia playback (Windows build)")
+@pytest.mark.skipif(__import__("sys").platform != "win32" or bool(__import__("os").environ.get("GITHUB_ACTIONS")),
+                    reason="needs Qt Multimedia playback on a real Windows desktop (crashes on GitHub's runners)")
 def test_main_window_upgrade_for_a_plugin(setup, qapp, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     from test_fast_tagging import wait_until
