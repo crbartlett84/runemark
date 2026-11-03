@@ -75,6 +75,9 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.tags()` | `[{"name", "category": ["Parent", "Child"]}]`. |
 | `api.find_tag(name)` | The tag as spelled in the database (case doesn't matter), or `None`. |
 | `api.categories()` | Every category as a path, `["Parent", "Child"]`. |
+| `api.add_category(path, genre=None)` | Make sure a category path exists, creating what's missing; `genre=True` makes the last one a genre category (its tags go to the file's genre field). Returns the path as spelled. |
+| `api.set_tag_category(name, category)` | Move an existing tag into a category path (created if missing), or out of any with `None`. |
+| `api.tag_rules()` / `api.set_tag_rule(name, adds)` | Read tag rules (`{tag: [tags it also adds]}`), or set one tag's rule (an empty list removes it). |
 | `api.add_tag(name, category=None)` | Add a tag (in an existing category path); returns its name. Does nothing if it exists. |
 | `api.rename_tag(old, new)` | Rename a tag (or merge it into an existing `new`), then offer to update the videos that carry it, like renaming in the Tag database. Returns the new name. |
 | `api.find_person(name)` | `{"name", "aliases", "links", "has_photo"}` by name or alias, or `None`. |

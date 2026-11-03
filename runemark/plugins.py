@@ -226,6 +226,61 @@ class PluginAPI:
             self._w.tag_editor.refresh_database()
         return tag.name
 
+    def add_category(self, path: list[str], genre: bool | None = None) -> list[str]:
+        """Make sure a category path exists (["Parent", "Child"]), creating what's missing. genre=True makes the last
+        one a genre category (its tags are written to the file's genre field), False makes it an ordinary one, None
+        leaves that alone. Returns the path as spelled in the database."""
+        db = self._w.db
+        parent = None
+        out = []
+        for name in path:
+            found = next((c for c in db.categories() if c.parent_id == parent and c.name.casefold() == name.casefold()),
+                         None)
+            if found is None:
+                found = db.add_category(name, parent)
+            parent = found.id
+            out.append(found.name)
+        if genre is not None and parent is not None:
+            db.set_write_genre(parent, bool(genre))
+        self._w.tag_editor.refresh_database()
+        return out
+
+    def set_tag_category(self, name: str, category: list[str] | None) -> str | None:
+        """Move an existing tag into a category path (created if missing), or out of any with None. Returns its
+        name, or None when there's no such tag."""
+        db = self._w.db
+        tag = db.find_tag(name)
+        if tag is None:
+            return None
+        cid = None
+        if category:
+            path = self.add_category(list(category))
+            cid = next(c.id for c in db.categories() if db.category_path(c.id) == path)
+        if tag.category_id != cid:
+            db.move_tag(tag.id, cid)
+            self._w.tag_editor.refresh_database()
+        return tag.name
+
+    def tag_rules(self) -> dict[str, list[str]]:
+        """{tag name: [the tags it also adds]} for every tag rule."""
+        db = self._w.db
+        return {db.tag(tid).name: [db.tag(i).name for i in ids] for tid, ids in db._rule_ids()}
+
+    def set_tag_rule(self, name: str, adds: list[str]) -> None:
+        """Make a tag also add these tags (its rule is replaced; the tags must exist). An empty list removes it."""
+        db = self._w.db
+        tag = db.find_tag(name)
+        if tag is None:
+            raise ValueError(f"There's no tag called “{name}”.")
+        ids = []
+        for other in adds:
+            t = db.find_tag(other)
+            if t is None:
+                raise ValueError(f"There's no tag called “{other}”.")
+            ids.append(t.id)
+        db.set_implied(tag.id, ids)
+        self._w.tag_editor.refresh_database()
+
     def rename_tag(self, old: str, new: str) -> str | None:
         """Rename a tag in the database (or merge it into `new` if that exists), and offer to update the videos that
         carry it, exactly like renaming in the Tag database window. Returns the tag's new name, or None."""

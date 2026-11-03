@@ -196,3 +196,25 @@ def test_plugin_api_attributes_with_tag_wording(tmp_path):
     assert {a["name"]: (a["stash_field"], a["as_tag"]) for a in api.attributes()} == {
         "Born": ("birthdate", False), "Hair": ("hair_color", True)}
     db.close()
+
+
+def test_plugin_api_categories_moves_and_rules(tmp_path):
+    db = TagDB(tmp_path / "t.db")
+    api = plugins.PluginAPI(FakeWindow(db, Settings()), plugins.PluginHost(), plugins.Plugin(tmp_path, "p"))
+    assert api.add_category(["Scenes", "Genre"], genre=True) == ["Scenes", "Genre"]
+    assert api.add_category(["scenes", "genre"]) == ["Scenes", "Genre"]          # found, not doubled
+    genre = next(c for c in db.categories() if c.name == "Genre")
+    assert genre.write_genre and len(db.categories()) == 2
+    db.add_tag("Blowjob Scene", None)
+    assert api.set_tag_category("blowjob scene", ["Scenes", "Genre"]) == "Blowjob Scene"
+    assert db.is_genre_tag("Blowjob Scene")
+    assert api.set_tag_category("Nope", ["X"]) is None
+    db.add_tag("Werewolf", None)
+    db.add_tag("Creature", None)
+    api.set_tag_rule("Werewolf", ["Creature"])
+    assert api.tag_rules() == {"Werewolf": ["Creature"]} and db.with_implied(["Werewolf"]) == ["Werewolf", "Creature"]
+    with pytest.raises(ValueError):
+        api.set_tag_rule("Werewolf", ["Missing"])
+    api.set_tag_rule("Werewolf", [])
+    assert api.tag_rules() == {}
+    db.close()
