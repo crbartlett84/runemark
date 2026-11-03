@@ -295,6 +295,22 @@ class PluginAPI:
         then(None, reason) if it couldn't."""
         self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after)
 
+    def upgrade_copy(self, curated: Path | str, better: Path | str, old_to: Path | str | None = None,
+                     then: Callable[[Path | None, str], Any] | None = None) -> None:
+        """Put `better` (a sharper or more complete copy of the same video) in `curated`'s place: same folder and
+        name, with all of curated's tags, people, details, thumbnail and chapters (moved to the matching moments).
+        Runemark compares the two, shows the user what will happen and asks first. The curated copy goes to
+        `old_to` (a folder), or the Recycle Bin when None. then(final_path, "") when done, or then(None, reason)."""
+        self._w.upgrade_copy(Path(curated), Path(better), Path(old_to) if old_to else None, then)
+
+    def video_info(self, path: Path | str) -> dict:
+        """{"width", "height", "duration", "bit_rate", "size", "container"} of any video (read with ffprobe)."""
+        from .duplicates import describe_copy
+        from .tagsync import container_of
+        c = describe_copy(str(path))
+        return {"width": c.width, "height": c.height, "duration": c.duration, "bit_rate": c.bit_rate,
+                "size": c.size, "container": container_of(path)}
+
     # ---- the plugin's own settings and messages
     @property
     def settings(self) -> dict:

@@ -79,10 +79,14 @@ class DuplicatesWindow(QDialog):
         self.merge_button = _button("Copy tags into the one to keep", self._merge)
         self.merge_button.setToolTip("Adds the other copies' tags and people to the kept one, and fills in its "
                                      "title, year, description and rating where it has none. Nothing is removed.")
+        self.upgrade_button = _button("Upgrade this one to the one to keep…", self._upgrade)
+        self.upgrade_button.setToolTip("Puts the one to keep in the selected copy's place (same folder and name) with "
+                                       "all of the selected copy's tags, people, details, thumbnail and chapters "
+                                       "(moved to the same moments). The selected copy goes to the Recycle Bin.")
         self.recycle_button = _button("Send ticked to the Recycle Bin…", self._recycle)
         self.open_button = _button("Open", lambda: self._open(self._selected_paths()))
         self.reveal_button = _button("Show in File Explorer", self._reveal)
-        for b in (self.keep_button, self.tick_button, self.merge_button, self.recycle_button):
+        for b in (self.keep_button, self.tick_button, self.merge_button, self.upgrade_button, self.recycle_button):
             bottom.addWidget(b)
         bottom.addStretch(1)
         bottom.addWidget(self.open_button)
@@ -239,6 +243,8 @@ class DuplicatesWindow(QDialog):
         self.keep_button.setEnabled(row is not None and row.data(0, ROLE_PATH) != self._keep_of(row))
         self.tick_button.setEnabled(row is not None)
         self.merge_button.setEnabled(row is not None)
+        self.upgrade_button.setEnabled(row is not None and self.host is not None
+                                       and row.data(0, ROLE_PATH) != self._keep_of(row))
         self.recycle_button.setEnabled(bool(self._ticked()))
         has = bool(self._selected_paths())
         self.open_button.setEnabled(has)
@@ -256,6 +262,20 @@ class DuplicatesWindow(QDialog):
         n = row.data(0, ROLE_GROUP)
         self.groups[n]["keep"] = row.data(0, ROLE_PATH)
         self._fill()
+
+    def _upgrade(self):
+        row = self._current_row()
+        keep = self._keep_of(row)
+        if row is None or keep is None or self.host is None:
+            return
+        curated = row.data(0, ROLE_PATH)
+
+        def then(final, _reason):
+            if final is not None:
+                self.changed.emit()
+                self.status.setText(f"Upgraded {Path(final).name}; find duplicates again to refresh the list")
+
+        self.host.upgrade_copy(Path(curated), Path(keep), None, then)
 
     def _tick_others(self):
         row = self._current_row()

@@ -336,6 +336,104 @@ class MainWindow(QMainWindow):
         else:
             go()
 
+    def upgrade_copy(self, curated: Path, better: Path, old_to: Path | None = None, then=None):
+        """Put a better copy of a video in the curated one's place, keeping everything (runemark/upgrade.py):
+        compare them, show what will happen, and do it once confirmed. then(final_path, "") or then(None, reason).
+        old_to: where the curated copy goes (None: the Recycle Bin)."""
+        from .. import upgrade as U
+        curated, better = Path(curated), Path(better)
+
+        def finish(path, reason):
+            if then:
+                self._run_plugin(then, path, reason)
+
+        def failed(title):
+            def show(exc, _tb):
+                dialog.finish()
+                self._busy = False
+                if type(exc).__name__ != "Cancelled":
+                    QMessageBox.warning(self, title, str(exc))
+                self.set_status(f"{title}: nothing changed")
+                finish(None, str(exc))
+            return show
+
+        def confirm(plan):
+            dialog.finish()
+            self._busy = False
+            text = (f"Put {better.name} in place of {curated.name}?\n\n• " + "\n• ".join(plan.summary()) +
+                    "\n\nIt keeps your copy's name, folder, tags, people, details, thumbnail and chapters. Your old "
+                    "copy goes " + (f"to {old_to}." if old_to else "to the Recycle Bin."))
+            icon = QMessageBox.Icon.Question if plan.sharper and not plan.dropped else QMessageBox.Icon.Warning
+            box = QMessageBox(icon, "Upgrade to a better copy", text,
+                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self)
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                finish(None, "cancelled")
+                return
+            run(plan)
+
+        def run(plan):
+            nonlocal dialog
+            dialog = ProgressDialog("Upgrading", cancellable=True, parent=self)
+            self._busy = True
+            db_path, mode = self.db.path, self.settings.explorer_writer
+
+            def work(job):
+                db = TagDB(db_path)
+                try:
+                    return U.do_upgrade(db, plan, old_to=old_to, explorer_mode=mode, progress=job.report,
+                                        cancel=job.cancel)
+                finally:
+                    db.close()
+
+            def done(result):
+                dialog.finish()
+                self._busy = False
+                gone = {file_key(curated), file_key(better)}
+                self.queue = [result.final if file_key(p) in gone else p for p in self.queue]
+                was_open = self.doc is not None and file_key(self.doc.path) in gone
+                if was_open:
+                    self.doc = None
+                self._library_saved(result.final)
+                message = f"Upgraded {result.final.name} to the better copy"
+                if was_open:
+                    self._load(result.final, 0, status=message)
+                else:
+                    self.set_status(message)
+                notes = result.notes + ([("Some details didn't read back as expected:\n• " +
+                                          "\n• ".join(result.problems))] if result.problems else [])
+                if notes:
+                    QMessageBox.information(self, "Upgraded", "\n\n".join(notes))
+                finish(result.final, "")
+
+            job = workers.start(work, on_done=done, on_error=failed("Upgrade failed"),
+                                on_progress=dialog.update_progress)
+            dialog.cancelRequested.connect(job.cancel.set)
+            dialog.show()
+
+        def begin():
+            nonlocal dialog
+            dialog = ProgressDialog("Comparing the two copies", cancellable=True, parent=self)
+            self._busy = True
+            db_path = self.db.path
+
+            def work(job):
+                db = TagDB(db_path)
+                try:
+                    return U.plan_upgrade(db, curated, better, progress=job.report, cancel=job.cancel)
+                finally:
+                    db.close()
+
+            job = workers.start(work, on_done=confirm, on_error=failed("Upgrade"), on_progress=dialog.update_progress)
+            dialog.cancelRequested.connect(job.cancel.set)
+            dialog.show()
+
+        dialog = None
+        if self._busy:
+            QMessageBox.information(self, "Runemark", "Please wait until the current save finishes.")
+            finish(None, "busy")
+            return
+        self.release_for([curated, better], begin)
+
     # ================================================================ layout
     def _build_header(self):
         bar = QFrame()
