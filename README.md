@@ -108,6 +108,7 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **Details…** sets the studio or year of the selected videos, and adds people, in one undoable change. Blank boxes are left as they are.
 - **Grid** shows the videos as thumbnails (their covers, cached after the first look); **List** goes back. The selection and keys work the same in both.
 - **More → Health check…** looks for videos where Explorer's Tags and the file's own tags disagree, people's tags are out of date (their profile changed since), a `.nfo` has details the video doesn't, there's no thumbnail, or the file has gone. Fix them one at a time or all at once; fixes can be undone like a bulk change.
+- **More → Save space (re-encode to HEVC)…** shows which older videos would shrink by about half as HEVC (which most TVs play directly), and re-encodes the ones you tick, keeping all their tags, details and chapters; originals go to the Recycle Bin once the new copy checks out.
 - **More → Stats…**: how much of the library is tagged, has people, chapters, thumbnails and studios; the most used tags, people and studios; ratings; and how many new videos arrived each month.
 - **Scan on start:** Runemark looks for new and changed videos in the background when it opens, so the inbox is up to date without **Scan for changes** (turn it off in Settings).
 - **Remove from the library** only changes Runemark's list; the files aren't touched.

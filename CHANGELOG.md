@@ -4,6 +4,11 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
+### Added
+- **Save space** (Library → More → *Save space (re-encode to HEVC)…*): lists the selected videos (or all shown) that would get much smaller as HEVC, with the size now, about after and the saving, ticked and totalled. *Re-encode* rewrites them one at a time with the fastest encoder that works on the PC (Intel Quick Sync, NVIDIA, AMD, else x265), keeps every tag, person, detail, thumbnail and chapter and the same file name, and sends each original to the Recycle Bin only after its new copy checks out (HEVC, same length, smaller). Stop any time between videos; the history says "Re-encoded to save space".
+
 ## [0.7.5] - 2026-11-03
 
 ### Added

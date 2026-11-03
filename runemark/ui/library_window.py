@@ -183,6 +183,7 @@ class LibraryWindow(QDialog):
         more_menu.addAction("Put back in the inbox", lambda: self._mark_done(False))
         more_menu.addAction("Find duplicates…", self.find_duplicates)
         more_menu.addAction("Health check…", self.health_check)
+        more_menu.addAction("Save space (re-encode to HEVC)…", self.save_space)
         more_menu.addAction("Stats…", self.show_stats)
         more_menu.addSeparator()
         more_menu.addAction("Read details from file names…", lambda: self.file_names("read"))
@@ -670,6 +671,19 @@ class LibraryWindow(QDialog):
         dialog.changed.connect(self.refresh)
         dialog.show()
         dialog.run_check()
+        dialog.exec()
+        self.refresh()
+
+    def save_space(self):
+        from .spacesaver_dialog import SpaceSaverDialog
+        records = self._targets()
+        if not records:
+            return
+        dialog = SpaceSaverDialog(self.db, records, host=self.host, parent=self)
+        dialog.openRequested.connect(self.openRequested)
+        dialog.changed.connect(self.refresh)
+        dialog.show()
+        dialog.assess()
         dialog.exec()
         self.refresh()
 

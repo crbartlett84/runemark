@@ -208,7 +208,7 @@ def _rewrite(info: MediaInfo, marks: list[ChapterMark], progress, cancel) -> tup
 
 def do_upgrade(db, plan: UpgradePlan, *, old_to: str | os.PathLike | None = None,
                explorer_mode: str = explorer.MODE_AUTO, progress: Progress | None = None,
-               cancel: threading.Event | None = None) -> UpgradeResult:
+               cancel: threading.Event | None = None, label: str = "Upgraded to a better copy") -> UpgradeResult:
     """Put the better copy in the curated one's place with all its details (see the module docstring)."""
     from .library import history_fields, reindex
     from .tagsync import (
@@ -287,7 +287,7 @@ def do_upgrade(db, plan: UpgradePlan, *, old_to: str | os.PathLike | None = None
         if final != curated:
             db.move_file(curated, final)
         db.forget_file(better)
-        db.record_history(final, **history_fields(kept), label="Upgraded to a better copy")
+        db.record_history(final, **history_fields(kept), label=label)
         db.remember_file(final, keywords)
         reindex(db, final)
     return UpgradeResult(final, old_now, outcome.problems, notes)
