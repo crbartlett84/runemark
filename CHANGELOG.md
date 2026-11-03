@@ -4,6 +4,11 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-03
+
+### Added
+- **Still to do** in the Library's filter: videos you've already saved (or marked done) that are still missing something — tags, a genre, people, a thumbnail, chapters or a studio. The *Still to do* column says what, and sorting by it puts the most gaps first. Genre now counts in that column too.
+
 ## [0.7.4] - 2026-11-03
 
 ### Fixed

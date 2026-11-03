@@ -191,9 +191,11 @@ def test_inbox_is_new_videos_not_saved_or_marked_done(tmp_path, media):
                                if L.matches(r, L.Search(filter=L.FILTER_INBOX)))
         assert inbox() == ["a.mp4", "b.mp4", "c.mp4"]
         rec = next(r for r in db.library() if r.path.endswith("a.mp4"))
-        assert still_to_do(rec) == ["tags", "people", "thumbnail", "chapters", "studio"]
+        assert still_to_do(rec) == ["tags", "genre", "people", "thumbnail", "chapters", "studio"]
         assert L.apply_bulk(db, [folder / "a.mp4"], L.BulkChange(add=["Lake"])) == []   # saved: out
         db.set_inbox_done([folder / "b.mp4"])                                             # done: out
+        gaps = sorted(Path(r.path).name for r in db.library() if L.matches(r, L.Search(filter=L.FILTER_GAPS)))
+        assert gaps == ["a.mp4", "b.mp4"]           # curated (saved / marked done) but still missing things
         assert inbox() == ["c.mp4"]
         db.set_inbox_done([folder / "b.mp4"], False)
         assert inbox() == ["b.mp4", "c.mp4"]

@@ -6,29 +6,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
+from ..library import still_to_do  # noqa: F401 (also imported from here)
 from ..media.probe import fmt_duration
 from ..tagdb import FileRecord
 
 COLUMNS = ["Name", "Title", "Year", "Rating", "Tags", "Thumbnail", "Length", "Folder", "People", "Studio", "Still to do"]
 COL_TODO = 10
 
-
-def still_to_do(rec: FileRecord) -> list[str]:
-    """What a video doesn't have yet, for working through the inbox."""
-    out = []
-    if not rec.tags:
-        out.append("tags")
-    if not rec.people:
-        out.append("people")
-    if not rec.has_cover:
-        out.append("thumbnail")
-    if rec.chapters == 0:
-        out.append("chapters")
-    if not rec.studio:
-        out.append("studio")
-    if rec.container == "mkv":
-        out.append("convert")
-    return out
 PATH_ROLE = Qt.ItemDataRole.UserRole
 
 

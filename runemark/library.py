@@ -34,10 +34,12 @@ FILTER_MKV = "mkv"
 FILTER_UNRATED = "unrated"
 FILTER_MISSING = "missing"
 FILTER_INBOX = "inbox"
+FILTER_GAPS = "gaps"
 
 FILTERS = [
     (FILTER_ALL, "All videos"),
     (FILTER_INBOX, "Inbox (new, not saved yet)"),
+    (FILTER_GAPS, "Still to do (saved, but missing something)"),
     (FILTER_UNTAGGED, "No tags yet"),
     (FILTER_NO_COVER, "No thumbnail"),
     (FILTER_UNRATED, "Not rated"),
@@ -60,6 +62,26 @@ class Search:
         return cls(list(data.get("tags", [])), data.get("text", ""), data.get("filter", FILTER_ALL))
 
 
+def still_to_do(rec: FileRecord) -> list[str]:
+    """What a video doesn't have yet: for working through the inbox, and through gaps left in saved videos."""
+    out = []
+    if not rec.tags:
+        out.append("tags")
+    if not rec.genre:
+        out.append("genre")
+    if not rec.people:
+        out.append("people")
+    if not rec.has_cover:
+        out.append("thumbnail")
+    if rec.chapters == 0:
+        out.append("chapters")
+    if not rec.studio:
+        out.append("studio")
+    if rec.container == "mkv":
+        out.append("convert")
+    return out
+
+
 def matches(record: FileRecord, search: Search) -> bool:
     have = {t.casefold() for t in record.tags}
     if any(t.casefold() not in have for t in search.tags):
@@ -76,6 +98,8 @@ def matches(record: FileRecord, search: Search) -> bool:
         return False
     if f == FILTER_INBOX:
         return record.in_inbox
+    if f == FILTER_GAPS:                       # already curated (saved or marked done), with something left to add
+        return not record.in_inbox and bool(still_to_do(record))
     if f == FILTER_UNTAGGED:
         return not record.tags
     if f == FILTER_NO_COVER:

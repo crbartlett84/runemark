@@ -339,6 +339,10 @@ class LibraryWindow(QDialog):
         at = self.filter.findData(L.FILTER_INBOX)
         if at >= 0:
             self.filter.setItemText(at, f"Inbox · {inbox}" if inbox else "Inbox (empty)")
+        gaps = sum(1 for r in in_view if L.matches(r, L.Search(filter=L.FILTER_GAPS)))
+        at = self.filter.findData(L.FILTER_GAPS)
+        if at >= 0:
+            self.filter.setItemText(at, f"Still to do · {gaps}" if gaps else "Still to do (nothing left)")
         if not total:
             self.empty.setText("Your library is empty. Use Folders → Add a folder… to bring in a folder of videos. "
                                "Files you save in Runemark appear here too.")
@@ -346,6 +350,10 @@ class LibraryWindow(QDialog):
         elif not shown and self.search.filter == L.FILTER_INBOX and not self.search.tags and not self.search.text:
             self.empty.setText("The inbox is empty: every video has been saved in Runemark or marked done. New "
                                "videos land here after a scan.")
+            self.empty.show()
+        elif not shown and self.search.filter == L.FILTER_GAPS and not self.search.tags and not self.search.text:
+            self.empty.setText("Nothing left to do: every video you've saved has tags, a genre, people, a thumbnail, "
+                               "chapters and a studio.")
             self.empty.show()
         elif not shown:
             self.empty.setText("Nothing matches this search.")
