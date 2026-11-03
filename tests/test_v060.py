@@ -341,3 +341,20 @@ def test_swap_script_keeps_portable_data_and_rolls_back():
     assert "--update-failed" in text and "--updated" in text
     quoted = U.swap_script(W(r"C:\O'Brien\Runemark"), W(r"C:\O'Brien\Runemark-update"), 1, W("l"))
     assert "'C:\\O''Brien\\Runemark'" in quoted
+
+
+def test_the_swap_runs_outside_the_app_folder_and_waits_out_locks(monkeypatch, tmp_path):
+    """0.7.3: Runemark's working folder is usually its own folder (shortcuts start it there); a swap script started
+    with that working folder locks the folder it has to rename ("in use"), so every update failed."""
+    from pathlib import PureWindowsPath as W
+
+    from runemark import updater as U
+    text = U.swap_script(W(r"C:\Apps\Runemark"), W(r"C:\Apps\Runemark-update"), 1234, W(r"C:\T\log.txt"))
+    assert "Set-Location" in text and text.count("Retry \"") >= 3
+    assert "StartsWith($app + '\\'" in text                      # waits for tools still running from the folder
+    started = {}
+    monkeypatch.setattr("subprocess.Popen", lambda args, **kw: started.update(kw, args=args))
+    monkeypatch.setattr(U.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(U, "app_folder", lambda: tmp_path / "Runemark")
+    U.launch_swap(tmp_path / "Runemark-update")
+    assert started["cwd"] == str(tmp_path) and started["args"][-1] == str(tmp_path / "runemark-update.ps1")

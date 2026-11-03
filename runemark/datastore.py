@@ -7,14 +7,14 @@ import logging
 import shutil
 from pathlib import Path
 
-from .paths import (PORTABLE_MARKER, app_data_dir, app_folder, backup_dir, is_portable, portable_data_dir,
-                    standard_data_dir)
+from .paths import (PORTABLE_MARKER, app_data_dir, app_folder, backup_dir, default_backup_dir, is_portable,
+                    portable_data_dir, standard_data_dir)
 
 log = logging.getLogger(__name__)
 
 
 def backup_folder(settings) -> Path:
-    """Where automatic backups go: the chosen folder (e.g. in OneDrive) or the data folder's backups."""
+    """Where automatic backups go: the chosen folder, else Documents\\Backups\\Runemark (see default_backup_dir)."""
     if settings.backup_folder:
         folder = Path(settings.backup_folder)
         try:
@@ -22,7 +22,7 @@ def backup_folder(settings) -> Path:
             return folder
         except OSError as exc:
             log.warning("backup folder %s unusable (%s); using the default", folder, exc)
-    return backup_dir()
+    return default_backup_dir()
 
 
 def daily_backup(db, settings) -> Path | None:

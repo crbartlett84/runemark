@@ -4,6 +4,14 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-03
+
+### Fixed
+- **Updates failed to install** ("it is in use"). The script that swaps in the new version was started with Runemark's own folder as its working folder (where shortcuts start Runemark), which locks that folder against being renamed. It now starts from the temp folder, waits for anything still running from the app folder, and retries for a few seconds if Windows is still holding the folder. Updating *to* 0.7.4 still uses your current version's script: start Runemark from another folder for that one update (or install 0.7.4 by hand); updates after that work normally.
+
+### Changed
+- **Backups go to Documents\Backups\Runemark** unless you've chosen a folder (Settings → Backups). When OneDrive backs up your Documents, that puts them in OneDrive. Portable mode still keeps them beside the app. Older backups stay in the data folder's `backups`, and Restore can open them from there.
+
 ## [0.7.3] - 2026-11-03
 
 ### Added

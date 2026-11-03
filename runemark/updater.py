@@ -171,15 +171,34 @@ def swap_script(app_dir: Path, staged: Path, pid: int, log_path: Path) -> str:
     return f"""$ErrorActionPreference = 'Stop'
 $app = {q(app_dir)}; $new = {q(staged)}; $old = {q(previous)}; $log = {q(log_path)}
 function Note($t) {{ Add-Content -Path $log -Value ("{{0}}  {{1}}" -f (Get-Date -Format s), $t) }}
+# Never stand inside the folder being renamed: a process whose working folder is in it locks it ("in use").
+Set-Location -LiteralPath ([System.IO.Path]::GetTempPath())
+[System.IO.Directory]::SetCurrentDirectory([System.IO.Path]::GetTempPath())
+function Retry($what, [scriptblock]$do) {{
+    # Windows can hold a folder for a moment after a program closes (antivirus, the search indexer, Explorer).
+    for ($i = 1; $i -le 30; $i++) {{
+        try {{ & $do; return }} catch {{
+            if ($i -eq 30) {{ throw }}
+            if ($i -eq 1) {{ Note ("Waiting to " + $what + ": " + $_.Exception.Message) }}
+            Start-Sleep -Seconds 1
+        }}
+    }}
+}}
 Note "Waiting for Runemark (pid {pid}) to close"
 try {{ Wait-Process -Id {pid} -Timeout 120 -ErrorAction SilentlyContinue }} catch {{}}
+# anything else still running from the app folder (a video tool Runemark started) gets a minute to finish
+$deadline = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt $deadline -and (Get-Process -ErrorAction SilentlyContinue |
+        Where-Object {{ $_.Path -and $_.Path.StartsWith($app + '\\', 'OrdinalIgnoreCase') }})) {{
+    Start-Sleep -Milliseconds 500
+}}
 Start-Sleep -Milliseconds 800
 $swapped = $false
 try {{
-    if (Test-Path $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
-    Rename-Item -LiteralPath $app -NewName (Split-Path $old -Leaf)
+    if (Test-Path $old) {{ Retry "remove the old fallback" {{ Remove-Item -LiteralPath $old -Recurse -Force }} }}
+    Retry "move the current version aside" {{ Rename-Item -LiteralPath $app -NewName (Split-Path $old -Leaf) }}
     try {{
-        Rename-Item -LiteralPath $new -NewName (Split-Path $app -Leaf)
+        Retry "put the new version in place" {{ Rename-Item -LiteralPath $new -NewName (Split-Path $app -Leaf) }}
         $swapped = $true
     }} catch {{
         Rename-Item -LiteralPath $old -NewName (Split-Path $app -Leaf)
@@ -211,5 +230,6 @@ def launch_swap(staged: Path) -> Path:
     script.write_text(swap_script(app_folder(), staged, os.getpid(), log_path), encoding="utf-8-sig")
     flags = 0x08000000 | 0x00000200      # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: outlives Runemark
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                      "-File", str(script)], creationflags=flags, close_fds=True)
+                      "-File", str(script)], creationflags=flags, close_fds=True,
+                     cwd=str(tmp))        # not the app folder: a working folder inside it locks it against the swap
     return log_path

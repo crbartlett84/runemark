@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from .. import datastore, explorer
 from ..media import convert as C
 from ..media.probe import fmt_size
-from ..paths import IS_WINDOWS, app_data_dir, backup_dir, is_portable, log_dir
+from ..paths import IS_WINDOWS, app_data_dir, default_backup_dir, is_portable, log_dir
 from ..tagdb import TagDB, TagDBError
 from ..settings import Settings
 from . import theme
@@ -314,7 +314,7 @@ class SettingsDialog(QDialog):
         auto = QFormLayout()
         folder_row = QHBoxLayout()
         self.backup_folder = QLineEdit(settings.backup_folder)
-        self.backup_folder.setPlaceholderText(f"Default: {backup_dir()}")
+        self.backup_folder.setPlaceholderText(f"Default: {default_backup_dir()}")
         browse = QPushButton("Change…")
         browse.clicked.connect(self._choose_backup_folder)
         folder_row.addWidget(self.backup_folder, 1)
@@ -325,8 +325,8 @@ class SettingsDialog(QDialog):
         self.keep.setValue(settings.backup_keep)
         auto.addRow("Keep this many", self.keep)
         layout.addLayout(auto)
-        tip = QLabel("Tip: point daily backups at a folder in OneDrive to keep a copy off this PC. Backups are "
-                     "complete, closed files, so syncing them is safe.")
+        tip = QLabel("By default backups go to Documents\\Backups\\Runemark: when OneDrive backs up your Documents, "
+                     "that keeps a copy off this PC. Backups are complete, closed files, so syncing them is safe.")
         tip.setObjectName("Faint")
         tip.setWordWrap(True)
         layout.addWidget(tip)
@@ -366,13 +366,13 @@ class SettingsDialog(QDialog):
     # ---------------------------------------------------------------- database
     def _choose_backup_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Daily backups go to",
-                                                  self.backup_folder.text() or str(backup_dir()))
+                                                  self.backup_folder.text() or str(default_backup_dir()))
         if folder:
             self.backup_folder.setText(str(Path(folder)))
 
     def _backup_now(self):
         import datetime as _dt
-        start = Path(self.backup_folder.text() or backup_dir()) / f"Runemark tags {_dt.date.today():%Y-%m-%d}.db"
+        start = Path(self.backup_folder.text() or default_backup_dir()) / f"Runemark tags {_dt.date.today():%Y-%m-%d}.db"
         name, _ = QFileDialog.getSaveFileName(self, "Back up the tag database", str(start),
                                               "Runemark tag database (*.db)")
         if not name:
@@ -385,7 +385,8 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, "Back up", f"Saved a complete copy of your tag database to:\n{target}")
 
     def _restore(self):
-        name, _ = QFileDialog.getOpenFileName(self, "Restore the tag database", str(backup_dir()),
+        name, _ = QFileDialog.getOpenFileName(self, "Restore the tag database",
+                                              self.backup_folder.text() or str(default_backup_dir()),
                                               "Runemark tag database (*.db)")
         if not name:
             return

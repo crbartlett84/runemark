@@ -237,3 +237,19 @@ def test_plugin_api_clear_tags_keeps_the_named_ones(tmp_path, monkeypatch):
     assert sorted(t["name"] for t in api.tags()) == ["Creature", "Missionary"]
     assert api.tag_rules() == {} and sorted(api.categories()) == [["Acts"], ["Acts", "Positions"], ["Junk"]]
     db.close()
+
+
+def test_backups_default_to_documents(monkeypatch, tmp_path):
+    from runemark import datastore, paths
+    monkeypatch.delenv("RUNEMARK_HOME", raising=False)
+    monkeypatch.setattr(paths, "is_portable", lambda: False)
+    monkeypatch.setattr(paths, "documents_dir", lambda: tmp_path / "OneDrive" / "Documents")
+    monkeypatch.setattr(paths, "standard_data_dir", lambda: tmp_path / "AppData" / "Runemark")
+    assert datastore.backup_folder(Settings()) == tmp_path / "OneDrive" / "Documents" / "Backups" / "Runemark"
+    assert (tmp_path / "OneDrive" / "Documents" / "Backups" / "Runemark").is_dir()
+    chosen = Settings()
+    chosen.backup_folder = str(tmp_path / "Mine")
+    assert datastore.backup_folder(chosen) == tmp_path / "Mine"                       # a chosen folder still wins
+    monkeypatch.setattr(paths, "is_portable", lambda: True)
+    monkeypatch.setattr(paths, "portable_data_dir", lambda: tmp_path / "Portable")
+    assert datastore.backup_folder(Settings()) == tmp_path / "Portable" / "backups"   # portable keeps its own

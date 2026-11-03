@@ -69,6 +69,37 @@ def backup_dir() -> Path:
     return path
 
 
+def documents_dir() -> Path:
+    """The user's Documents folder, wherever Windows keeps it (OneDrive moves it into OneDrive when its folder
+    backup is on); ~/Documents elsewhere."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+                value, _kind = winreg.QueryValueEx(key, "Personal")
+            path = Path(os.path.expandvars(value))
+            if path.is_dir():
+                return path
+        except OSError:
+            pass
+    return Path.home() / "Documents"
+
+
+def default_backup_dir() -> Path:
+    """Where daily backups go unless you choose a folder: Documents\\Backups\\Runemark, so they leave the data folder
+    (and, where Documents is in OneDrive, this PC). Portable mode keeps them in its own data folder, and so do tests
+    (RUNEMARK_HOME)."""
+    if os.environ.get("RUNEMARK_HOME") or is_portable():
+        return backup_dir()
+    path = documents_dir() / "Backups" / "Runemark"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return backup_dir()
+    return path
+
+
 def resource_root() -> Path:
     """Folder holding bundled resources: the PyInstaller bundle, or the project root."""
     if FROZEN and hasattr(sys, "_MEIPASS"):
