@@ -79,6 +79,7 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.set_tag_category(name, category)` | Move an existing tag into a category path (created if missing), or out of any with `None`. |
 | `api.tag_rules()` / `api.set_tag_rule(name, adds)` | Read tag rules (`{tag: [tags it also adds]}`), or set one tag's rule (an empty list removes it). |
 | `api.add_tag(name, category=None)` | Add a tag (in an existing category path); returns its name. Does nothing if it exists. |
+| `api.clear_tags(keep)` | Remove every tag except those named in `keep`, their rules, and every category left empty, after a backup (`before-clear-….db`, restorable from Settings → Backups). Videos aren't changed. Returns `{"tags_removed", "categories_removed", "backup"}`. |
 | `api.rename_tag(old, new)` | Rename a tag (or merge it into an existing `new`), then offer to update the videos that carry it, like renaming in the Tag database. Returns the new name. |
 | `api.find_person(name)` | `{"name", "aliases", "links", "has_photo"}` by name or alias, or `None`. |
 | `api.add_person(name, aliases=(), links=(), photo=None, values=None)` | Add someone, or fill in what their profile lacks: new aliases, links, a photo if they have none (any picture; the top-centre square is used), attribute values they don't have yet (`{"Hair": "Red"}`, or `{"Hair": ("Red", "Red hair")}` to choose the tag it becomes; attributes are created if missing). Returns their main name. |

@@ -218,3 +218,22 @@ def test_plugin_api_categories_moves_and_rules(tmp_path):
     api.set_tag_rule("Werewolf", [])
     assert api.tag_rules() == {}
     db.close()
+
+
+def test_plugin_api_clear_tags_keeps_the_named_ones(tmp_path, monkeypatch):
+    monkeypatch.setattr("runemark.paths.backup_dir", lambda: tmp_path / "backups")
+    db = TagDB(tmp_path / "t.db")
+    api = plugins.PluginAPI(FakeWindow(db, Settings()), plugins.PluginHost(), plugins.Plugin(tmp_path, "p"))
+    api.add_category(["Acts", "Positions"])
+    api.add_category(["Junk", "Deeper"])
+    api.add_tag("Missionary", ["Acts", "Positions"])
+    api.add_tag("Werewolf", ["Junk", "Deeper"])
+    api.add_tag("Creature", ["Junk"])
+    api.add_tag("random junk")
+    api.set_tag_rule("Werewolf", ["Creature"])
+    out = api.clear_tags(["missionary", "Creature"])
+    assert out["tags_removed"] == 2 and out["categories_removed"] == 1      # "Deeper" emptied; "Junk" keeps Creature
+    assert Path(out["backup"]).exists() and Path(out["backup"]).name.startswith("before-clear-")
+    assert sorted(t["name"] for t in api.tags()) == ["Creature", "Missionary"]
+    assert api.tag_rules() == {} and sorted(api.categories()) == [["Acts"], ["Acts", "Positions"], ["Junk"]]
+    db.close()

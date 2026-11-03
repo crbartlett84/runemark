@@ -4,6 +4,11 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-03
+
+### Added
+- Plugins can empty the tag database except the tags they name (`api.clear_tags(keep)`), for starting over from a tag plan. A backup is taken first (restore it from Settings → Backups); videos aren't changed, and their tags that are no longer in the database show as unfiled.
+
 ## [0.7.2] - 2026-11-03
 
 ### Added

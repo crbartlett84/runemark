@@ -281,6 +281,21 @@ class PluginAPI:
         db.set_implied(tag.id, ids)
         self._w.tag_editor.refresh_database()
 
+    def clear_tags(self, keep: list[str] = ()) -> dict:
+        """Empty the tag database except the tags named in `keep`: every other tag, its rules, and every category
+        left empty are removed (a backup is taken first, restorable from Settings > Backups). Videos aren't changed:
+        their tags that are no longer in the database show as unfiled (dashed). Returns
+        {"tags_removed", "categories_removed", "backup"} (the backup's path, as text)."""
+        import datetime as _dt
+
+        from .paths import backup_dir
+        db = self._w.db
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = db.backup_to(backup_dir() / f"before-clear-{stamp}.db")
+        tags, cats = db.clear_tags(list(keep))
+        self._w.tag_editor.refresh_database()
+        return {"tags_removed": tags, "categories_removed": cats, "backup": str(backup)}
+
     def rename_tag(self, old: str, new: str) -> str | None:
         """Rename a tag in the database (or merge it into `new` if that exists), and offer to update the videos that
         carry it, exactly like renaming in the Tag database window. Returns the tag's new name, or None."""

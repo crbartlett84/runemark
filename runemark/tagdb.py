@@ -615,6 +615,25 @@ class TagDB:
         self._changed()
         return tag
 
+    def clear_tags(self, keep: list[str] = ()) -> tuple[int, int]:
+        """Remove every tag except those named in `keep` (ignoring case), then every category with no tags left in
+        it or under it. Videos aren't touched. Returns (tags removed, categories removed)."""
+        wanted = {k.casefold() for k in keep}
+        gone = [tg.id for tg in self.tags() if tg.name.casefold() not in wanted]
+        with self.conn:
+            self.conn.executemany("DELETE FROM tags WHERE id = ?", [(i,) for i in gone])
+            removed_cats = 0
+            while True:                                   # leaves first, until nothing empty is left
+                empty = self.conn.execute(
+                    "SELECT id FROM categories c WHERE NOT EXISTS (SELECT 1 FROM tags WHERE category_id = c.id) "
+                    "AND NOT EXISTS (SELECT 1 FROM categories k WHERE k.parent_id = c.id)").fetchall()
+                if not empty:
+                    break
+                self.conn.executemany("DELETE FROM categories WHERE id = ?", [(r["id"],) for r in empty])
+                removed_cats += len(empty)
+        self._changed()
+        return len(gone), removed_cats
+
     def is_genre_tag(self, name: str) -> bool:
         tag = self.find_tag(name)
         return bool(tag and tag.category_id is not None and tag.category_id in self.genre_categories())
