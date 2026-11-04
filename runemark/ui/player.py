@@ -37,6 +37,58 @@ def bytes_to_pixmap(data: bytes | None) -> QPixmap | None:
     return pix if pix.loadFromData(data) else None
 
 
+
+
+class JumpSlider(QSlider):
+    """The timeline: a click anywhere on the line jumps there (0.8.1; a plain slider only moves a page towards the
+    click), and the press carries straight on into a drag, so click-and-slide scrubs from that spot."""
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            from PySide6.QtWidgets import QStyle, QStyleOptionSlider
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                                 QStyle.SubControl.SC_SliderHandle, self)
+            if not handle.contains(event.position().toPoint()):
+                groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                                     QStyle.SubControl.SC_SliderGroove, self)
+                span = max(1, groove.width() - handle.width())
+                x = int(event.position().x()) - groove.x() - handle.width() // 2
+                value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), x, span, opt.upsideDown)
+                self.setSliderDown(True)          # sliderPressed: playback position stops following
+                self.setValue(value)
+                self.sliderMoved.emit(value)      # seek now
+                self._jumped = True
+                return
+        self._jumped = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if getattr(self, "_jumped", False):
+            from PySide6.QtWidgets import QStyle, QStyleOptionSlider
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                                 QStyle.SubControl.SC_SliderGroove, self)
+            handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                                 QStyle.SubControl.SC_SliderHandle, self)
+            span = max(1, groove.width() - handle.width())
+            x = int(event.position().x()) - groove.x() - handle.width() // 2
+            value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), max(0, x), span, opt.upsideDown)
+            if value != self.value():
+                self.setValue(value)
+                self.sliderMoved.emit(value)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if getattr(self, "_jumped", False):
+            self._jumped = False
+            self.setSliderDown(False)             # sliderReleased: seek to the final spot, follow playback again
+            return
+        super().mouseReleaseEvent(event)
+
 class FrameTimes:
     """Cache of frame timestamps around the playhead, for exact frame stepping."""
 
@@ -136,7 +188,7 @@ class PlayerPanel(QWidget):
         self.time_label.setObjectName("TimeLabel")
         self.duration_label = QLabel("/ 0:00:00")
         self.duration_label.setObjectName("TimeLabel")
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = JumpSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
         self.slider.setSingleStep(1000)
         self.slider.setPageStep(10000)

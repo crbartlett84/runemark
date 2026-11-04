@@ -61,7 +61,8 @@ class LibraryWindow(QDialog):
             self.filter.addItem(label, value)
         self.filter.currentIndexChanged.connect(self._filter_changed)
         self.library_pick = QComboBox()
-        self.library_pick.setToolTip("Which library to show. Folders → New library… adds one.")
+        self.library_pick.setToolTip("Which library to show. Each library is folders you choose; files you saved "
+                                     "from anywhere else (Downloads…) only show under Everything else.")
         self.library_pick.activated.connect(self._library_picked)
         row.addWidget(self.library_pick, 1)
         row.addWidget(self.text, 2)
@@ -300,30 +301,61 @@ class LibraryWindow(QDialog):
             QMessageBox.warning(self, "Plugin", f"{act.plugin} hit a problem:\n\n{exc}")
 
     # ---------------------------------------------------------------- libraries (0.7.0)
+    # The picker (always shown, 0.8.1): each library by name, "All libraries" (only files inside one of them), and
+    # "Everything else" for files saved from outside every library (a Downloads folder, a USB stick…), so those never
+    # clutter a library. "New library…" sits at the bottom of the list.
+    SHOW_ALL = ""            # inside any library
+    SHOW_OUTSIDE = "*outside"
+    NEW_LIBRARY = "*new"
+
     def _fill_library_pick(self):
         self.library_pick.blockSignals(True)
         self.library_pick.clear()
         names = [lib["name"] for lib in self.settings.libraries]
-        if len(names) != 1:
-            self.library_pick.addItem("All libraries", "")
         for name in names:
             self.library_pick.addItem(name, name)
-        at = self.library_pick.findData(self.settings.library_shown)
-        self.library_pick.setCurrentIndex(max(0, at))
-        self.library_pick.setVisible(len(names) > 1)
+        if len(names) != 1:
+            self.library_pick.addItem("All libraries", self.SHOW_ALL)
+        outside = sum(1 for r in getattr(self, "records", []) if not self._in_any_library(r.path))
+        self.library_pick.addItem(f"Everything else (saved from other folders) · {outside}", self.SHOW_OUTSIDE)
+        self.library_pick.insertSeparator(self.library_pick.count())
+        self.library_pick.addItem("New library…", self.NEW_LIBRARY)
+        shown = self.settings.library_shown
+        if shown not in (self.SHOW_ALL, self.SHOW_OUTSIDE) and L.library_named(self.settings, shown) is None:
+            shown = self.SHOW_ALL
+        if shown == self.SHOW_ALL and len(names) == 1:
+            shown = names[0]
+        self.library_pick.setCurrentIndex(max(0, self.library_pick.findData(shown)))
         self.library_pick.blockSignals(False)
 
     def _library_picked(self, _index: int):
-        self.settings.library_shown = self.library_pick.currentData() or ""
+        data = self.library_pick.currentData()
+        if data == self.NEW_LIBRARY:
+            self._fill_library_pick()          # back to what was shown, then ask
+            self._new_library()
+            return
+        self.settings.library_shown = data or self.SHOW_ALL
         self.settings.save()
         self._apply()
 
     def _shown_library(self) -> dict | None:
-        return L.library_named(self.settings, self.settings.library_shown) if self.settings.library_shown else None
+        shown = self.settings.library_shown
+        if shown in (self.SHOW_ALL, self.SHOW_OUTSIDE):
+            return None
+        return L.library_named(self.settings, shown)
+
+    def _in_any_library(self, path: str) -> bool:
+        return any(L.in_library(path, lib) for lib in self.settings.libraries)
 
     def _in_view(self, records: list[FileRecord]) -> list[FileRecord]:
+        if self.settings.library_shown == self.SHOW_OUTSIDE:
+            return [r for r in records if not self._in_any_library(r.path)]
         lib = self._shown_library()
-        return records if lib is None else [r for r in records if L.in_library(r.path, lib)]
+        if lib is not None:
+            return [r for r in records if L.in_library(r.path, lib)]
+        if not any(lib.get("folders") for lib in self.settings.libraries):
+            return records                     # no library folders yet: show what there is
+        return [r for r in records if self._in_any_library(r.path)]
 
     def _apply(self):
         self._search_timer.stop()
@@ -344,9 +376,12 @@ class LibraryWindow(QDialog):
         at = self.filter.findData(L.FILTER_GAPS)
         if at >= 0:
             self.filter.setItemText(at, f"Still to do · {gaps}" if gaps else "Still to do (nothing left)")
-        if not total:
-            self.empty.setText("Your library is empty. Use Folders → Add a folder… to bring in a folder of videos. "
-                               "Files you save in Runemark appear here too.")
+        if not total and self.settings.library_shown == self.SHOW_OUTSIDE:
+            self.empty.setText("Nothing here: every video Runemark knows is inside one of your libraries.")
+            self.empty.show()
+        elif not total:
+            self.empty.setText("This library is empty. Use Folders → Add a folder… to give it a folder of videos. "
+                               "Videos you save from other folders show under Everything else.")
             self.empty.show()
         elif not shown and self.search.filter == L.FILTER_INBOX and not self.search.tags and not self.search.text:
             self.empty.setText("The inbox is empty: every video has been saved in Runemark or marked done. New "
@@ -548,6 +583,7 @@ class LibraryWindow(QDialog):
         name = self._ask_library_name("New library")
         if name:
             self.settings.libraries.append({"name": name, "folders": [], "skip": []})
+            self.settings.library_shown = name          # show the new library straight away
             self.settings.save()
             self._add_folder(name)
             self.refresh()
@@ -647,6 +683,19 @@ class LibraryWindow(QDialog):
             paths = shown[at:] + shown[:at]
         if paths:
             self.openRequested.emit(paths)
+            self._step_aside()
+
+    def _step_aside(self):
+        """After opening a video, get out of the way so the main window shows it (0.8.1). Hidden rather than closed,
+        so a scan keeps running and the Library comes back as it was (same search, same selection)."""
+        self.settings.library_last_search = self.search.to_dict()
+        self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()
+        self.settings.save()
+        self.hide()
+        host = self.parent()
+        if host is not None:
+            host.raise_()
+            host.activateWindow()
 
     def _mark_done(self, done: bool):
         paths = self.selected_paths()

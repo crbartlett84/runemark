@@ -4,6 +4,15 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-03
+
+### Changed
+- **Libraries are kept apart.** The library picker in the Library window is always there: each library by name, *All libraries* (only files inside one of them), and *Everything else*, for videos you saved from other folders (Downloads, a USB stick…), which no longer show up in your libraries. *New library…* is at the bottom of the picker, and a new library is shown as soon as it has its folder.
+- **Opening a video from the Library** puts the Library aside and brings the main window forward with the video loaded. The Library comes back as you left it (same search and selection; a scan keeps running).
+
+### Fixed
+- **Timeline:** a click anywhere on the line jumps straight there (it used to move only a step towards the click), and you can keep holding to scrub from that spot.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added
