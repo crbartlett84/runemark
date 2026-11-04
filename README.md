@@ -80,6 +80,8 @@ If Explorer keeps showing an old thumbnail, that's its cache. Leave "Keep each f
 
 Open the **Chapters** tab, pause on the frame where a chapter starts (step with ← →) and click **Add chapter** or press **M**. The first chapter you add also gets a chapter at 0:00, because players expect the first chapter to start at the beginning. New chapters are called "Chapter 1, 2, 3…" and renumber themselves when you add or delete one. Double-click a name to change it: pick a tag from your database, and the file gets that tag too, or type any name, which is also added to the file's tags (shown dashed until you file it). Removing or renaming a chapter leaves the file's tags alone. **Number** turns a named chapter back into a numbered one. Click a chapter to see its first frame.
 
+**Chapter ends.** When a chapter's action stops and filler follows, press **E** (or **End here**) at that frame. The end isn't a chapter: players' timelines and chapter lists don't show it. It goes to Stash as the marker's end, so RuneStash's moments stop there.
+
 **Chapter keys.** Press **1**–**9** to add a chapter at the frame on screen with a name you chose for that key (for chapters you add all the time). Set them up with **Keys…** on the Chapters tab, or right-click a chapter's name → **Put on a key**. The keys in use are listed under the buttons.
 
 **Thumbnails.** Each chapter in the list shows its first frame, so a wrong start is easy to spot.
@@ -213,6 +215,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Ctrl+T | Use this frame as the thumbnail |
 | M | Add a chapter at this frame |
 | 1–9 | Add a chapter at this frame with that key's name |
+| E | End the chapter you're in at this frame (kept off the timeline; moments stop there) |
 | Alt+1–9 | Add (or remove) that key's tag |
 | Ctrl+K | Go to anything: actions, tags, people, videos |
 | Ctrl+B | Library |
