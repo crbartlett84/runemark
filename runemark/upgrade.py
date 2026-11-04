@@ -26,7 +26,14 @@ from pathlib import Path
 
 from . import duplicates as D
 from . import explorer
-from .media.chapters import ChapterMark, marks_from_info, renumber
+from .media.chapters import (
+    ENDS_KEY,
+    ChapterMark,
+    apply_ends,
+    ends_block,
+    marks_from_info,
+    renumber,
+)
 from .media.fingerprint import Fingerprint
 from .media.mp4meta import VideoMeta, clean_links
 from .media.probe import MediaInfo, probe
@@ -105,8 +112,11 @@ def map_marks(marks: list[ChapterMark], match: D.Match, new_duration: float) -> 
         weights[r.offset] = weights.get(r.offset, 0) + r.length
     shift = (max(weights, key=weights.get) / fps) if weights else 0.0
     for m in marks:
+        moved_end = None
+        if m.end is not None:
+            moved_end = round(m.end - shift, 3)      # chapter ends move with the picture
         if m.start <= START_SECONDS:
-            out.append(ChapterMark(0.0, m.name, m.auto))
+            out.append(ChapterMark(0.0, m.name, m.auto, moved_end))
             continue
         s = m.start * fps
         best, distance = None, None
@@ -122,7 +132,8 @@ def map_marks(marks: list[ChapterMark], match: D.Match, new_duration: float) -> 
         if t < 0 or (new_duration and t >= new_duration):
             dropped.append(f"{m.name or 'Chapter'} ({D._fmt(m.start)})")
             continue
-        out.append(ChapterMark(round(t, 3), m.name, m.auto))
+        out.append(ChapterMark(round(t, 3), m.name, m.auto,
+                               round(m.end - best.offset / fps, 3) if m.end is not None else None))
     seen: set[float] = set()
     unique = []
     for m in sorted(out, key=lambda x: x.start):
@@ -166,7 +177,9 @@ def plan_upgrade(db, curated: str | os.PathLike, better: str | os.PathLike, *, p
     match = D.compare(a, b)
     if match is None or match.kind not in (D.DUPLICATE, D.CUT):
         raise ValueError(f"{better.name} doesn't look like a copy of {curated.name}, so nothing was changed.")
-    marks, dropped, shift = map_marks(marks_from_info(c_info), match, b_info.duration or 0.0)
+    from .tagsync import read_state
+    marks, dropped, shift = map_marks(apply_ends(marks_from_info(c_info), read_state(curated).data), match,
+                                      b_info.duration or 0.0)
     relation = D.relation(str(curated), str(better), [D.Found(str(curated), str(better), match)])
     sharper = D.best_quality([c_copy, b_copy]).path == str(better)
     plan = UpgradePlan(curated, better, final_path(curated), c_copy, b_copy, marks, dropped, shift, relation, sharper)
@@ -236,8 +249,17 @@ def do_upgrade(db, plan: UpgradePlan, *, old_to: str | os.PathLike | None = None
     placed = None
     try:
         report(-1, "Writing tags, people and thumbnail…")
+        data = dict(kept.data) if kept.data else None
+        if data is not None or ends_block(plan.marks):    # chapter ends at the new copy's times (0.8.2)
+            from . import people as P
+            data = data or {"format": P.FORMAT, "version": P.VERSION}
+            ends = ends_block(plan.marks)
+            if ends:
+                data[ENDS_KEY] = ends
+            else:
+                data.pop(ENDS_KEY, None)
         outcome = save_mp4(tmp, keywords=keywords, genre=kept.genre, cover=kept.cover or UNCHANGED,
-                           explorer_mode=explorer_mode, meta=meta, data=kept.data)
+                           explorer_mode=explorer_mode, meta=meta, data=data)
         report(-1, "Putting it in place…")
         placed = final.with_name(f".{final.stem}.runemark-upgrade.mp4")
         if placed.exists():

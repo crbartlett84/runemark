@@ -464,7 +464,7 @@ def merge_into(db, keeper: str, others: list[str], *, explorer_mode=None, preser
         meta.description = meta.description or st.meta.description
         meta.rating = meta.rating or st.meta.rating
         meta.studio = meta.studio or st.meta.studio
-    block = P.block_for(db, people, meta.year)
+    block = P.carry(P.block_for(db, people, meta.year), kept.data)   # the kept copy's chapter ends stay
     tags = [db.canonical(t) for t in P.combine(hand, None, block)]
     keywords, genre = route_fields(tags, is_genre=db.is_genre_tag, is_known=lambda n: db.find_tag(n) is not None,
                                    original_genre=kept.genre)

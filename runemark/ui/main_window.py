@@ -57,8 +57,8 @@ class Document:
         self.cover_note = ""
         self.meta = VideoMeta(**vars(state.meta))
         self.saved_meta = VideoMeta(**vars(state.meta))
-        self.chapters = chapter_io.marks_from_info(info)
-        self.saved_chapters = chapter_io.marks_from_info(info)
+        self.chapters = chapter_io.apply_ends(chapter_io.marks_from_info(info), state.data)
+        self.saved_chapters = chapter_io.copy_marks(self.chapters)
         self.suggestions: list[tuple[float, QPixmap]] | None = None
 
     @property
@@ -71,16 +71,25 @@ class Document:
     def chapters_changed(self) -> bool:
         return not chapter_io.same_marks(self.chapters, self.saved_chapters)
 
+    def ends_changed(self) -> bool:
+        """Chapter ends live in the data block: a change there is saved without rewriting the chapters."""
+        return chapter_io.ends_block(self.chapters) != chapter_io.ends_block(self.saved_chapters)
+
     def people_changed(self) -> bool:
         return people_key(self.people) != people_key(self.saved_people)
 
     def dirty(self) -> bool:
         return (not same_tags(self.tags, self.saved_tags)) or self.cover is not UNCHANGED \
-            or self.meta_changed() or self.chapters_changed() or self.people_changed()
+            or self.meta_changed() or self.chapters_changed() or self.ends_changed() or self.people_changed()
 
     def compose(self, db: TagDB) -> tuple[list[str], dict | None]:
         """The file's full tag list (hand-typed + from its people) and its data block, as they'd be saved."""
-        block = people_io.block_for(db, self.people, self.meta.year)
+        block = people_io.carry(people_io.block_for(db, self.people, self.meta.year), self.state.data,
+                                drop=(chapter_io.ENDS_KEY,))
+        ends = chapter_io.ends_block(self.chapters)
+        if ends:
+            block = block or {"format": people_io.FORMAT, "version": people_io.VERSION}
+            block[chapter_io.ENDS_KEY] = ends
         return people_io.combine(self.tags, None, block), block
 
     def discard(self) -> None:
@@ -88,7 +97,7 @@ class Document:
         self.tags = list(self.saved_tags)
         self.cover = UNCHANGED
         self.meta = VideoMeta(**vars(self.saved_meta))
-        self.chapters = [chapter_io.ChapterMark(m.start, m.name, m.auto) for m in self.saved_chapters]
+        self.chapters = chapter_io.copy_marks(self.saved_chapters)
 
     def whole_cover(self) -> bytes | None:
         """The cover the file should end up with (for saves that rebuild the file)."""
@@ -551,6 +560,7 @@ class MainWindow(QMainWindow):
         self.thumbs.suggestionUse.connect(self._use_suggestion)
         self.chapters = ChaptersPanel()
         self.chapters.addRequested.connect(self.add_chapter)
+        self.chapters.endRequested.connect(self.end_chapter)
         self.chapters.seekRequested.connect(self._seek_paused)
         self.chapters.changed.connect(self._chapters_edited)
         self.chapters.nameTagged.connect(self._chapter_named)
@@ -682,6 +692,9 @@ class MainWindow(QMainWindow):
                 return
             if key == Qt.Key.Key_M and not event.modifiers():
                 self.add_chapter()
+                return
+            if key == Qt.Key.Key_E and not event.modifiers():
+                self.end_chapter()
                 return
             if Qt.Key.Key_1 <= key <= Qt.Key.Key_9 and not (event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
                 self.add_chapter(key=str(key - Qt.Key.Key_0))
@@ -1439,6 +1452,24 @@ class MainWindow(QMainWindow):
         self.set_status(f"Chapter “{mark.name}” added at {fmt_duration(pts, millis=True)}" if name else
                         f"Chapter added at {fmt_duration(pts, millis=True)}")
 
+    def end_chapter(self):
+        """End the chapter playing now at the frame on screen (E): filler after it isn't part of its moment.
+        The end isn't a chapter: it's kept with the video's details, off the timeline and the chapter list."""
+        doc = self.doc
+        if doc is None:
+            return
+        self.player.pause()
+        pts = self.player.current_pts()
+        if pts is None:
+            pts = self.player.player.position() / 1000
+        if self.tabs.currentWidget() is not self.chapters:
+            self.tabs.setCurrentWidget(self.chapters)
+        mark = self.chapters.end_at(pts)
+        if mark is None:
+            self.toast("There's no chapter playing here to end: add one first (M).")
+            return
+        self.set_status(f"“{mark.name}” ends at {fmt_duration(pts, millis=True)}")
+
     def show_palette(self):
         from .palette import CommandPalette, Entry
         entries: list[Entry] = []
@@ -1504,7 +1535,7 @@ class MainWindow(QMainWindow):
 
     def _chapters_edited(self):
         if self.doc is not None:
-            self.doc.chapters = [chapter_io.ChapterMark(m.start, m.name, m.auto) for m in self.chapters.marks]
+            self.doc.chapters = chapter_io.copy_marks(self.chapters.marks)
             self._refresh_ui()
             self._load_chapter_thumbs()
 
@@ -1653,7 +1684,7 @@ class MainWindow(QMainWindow):
         rewrite = doc.chapters_changed()
         meta = doc.meta if (doc.meta_changed() or rewrite) else UNCHANGED
         whole_cover = doc.whole_cover()
-        marks = [chapter_io.ChapterMark(m.start, m.name, m.auto) for m in doc.chapters]
+        marks = chapter_io.copy_marks(doc.chapters)
         if rewrite:
             dropped = chapter_io.extra_tracks_dropped(doc.info)
             if dropped:
@@ -1695,7 +1726,7 @@ class MainWindow(QMainWindow):
             doc.saved_tags = list(doc.tags)   # no longer dirty while the file reloads
             doc.cover = UNCHANGED
             doc.saved_meta = VideoMeta(**vars(doc.meta))
-            doc.saved_chapters = [chapter_io.ChapterMark(m.start, m.name, m.auto) for m in doc.chapters]
+            doc.saved_chapters = chapter_io.copy_marks(doc.chapters)
             self._library_saved(doc.path)
             self._load(doc.path, position, status=message)
             if after:

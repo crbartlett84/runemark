@@ -4,6 +4,12 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-03
+
+### Added
+- **Chapter ends.** *End here* in the Chapters tab (or **E**) marks where the chapter you're in stops, for when filler follows it before the next chapter. The end isn't a chapter: it's kept with the video's details (Runemark's data block), so players' timelines and chapter lists stay exactly as they were. The chapter list shows it under *Ends at* (click it to jump there); *Clear end* removes it. Ends move with the chapters on *Upgrade to a better copy* and *Save space*, and survive changes to people, file-name details and duplicates merges.
+- **Stash plugin 0.3.0** sends each chapter's end as its marker's end (otherwise the next chapter's start, as before), and brings markers it made earlier up to date when an end is added. RuneStash's moments and chapter playlists stop at the end.
+
 ## [0.8.1] - 2026-11-03
 
 ### Changed

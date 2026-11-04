@@ -326,7 +326,7 @@ def _save_with_meta(db, path, state, people, meta, batch, label="Details read fr
     from . import people as P
     from .library import history_fields, reindex
     from .tagsync import merge_unique, route_fields, save_mp4
-    block = P.block_for(db, people, meta.year)
+    block = P.carry(P.block_for(db, people, meta.year), state.data)   # chapter ends stay
     current = merge_unique(state.keywords, state.explorer or [])
     tags = [db.canonical(t) for t in P.combine(current, state.data, block)]
     if (block or None) == (state.data or None) and meta.key() == state.meta.key() and \

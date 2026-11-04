@@ -6,11 +6,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogBu
                                QHeaderView, QLabel, QLineEdit, QMenu, QStyledItemDelegate, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ..media.chapters import ChapterMark, add_mark, renumber
+from ..media.chapters import ChapterMark, add_mark, copy_marks, end_at, renumber
 from ..media.probe import fmt_duration
 from .widgets import Banner, text_button
 
-COL_TIME, COL_NAME = 0, 1
+COL_TIME, COL_NAME, COL_END = 0, 1, 2
 CHAPTER_KEYS = [str(n) for n in range(1, 10)]
 
 
@@ -99,6 +99,7 @@ class ChaptersPanel(QWidget):
     changed = Signal()                      # the chapter list was edited
     nameTagged = Signal(str)                # a chapter was named: tag the file with that name
     keysChanged = Signal(dict)              # the chapter keys were set up: {"1": "name", ...}
+    endRequested = Signal()                 # "End here": the window supplies the frame time (E)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,7 +118,9 @@ class ChaptersPanel(QWidget):
         layout.addWidget(self.banner)
         intro = QLabel("Pause on the frame where a chapter starts and click <b>Add chapter</b> (or press M), or "
                        "press a number key to add a named one. New chapters are numbered automatically. "
-                       "Double-click a name to change it: pick a tag (the file gets that tag too) or type any name.")
+                       "Double-click a name to change it: pick a tag (the file gets that tag too) or type any name. "
+                       "<b>End here</b> (E) marks where the chapter you're in stops, when filler follows it; the "
+                       "end is kept with the video's details, not added as a chapter.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -133,10 +136,18 @@ class ChaptersPanel(QWidget):
         self.number_button.clicked.connect(self._make_auto)
         self.delete_button = text_button("Delete", "trash")
         self.delete_button.clicked.connect(self._delete)
+        self.end_button = text_button("End here", "pause")
+        self.end_button.setToolTip("End the chapter you're in at the frame on screen (E). Moments stop here; the "
+                                   "timeline and chapter list don't change.")
+        self.end_button.clicked.connect(self.endRequested)
+        self.clear_end_button = text_button("Clear end", "revert")
+        self.clear_end_button.setToolTip("The chapter runs until the next one starts again")
+        self.clear_end_button.clicked.connect(self._clear_end)
         self.keys_button = text_button("Keys…", "edit")
         self.keys_button.setToolTip("Choose the chapter name each number key (1-9) adds")
         self.keys_button.clicked.connect(self.edit_keys)
-        for b in (self.add_button, self.rename_button, self.number_button, self.delete_button):
+        for b in (self.add_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
+                  self.delete_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             buttons.addWidget(b)
         buttons.addStretch(1)
@@ -148,8 +159,8 @@ class ChaptersPanel(QWidget):
         self.keys_line.setWordWrap(True)
         layout.addWidget(self.keys_line)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Starts at", "Name"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Starts at", "Name", "Ends at"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -160,6 +171,7 @@ class ChaptersPanel(QWidget):
         self.table.setIconSize(QSize(96, 54))
         self.table.verticalHeader().setDefaultSectionSize(60)
         self.table.horizontalHeader().setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(COL_END, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setItemDelegateForColumn(COL_NAME, _NameDelegate(self.names, self.table))
         self.table.itemChanged.connect(self._item_changed)
         self.table.cellClicked.connect(self._clicked)
@@ -238,8 +250,24 @@ class ChaptersPanel(QWidget):
         self.thumbs = {}
 
     def set_marks(self, marks: list[ChapterMark]):
-        self.marks = [ChapterMark(m.start, m.name, m.auto) for m in marks]
+        self.marks = copy_marks(marks)
         self._fill()
+
+    def end_at(self, pts: float) -> ChapterMark | None:
+        """End the chapter playing at pts there. None when no chapter has started yet."""
+        mark = end_at(self.marks, pts)
+        if mark is not None:
+            self._fill(select=mark)
+            self.changed.emit()
+        return mark
+
+    def _clear_end(self):
+        chosen = [m for m in self._selected() if m.end is not None]
+        for m in chosen:
+            m.end = None
+        if chosen:
+            self._fill()
+            self.changed.emit()
 
     # ---------------------------------------------------------------- editing
     def add_at(self, pts: float, name: str | None = None):
@@ -298,9 +326,10 @@ class ChaptersPanel(QWidget):
         if not mark.auto:
             self.nameTagged.emit(mark.name)
 
-    def _clicked(self, row: int, _column: int):
+    def _clicked(self, row: int, column: int):
         if 0 <= row < len(self.marks):
-            self.seekRequested.emit(self.marks[row].start)
+            mark = self.marks[row]
+            self.seekRequested.emit(mark.end if column == COL_END and mark.end is not None else mark.start)
 
     # ---------------------------------------------------------------- view
     def _fill(self, select: ChapterMark | None = None):
@@ -319,13 +348,20 @@ class ChaptersPanel(QWidget):
                 font = name.font()
                 font.setItalic(True)
                 name.setFont(font)
+            ends = QTableWidgetItem(fmt_duration(mark.end, millis=True) if mark.end is not None else "—")
+            ends.setFlags(ends.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            ends.setToolTip("Click to show this frame" if mark.end is not None else
+                            "Runs until the next chapter. End here (E) ends it sooner.")
             self.table.setItem(row, COL_TIME, when)
             self.table.setItem(row, COL_NAME, name)
+            self.table.setItem(row, COL_END, ends)
             if select is not None and mark is select:
                 self.table.selectRow(row)
         self._filling = False
         count = len(self.marks)
-        self.note.setText(f"{count} chapter{'s' if count != 1 else ''}. Each runs until the next one starts."
+        ended = sum(1 for m in self.marks if m.end is not None)
+        self.note.setText((f"{count} chapter{'s' if count != 1 else ''}. Each runs until the next one starts"
+                           + (f", or its end ({ended} ended early)." if ended else "."))
                           if count else "No chapters yet.")
         self._update_buttons()
 
@@ -334,3 +370,5 @@ class ChaptersPanel(QWidget):
         self.rename_button.setEnabled(len(chosen) == 1)
         self.number_button.setEnabled(any(not m.auto for m in chosen))
         self.delete_button.setEnabled(bool(chosen))
+        self.clear_end_button.setEnabled(any(m.end is not None for m in chosen))
+        self.end_button.setEnabled(self._enabled and bool(self.marks))

@@ -3,6 +3,11 @@
 A chapter is just a start time and a name; it runs until the next chapter starts (the last one
 runs to the end). Names like "Chapter 3" are automatic and follow the chapter's position.
 
+A chapter can also have an end before the next one starts (0.8.2): "End here" where the action stops and filler
+begins. Ends live only in Runemark's data block ("chapter_ends", start -> end), never in the chapter track, so
+players' timelines and chapter lists stay clean. The Stash plugin sends them as each marker's end, and RuneStash's
+moments stop there.
+
 MP4 keeps chapters in a track of their own, so changing them means writing the file again.
 Runemark copies every video, audio and subtitle track as is (nothing is re-encoded) into a
 new file beside the original, checks it, and only then replaces the original.
@@ -33,9 +38,59 @@ class ChapterMark:
     start: float          # presentation time of the chapter's first frame (seconds)
     name: str
     auto: bool = False    # named "Chapter N" by position
+    end: float | None = None   # where it stops, when that's before the next chapter (data block only, 0.8.2)
 
     def key(self) -> tuple:
         return (round(self.start, 3), self.name)
+
+
+ENDS_KEY = "chapter_ends"
+
+
+def copy_marks(marks) -> list[ChapterMark]:
+    return [ChapterMark(m.start, m.name, m.auto, getattr(m, "end", None)) for m in marks]
+
+
+def _start_key(start: float) -> str:
+    return f"{start:.3f}"
+
+
+def apply_ends(marks: list[ChapterMark], data: dict | None) -> list[ChapterMark]:
+    """Give the marks the ends recorded in a file's data block (by start time, to the millisecond)."""
+    ends = (data or {}).get(ENDS_KEY) or {}
+    if isinstance(ends, dict):
+        for m in marks:
+            try:
+                value = ends.get(_start_key(m.start))
+                m.end = float(value) if value is not None else None
+            except (TypeError, ValueError):
+                m.end = None
+    return marks
+
+
+def ends_block(marks: list[ChapterMark]) -> dict:
+    """{start: end} for the chapters with a real end: after their start and no later than the next chapter."""
+    ordered = sorted(marks, key=lambda m: m.start)
+    out = {}
+    for i, m in enumerate(ordered):
+        end = getattr(m, "end", None)
+        if end is None or end <= m.start + 0.05:
+            continue
+        nxt = ordered[i + 1].start if i + 1 < len(ordered) else None
+        if nxt is not None and end > nxt + 0.001:
+            continue
+        out[_start_key(m.start)] = round(end, 3)
+    return out
+
+
+def end_at(marks: list[ChapterMark], pts: float) -> ChapterMark | None:
+    """Set the end of the chapter playing at pts (the last one starting before it). Returns that chapter."""
+    before = [m for m in sorted(marks, key=lambda m: m.start) if m.start < pts - 0.05]
+    if not before:
+        return None
+    mark = before[-1]
+    mark.end = round(pts, 3)
+    return mark
 
 
 def is_auto_name(name: str) -> bool:
@@ -57,7 +112,7 @@ def marks_from_info(info: MediaInfo) -> list[ChapterMark]:
     for chap in info.chapters:
         name = chap.title.strip() or ""
         auto = not name or is_auto_name(name)
-        marks.append(ChapterMark(max(0.0, chap.start), name, auto))
+        marks.append(ChapterMark(max(0.0, chap.start), name, auto))   # ends: apply_ends(marks, state.data)
     return renumber(marks)
 
 

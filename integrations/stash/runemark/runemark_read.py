@@ -195,6 +195,27 @@ def chapters(path: str, ffprobe: str | None = None) -> list[dict]:
     return out
 
 
+def chapter_ends(info: dict) -> dict:
+    """{start "12.345": end} for chapters Runemark ended early ("End here"), from the data block."""
+    data = (info or {}).get("data") or {}
+    ends = data.get("chapter_ends") if data.get("format") == "runemark-data" else None
+    out = {}
+    for k, v in (ends or {}).items() if isinstance(ends, dict) else []:
+        try:
+            out[f"{float(k):.3f}"] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def end_near(ends: dict, start: float, within: float = 0.05):
+    """The recorded end of the chapter starting at `start`, allowing for ffprobe's rounding of chapter times."""
+    for k, v in ends.items():
+        if abs(float(k) - start) <= within:
+            return v
+    return None
+
+
 def date_of(text: str, year_only_as_jan_1: bool = False) -> str:
     """A Stash date (YYYY-MM-DD) from ©day, which may be a full date, a timestamp or just a year."""
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text or "")

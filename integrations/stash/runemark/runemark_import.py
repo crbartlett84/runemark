@@ -94,7 +94,7 @@ class Stash:
 
 SCENE_FIELDS = ("id title details date rating100 urls stash_ids { endpoint stash_id } files { path } tags { id name } "
                 "performers { id name } studio { id } "
-                "scene_markers { id seconds title primary_tag { name } } paths { screenshot }")
+                "scene_markers { id seconds end_seconds title primary_tag { id name } } paths { screenshot }")
 
 
 # ------------------------------------------------------------------ people → performers
@@ -259,7 +259,7 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
     changed = [k for k in update if k != "id"]
     if changed:
         stash.q("mutation($i: SceneUpdateInput!) { sceneUpdate(input: $i) { id } }", {"i": update})
-    markers = import_chapters(stash, scene, path, settings)
+    markers = import_chapters(stash, scene, path, settings, R.chapter_ends(info))
     bits = changed + ([f"{markers} marker(s)"] if markers else [])
     return ", ".join(bits)
 
@@ -270,30 +270,50 @@ def _has_custom_cover(scene: dict) -> bool:
     return bool(scene.get("title") or scene.get("details"))
 
 
-def import_chapters(stash: Stash, scene: dict, path: str, settings: dict) -> int:
+def import_chapters(stash: Stash, scene: dict, path: str, settings: dict, ends: dict | None = None) -> int:
     """Chapters become scene markers (start, end) whose tag is the chapter's name ("Missionary"), so Stash's marker
-    wall and RuneStash's chapter wall group them by name. Ones already there (same start, same name) are skipped."""
+    wall and RuneStash's chapter wall group them by name. Ones already there (same start, same name) are skipped,
+    except that a recorded end is brought up to date on them.
+
+    The end is the chapter's own end when Runemark recorded one ("End here": the action stops and filler follows,
+    kept in the data block, never in the chapter track), else the next chapter's start."""
     chapters = R.chapters(path)
     if not chapters:
         return 0
-    existing = set()
+    ends = ends or {}
+    existing = {}
     for m in scene.get("scene_markers") or []:
         name = (m.get("primary_tag") or {}).get("name") or ""
         if name.casefold() == "chapter":       # made by an earlier version: the name was in the title
             name = m.get("title") or ""
-        existing.add((round(float(m["seconds"]), 1), name.strip().casefold()))
+        existing[(round(float(m["seconds"]), 1), name.strip().casefold())] = m
     added = 0
     for c in chapters:
         name = c["title"].strip()
         if not name:
             continue
+        recorded = ends.get(f"{c['start']:.3f}")
+        if recorded is None:
+            recorded = R.end_near(ends, c["start"])
+        if recorded is not None and recorded <= c["start"]:
+            recorded = None
+        end = recorded if recorded is not None else c["end"]
         key = (round(c["start"], 1), name.casefold())
-        if key in existing:
+        found = existing.get(key)
+        if found is not None:
+            had = found.get("end_seconds")
+            if recorded is not None and (had is None or abs(float(had) - end) > 0.05):
+                stash.q("mutation($i: SceneMarkerUpdateInput!) { sceneMarkerUpdate(input: $i) { id } }",
+                        {"i": {"id": found["id"], "scene_id": scene["id"], "seconds": float(found["seconds"]),
+                               "end_seconds": end, "title": found.get("title") or "",
+                               "primary_tag_id": (found.get("primary_tag") or {}).get("id")
+                               or stash.tag_id(name)}})
+                added += 1
             continue
         stash.q("mutation($i: SceneMarkerCreateInput!) { sceneMarkerCreate(input: $i) { id } }",
-                {"i": {"scene_id": scene["id"], "seconds": c["start"], "end_seconds": c["end"],
+                {"i": {"scene_id": scene["id"], "seconds": c["start"], "end_seconds": end,
                        "title": "", "primary_tag_id": stash.tag_id(name)}})
-        existing.add(key)
+        existing[key] = {"id": None, "seconds": c["start"], "end_seconds": end}
         added += 1
     return added
 

@@ -179,8 +179,11 @@ def shrink(db, c: Candidate, *, progress: Progress | None = None, cancel: thread
             raise RuntimeError("The re-encoded copy didn't check out, so the original was left alone: "
                                + "; ".join(problems))
         info = probe(c.path)
+        from .media.chapters import apply_ends
+        from .tagsync import read_state
+        marks = apply_ends(marks_from_info(info), read_state(c.path).data)      # chapter ends come along
         plan = U.UpgradePlan(c.path, new, U.final_path(c.path), D.describe_copy(str(c.path)),
-                             D.describe_copy(str(new)), marks_from_info(info), relation="Same video", sharper=False,
+                             D.describe_copy(str(new)), marks, relation="Same video", sharper=False,
                              notes=["Space saver: same video, re-encoded to HEVC"])
         return U.do_upgrade(db, plan, old_to=old_to, progress=report, cancel=cancel, label="Re-encoded to save space")
     finally:
