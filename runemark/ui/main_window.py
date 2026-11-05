@@ -226,6 +226,10 @@ class MainWindow(QMainWindow):
         strip = CollapsibleStrip(title, widget, collapsed=collapsed)
         self.tags_tab.addWidget(strip)
         self.tags_tab.setStretchFactor(self.tags_tab.count() - 1, 2)
+        total = max(sum(self.tags_tab.sizes()), 800)
+        share = total // (self.tags_tab.count() + 1)
+        self.tags_tab.setSizes([total - share * (self.tags_tab.count() - 1)] +
+                               [share] * (self.tags_tab.count() - 1))
         return strip
 
     def add_header_widget(self, widget):
