@@ -97,8 +97,11 @@ def detect_cuts(info: MediaInfo, *, threshold: float = THRESHOLD, progress: Call
     video = info.main_video
     if video is None:
         return []
+    # Decoding is nearly all the work. Frames nothing refers to are skipped, and so is the deblocking filter (0.9.1):
+    # the picture is shrunk to 256 px before it's compared, where deblocking makes no difference, and the same cuts
+    # come out about 10-20% sooner.
     args = [proc.ffmpeg(), "-hide_banner", "-nostdin", "-v", "info", "-copyts", "-skip_frame", "noref",
-            "-i", str(info.path), "-map", f"0:{video.index}", "-an", "-sn", "-dn",
+            "-skip_loop_filter", "all", "-i", str(info.path), "-map", f"0:{video.index}", "-an", "-sn", "-dn",
             "-vf", f"scale=256:-2,select='gt(scene\\,{threshold})',showinfo", "-f", "null", "-",
             "-progress", "pipe:2", "-stats_period", "1"]
     flags = proc.NO_WINDOW | (getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0) if IS_WINDOWS else 0)

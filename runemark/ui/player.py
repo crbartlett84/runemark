@@ -45,7 +45,8 @@ SPEEDS = (1.0, 1.5, 2.0, 4.0)
 class Shuttle:
     """J/K/L (0.9.0). L plays forward, and each L again goes faster (1×, 1.5×, 2×, 4×); K pauses; J goes backward:
     Qt's player can't play in reverse, so going backward steps back through the video (about five steps a second),
-    and each J again steps back further. J while playing forward slows down first, then backs up."""
+    and each J again steps back further. J while playing forward slows down first, then backs up. K also puts the
+    speed back to 1× (0.9.1), as the next J or L starts from 1× anyway."""
 
     def __init__(self):
         self.direction = 0           # -1 backward, 0 paused, 1 forward
@@ -58,7 +59,8 @@ class Shuttle:
     def press(self, key: str) -> tuple[int, float]:
         key = key.upper()
         if key == "K":
-            self.direction = 0
+            # a stop: the next J or L starts again at 1×, so the speed goes back to 1× now (and the readout says so)
+            self.direction, self.index = 0, 0
         elif key == "L":
             if self.direction == 1:
                 self.index = min(self.index + 1, len(SPEEDS) - 1)
@@ -428,6 +430,10 @@ class PlayerPanel(QWidget):
         self._stack.setCurrentWidget(self.empty)
         self._set_enabled(False)
 
+    def show_length(self, info: MediaInfo | None):
+        """The length of a video shown without being loaded (one still saving, 0.9.1), not the last one played."""
+        self.duration_label.setText("/ " + fmt_duration((info.duration if info is not None else None) or 0))
+
     def show_message(self, title: str, text: str):
         self.empty_title.setText(title)
         self.empty_text.setText(text)
@@ -466,6 +472,7 @@ class PlayerPanel(QWidget):
         if direction == 0:
             self._stop_shuttle()
             self.pause()
+            self.player.setPlaybackRate(rate)      # K is back at 1×: Space plays on at the speed shown
         elif direction == 1:
             self._reverse.stop()
             self.player.setPlaybackRate(rate)
@@ -676,6 +683,8 @@ class PlayerPanel(QWidget):
             self._update_time_label()
 
     def _on_duration(self, ms: int):
+        if not self.loaded and ms <= 0:
+            return          # the engine letting go of a file: leave what clear() / show_length() put there
         self.slider.setRange(0, max(0, ms))
         # The file's own length (as the Library and the details show it), not the playback engine's estimate
         known = self.info.duration if getattr(self, "info", None) is not None else None

@@ -1037,13 +1037,14 @@ class MainWindow(QMainWindow):
         """The video was opened again while its save is still being written: show it as saved, read-only, and
         open it properly once the save is done (0.9.0)."""
         self._open_token += 1
-        self.player.unload()
+        self.player.clear()                       # not the video played before: its time and length aren't this one's
         self.filmstrip.clear()
         self._cancel_suggestions()
         doc = job.doc
         doc.read_only = True
         self.doc = doc
         self._show_document(play=False)
+        self.player.show_length(doc.info)
         self.player.show_message("Still saving this video", f"{doc.path.name} opens again by itself as soon as "
                                  "it's written. Until then it's read-only.")
         self.set_status(f"{doc.path.name} is still saving: read-only until it's written")

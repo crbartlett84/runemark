@@ -2,11 +2,33 @@
 many videos match as you go."""
 from __future__ import annotations
 
-from PySide6.QtCore import QStringListModel, Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QObject, QStringListModel, Qt, QTimer
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
+                               QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QVBoxLayout, QWidget)
 
 from .. import library as L
+
+
+class _PassOutsideClicks(QObject):
+    """A click outside the suggestions list closes it AND reaches what was clicked (0.9.1). QCompleter's own filter
+    swallows that click, so the first "Add a rule" (or OK) right after typing a value did nothing."""
+
+    def eventFilter(self, popup, event):  # noqa: N802
+        if event.type() == QEvent.Type.MouseButtonPress and popup.isVisible() and not popup.underMouse():
+            where = event.globalPosition().toPoint()
+            popup.hide()
+            target = QApplication.widgetAt(where)
+            if isinstance(target, QAbstractButton):
+                if target.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+                    QTimer.singleShot(0, target.click)    # its release went to the closed list: click it here
+            elif target is not None:
+                QApplication.sendEvent(target, QMouseEvent(
+                    QEvent.Type.MouseButtonPress, target.mapFromGlobal(where).toPointF(), event.globalPosition(),
+                    event.button(), event.buttons(), event.modifiers()))
+            return True
+        return False
 
 
 class _RuleRow(QWidget):
@@ -53,6 +75,10 @@ class _RuleRow(QWidget):
         completer = QCompleter(QStringListModel(names, self.value), self.value)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        if names:
+            popup = completer.popup()            # made now, with QCompleter's filter; ours goes on after, so runs first
+            self._outside = getattr(self, "_outside", None) or _PassOutsideClicks(self)
+            popup.installEventFilter(self._outside)
         self.value.setCompleter(completer if names else None)
         self._op_changed()
 

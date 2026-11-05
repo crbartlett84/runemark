@@ -210,7 +210,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Key | Action |
 |---|---|
 | Space | Play / pause |
-| J / K / L | Back / pause / forward; press J or L again to go faster (1×, 1.5×, 2×, 4×). Going back steps backward through the video |
+| J / K / L | Back / pause / forward; press J or L again to go faster (1×, 1.5×, 2×, 4×). Going back steps backward through the video. K also puts the speed back to 1× |
 | [ / ] | Previous / next suggested cut (Chapters → Find cuts) |
 | ← → or , . | Previous / next frame (exact) |
 | Shift+← → | Back / forward 5 seconds |

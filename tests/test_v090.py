@@ -191,7 +191,7 @@ def test_shuttle_jkl():
     assert s.press("L") == (1, 1.5) and s.press("L") == (1, 2.0) and s.press("L") == (1, 4.0)
     assert s.press("L") == (1, 4.0) and s.label() == "4×"
     assert s.press("J") == (1, 2.0)                # J while going forward fast slows down first
-    assert s.press("K") == (0, 2.0)
+    assert s.press("K") == (0, 1.0) and s.label() == ""   # 0.9.1: K stops at 1×, and the readout shows 1×
     assert s.press("J") == (-1, 1.0) and s.label() == "◀ 1×"
     assert s.press("J") == (-1, 1.5)               # J again: back faster
     assert s.press("L") == (1, 1.0)

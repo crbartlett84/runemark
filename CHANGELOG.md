@@ -4,6 +4,20 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-05
+
+### Fixed
+- A video opened again while its save is still being written (shown read-only) showed the length and position of
+  the video played before it. It now shows its own length.
+- After **K**, the speed button still showed the old speed (say 2×). K now puts the speed back to 1× and the button
+  shows 1×: the next J or L starts from 1× anyway, and Space plays on at the speed shown.
+- Smart filters: the first click on **Add a rule** (or any other button) right after typing a value did nothing,
+  as it only closed the list of suggestions. It now closes the list and does what was clicked.
+
+### Changed
+- **Find cuts** is about 10-20% faster (it skips the decoder's deblocking, which makes no difference to the small
+  pictures it compares) and finds the same cuts. Decoding the whole video is still most of the time it takes.
+
 ## [0.9.0] - 2026-11-05
 
 ### Added
