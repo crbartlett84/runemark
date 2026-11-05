@@ -257,7 +257,9 @@ def _write_explorer(target: Path, tags: list[str], genre: list[str], mode: str, 
         log.info("making room for Explorer tags (%d bytes)", need.needed)
         write_mp4_tags(target, keywords=tags, genre=genre, cover=UNCHANGED,
                        min_padding=MIN_PADDING + need.needed, ensure_padding=need.needed + 4096)
-        return explorer.write_tags(target, tags, explorer.MODE_BUILTIN, rating)
+        method = explorer.write_tags(target, tags, explorer.MODE_BUILTIN, rating)
+        # in auto mode Windows was tried first and didn't write them: say so, rather than "by Runemark"
+        return "fallback" if mode == explorer.MODE_AUTO and explorer.windows_api_available() else method
 
 
 def verify_meta(target: Path, meta) -> list[str]:

@@ -8,12 +8,12 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
                                QSplitter, QTabWidget, QToolButton, QVBoxLayout, QWidget,
-                               QAbstractSpinBox, QComboBox as _QComboBox)
+                               QAbstractSpinBox, QComboBox as _QComboBox, QTextEdit)
 
 from .. import __version__, explorer, library, selftest
 from .. import people as people_io
@@ -41,6 +41,18 @@ log = logging.getLogger(__name__)
 REMOVE = b""
 
 
+def takes_typing(widget) -> bool:
+    """True for widgets that need the letter, Space and arrow keys themselves: text boxes, spin boxes, combo
+    boxes, and a list or table with an editor open in it. A list that's only selected doesn't."""
+    if widget is None:
+        return False
+    if isinstance(widget, (QLineEdit, QAbstractSpinBox, _QComboBox, QPlainTextEdit, QTextEdit)):
+        return True
+    if isinstance(widget, QAbstractItemView):
+        return widget.state() == QAbstractItemView.State.EditingState
+    return False
+
+
 class Document:
     """The open file and the edits waiting to be saved."""
 
@@ -60,6 +72,7 @@ class Document:
         self.chapters = chapter_io.apply_ends(chapter_io.marks_from_info(info), state.data)
         self.saved_chapters = chapter_io.copy_marks(self.chapters)
         self.suggestions: list[tuple[float, QPixmap]] | None = None
+        self._auto_filled = None        # the details and people as the .nfo filled them in, before any edits
 
     @property
     def container(self) -> str:
@@ -81,6 +94,37 @@ class Document:
     def dirty(self) -> bool:
         return (not same_tags(self.tags, self.saved_tags)) or self.cover is not UNCHANGED \
             or self.meta_changed() or self.chapters_changed() or self.ends_changed() or self.people_changed()
+
+    def take_edits_from(self, old: "Document") -> bool:
+        """After a save, the file is opened again: keep the edits made in `old` (the same file) that the save
+        didn't include, made while it was saving or reopening. True if there were any."""
+        kept = False
+        if not same_tags(old.tags, old.saved_tags):
+            self.tags, kept = list(old.tags), True
+        if old.cover is not UNCHANGED:
+            self.cover, self.cover_note, kept = old.cover, old.cover_note, True
+        if old.meta_changed():
+            self.meta, kept = VideoMeta(**vars(old.meta)), True
+        if old.chapters_changed() or old.ends_changed():
+            self.chapters, kept = chapter_io.copy_marks(old.chapters), True
+        if old.people_changed():
+            self.people, kept = list(old.people), True
+        return kept
+
+    def mark_auto_filled(self) -> None:
+        """The details just filled in from the .nfo are the starting point: they're saved with the next save,
+        but on their own they aren't "unsaved changes" (opening the video again fills them in again)."""
+        self._auto_filled = (self.meta.key(), people_key(self.people))
+
+    def has_own_changes(self) -> bool:
+        """Unsaved changes worth asking about: dirty() without the automatic .nfo fill-in."""
+        if not self.dirty():
+            return False
+        if self._auto_filled is None:
+            return True
+        return (not same_tags(self.tags, self.saved_tags)) or self.cover is not UNCHANGED \
+            or self.chapters_changed() or self.ends_changed() \
+            or (self.meta.key(), people_key(self.people)) != self._auto_filled
 
     def compose(self, db: TagDB) -> tuple[list[str], dict | None]:
         """The file's full tag list (hand-typed + from its people) and its data block, as they'd be saved."""
@@ -133,6 +177,7 @@ class MainWindow(QMainWindow):
 
         self._build_header()
         self._build_body()
+        QApplication.instance().installEventFilter(self)
         self._build_status()
         self._build_actions()
 
@@ -670,36 +715,51 @@ class MainWindow(QMainWindow):
 
     # ================================================================ keyboard and drops
     def keyPressEvent(self, event):  # noqa: N802
-        focus = QApplication.focusWidget()
-        typing = isinstance(focus, (QLineEdit, QAbstractSpinBox, QAbstractItemView, _QComboBox, QPlainTextEdit))
+        if self._player_key(event):
+            return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        # A list (the chapter list, the tag list…) keeps the keyboard after a click and would use Space, the
+        # arrows and letters itself, so the player keys never reached the window. Lists in this window hand
+        # them over unless an editor is open in them.
+        if (event.type() == QEvent.Type.KeyPress and isinstance(obj, QAbstractItemView)
+                and obj.window() is self and not takes_typing(obj)):
+            if self._player_key(event):
+                return True
+        return super().eventFilter(obj, event)
+
+    def _player_key(self, event) -> bool:
+        """The player and chapter keys (Space, arrows, Home, M, E, 1-9). True when one was used."""
+        if self.doc is None or takes_typing(QApplication.focusWidget()):
+            return False
         key = event.key()
         shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        if self.doc is not None and not typing:
-            if key == Qt.Key.Key_Space:
-                self.player.toggle_play()
-                return
-            if key in (Qt.Key.Key_Left, Qt.Key.Key_Right) and shift:
-                self.player.nudge(-5 if key == Qt.Key.Key_Left else 5)
-                return
-            if key in (Qt.Key.Key_Comma, Qt.Key.Key_Left):
-                self.player.step(-1)
-                return
-            if key in (Qt.Key.Key_Period, Qt.Key.Key_Right):
-                self.player.step(1)
-                return
-            if key == Qt.Key.Key_Home:
-                self.player.seek_seconds(0)
-                return
-            if key == Qt.Key.Key_M and not event.modifiers():
-                self.add_chapter()
-                return
-            if key == Qt.Key.Key_E and not event.modifiers():
-                self.end_chapter()
-                return
-            if Qt.Key.Key_1 <= key <= Qt.Key.Key_9 and not (event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
-                self.add_chapter(key=str(key - Qt.Key.Key_0))
-                return
-        super().keyPressEvent(event)
+        if key == Qt.Key.Key_Space:
+            self.player.toggle_play()
+            return True
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right) and shift:
+            self.player.nudge(-5 if key == Qt.Key.Key_Left else 5)
+            return True
+        if key in (Qt.Key.Key_Comma, Qt.Key.Key_Left):
+            self.player.step(-1)
+            return True
+        if key in (Qt.Key.Key_Period, Qt.Key.Key_Right):
+            self.player.step(1)
+            return True
+        if key == Qt.Key.Key_Home:
+            self.player.seek_seconds(0)
+            return True
+        if key == Qt.Key.Key_M and not event.modifiers():
+            self.add_chapter()
+            return True
+        if key == Qt.Key.Key_E and not event.modifiers():
+            self.end_chapter()
+            return True
+        if Qt.Key.Key_1 <= key <= Qt.Key.Key_9 and not (event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
+            self.add_chapter(key=str(key - Qt.Key.Key_0))
+            return True
+        return False
 
     def dragEnterEvent(self, event):  # noqa: N802
         if any(Path(u.toLocalFile()).suffix.lower() in VIDEO_EXTENSIONS for u in event.mimeData().urls()):
@@ -738,8 +798,10 @@ class MainWindow(QMainWindow):
                 return
         self._load(path, position_ms)
 
-    def _load(self, path: Path, position_ms: int = 0, status: str | None = None):
-        """Open `path` in the background. `status` replaces "Opened …" once it's shown (after a save)."""
+    def _load(self, path: Path, position_ms: int = 0, status: str | None = None, carry: Document | None = None):
+        """Open `path` in the background. `status` replaces "Opened …" once it's shown (after a save).
+        `carry`: the document that was just saved; edits made in it during the save (or while the file opens
+        again) aren't lost when the new document replaces it."""
         self._open_token += 1
         token = self._open_token
         self.player.unload()
@@ -774,12 +836,20 @@ class MainWindow(QMainWindow):
             if token != self._open_token:
                 return
             info, state, details = result
+            old = self.doc
             self.doc = Document(path, info, state, self.db)
+            kept = (carry is not None and old is carry and file_key(old.path) == file_key(path)
+                    and self.doc.take_edits_from(old))
             filled = ""
             if details is not None and not self.db.was_saved(path):
                 filled = self._fill_from_nfo(self.doc, details)
+                if filled:
+                    self.doc.mark_auto_filled()
             self._show_document(position_ms)
-            self.set_status(filled or status or f"Opened {path.name}")
+            shown = status or f"Opened {path.name}"
+            if kept:
+                shown += " · changes made while saving are kept: save again"
+            self.set_status(filled or shown)
             QTimer.singleShot(0, lambda: self._offer_leftover_cleanup(path))
 
         def failed(exc, _tb):
@@ -1466,7 +1536,9 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentWidget(self.chapters)
         mark = self.chapters.end_at(pts)
         if mark is None:
-            self.toast("There's no chapter playing here to end: add one first (M).")
+            here = chapter_io.chapter_at(self.chapters.marks, pts)
+            self.toast(f"This is the first frame of “{here.name}”: move to where it should end, then press E."
+                       if here is not None else "There's no chapter playing here to end: add one first (M).")
             return
         self.set_status(f"“{mark.name}” ends at {fmt_duration(pts, millis=True)}")
 
@@ -1685,6 +1757,9 @@ class MainWindow(QMainWindow):
         meta = doc.meta if (doc.meta_changed() or rewrite) else UNCHANGED
         whole_cover = doc.whole_cover()
         marks = chapter_io.copy_marks(doc.chapters)
+        # what this save writes: edits made while it runs stay unsaved (and are kept when the file reopens)
+        written_tags, written_meta = list(doc.tags), VideoMeta(**vars(doc.meta))
+        written_people = list(doc.people)
         if rewrite:
             dropped = chapter_io.extra_tracks_dropped(doc.info)
             if dropped:
@@ -1723,12 +1798,14 @@ class MainWindow(QMainWindow):
             message = f"Saved {doc.path.name}" + (" with its chapters" if rewrite else "") \
                 + _explorer_note(outcome.explorer_method)
             self.set_status(message)
-            doc.saved_tags = list(doc.tags)   # no longer dirty while the file reloads
-            doc.cover = UNCHANGED
-            doc.saved_meta = VideoMeta(**vars(doc.meta))
-            doc.saved_chapters = chapter_io.copy_marks(doc.chapters)
+            doc.saved_tags = written_tags     # no longer dirty while the file reloads
+            if doc.cover is cover:
+                doc.cover = UNCHANGED
+            doc.saved_meta = written_meta
+            doc.saved_chapters = chapter_io.copy_marks(marks)
+            doc.saved_people = written_people
             self._library_saved(doc.path)
-            self._load(doc.path, position, status=message)
+            self._load(doc.path, position, status=message, carry=doc)
             if after:
                 QTimer.singleShot(300, after)
 
@@ -2013,7 +2090,7 @@ class MainWindow(QMainWindow):
     def _confirm_leave(self, then) -> bool:
         """Ask about unsaved changes. Returns True if it's fine to continue right away."""
         doc = self.doc
-        if doc is None or not doc.dirty():
+        if doc is None or not doc.has_own_changes():
             return True
         box = QMessageBox(self)
         box.setWindowTitle("Unsaved changes")
@@ -2076,7 +2153,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Runemark", "Please wait until the current save finishes.")
             event.ignore()
             return
-        if self.doc is not None and self.doc.dirty():
+        if self.doc is not None and self.doc.has_own_changes():
             box = QMessageBox(self)
             box.setWindowTitle("Unsaved changes")
             box.setText(f"Save changes to {self.doc.path.name} before closing?")
@@ -2266,7 +2343,9 @@ def _fit(size: tuple[int, int], max_edge: int | None) -> str:
 def _explorer_note(method: str | None) -> str:
     """How Explorer's Tags were written, for the status bar after a save."""
     return {"windows": " · Explorer Tags written by Windows",
-            "builtin": " · Explorer Tags written by Runemark"}.get(method or "", "")
+            "builtin": " · Explorer Tags written by Runemark",
+            "fallback": " · Explorer Tags written by Runemark (Windows couldn't write them this time; "
+                        "the reason is in the log)"}.get(method or "", "")
 
 
 __all__ = ["MainWindow", "QPixmap", "QSize"]

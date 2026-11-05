@@ -90,8 +90,9 @@ class HealthDialog(QDialog):
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
         fixable = sum(1 for i in self.issues if i.fixable)
-        self.summary.setText(f"{len(self.issues)} thing(s) found in {len(self.records)} video(s); {fixable} can be "
-                             "fixed here" if self.issues else f"All {len(self.records)} video(s) look healthy.")
+        affected = len({i.path for i in self.issues})
+        self.summary.setText(f"{len(self.issues)} thing(s) found in {affected} of {len(self.records)} video(s); "
+                             f"{fixable} can be fixed here" if self.issues else f"All {len(self.records)} video(s) look healthy.")
         self.fix_all.setEnabled(fixable > 0)
         self.fix_selected.setEnabled(fixable > 0)
 

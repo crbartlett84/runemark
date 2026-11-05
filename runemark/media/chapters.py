@@ -83,12 +83,19 @@ def ends_block(marks: list[ChapterMark]) -> dict:
     return out
 
 
+def chapter_at(marks: list[ChapterMark], pts: float) -> ChapterMark | None:
+    """The chapter the playhead is in at pts: the last one starting at or before it (to the millisecond)."""
+    before = [m for m in sorted(marks, key=lambda m: m.start) if m.start <= pts + 0.0005]
+    return before[-1] if before else None
+
+
 def end_at(marks: list[ChapterMark], pts: float) -> ChapterMark | None:
-    """Set the end of the chapter playing at pts (the last one starting before it). Returns that chapter."""
-    before = [m for m in sorted(marks, key=lambda m: m.start) if m.start < pts - 0.05]
-    if not before:
+    """Set the end of the chapter the playhead is in at pts. Returns that chapter; None when no chapter has
+    started yet, or when pts is that chapter's own first frame (an end there would leave nothing of it).
+    It never ends the chapter before: at a chapter's start, that one is playing, not the previous one."""
+    mark = chapter_at(marks, pts)
+    if mark is None or pts <= mark.start + 0.0005:
         return None
-    mark = before[-1]
     mark.end = round(pts, 3)
     return mark
 

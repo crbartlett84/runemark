@@ -99,7 +99,7 @@ def parse_nfo(path: str | Path) -> NfoDetails | None:
     links = []
     for uid in root.findall("uniqueid"):
         kind, value = (uid.get("type") or "").strip().casefold(), _text(uid)
-        if not value:
+        if not value or value.strip("0") == "":       # scrapers write 0 (or nothing) when they found no id
             continue
         if value.lower().startswith(("http://", "https://")):
             links.append(value)

@@ -171,9 +171,12 @@ def read_for_index(path: Path) -> dict:
         # Two reads per file (one mutagen parse for tags + length, one for Explorer's Xtra box), not four:
         # on a network share each read is a round trip.
         from mutagen.mp4 import MP4
-        mp4 = MP4(path)
+        from .media.atoms import movie_duration
+        with open(path, "rb") as fh:
+            mp4 = MP4(fh)
+            # the movie's length (moov/mvhd), as the player and the details show it; mutagen's is the audio's
+            duration = movie_duration(fh) or getattr(mp4.info, "length", None)
         tags = read_mp4_tags(path, mp4)
-        duration = getattr(mp4.info, "length", None)
         try:
             payload = xtra.read_payload(path)
             explorer_tags = xtra.category_from_payload(payload)

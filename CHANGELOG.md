@@ -4,6 +4,19 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-04
+
+### Fixed
+- **Player keys after clicking a list.** Space, the arrow keys, Home, M, E and 1-9 stopped working once you clicked a chapter (the list kept the keyboard). Lists now hand them to the player; text boxes, spin boxes and a chapter name being edited still keep them.
+- **One length everywhere.** The Library showed the audio track's length (sometimes a few seconds off); it now reads the video's own length, as the player and Details do, and the player's total time uses the same value.
+- **Explorer Tags note after a save** says when Windows couldn't write the Tags and Runemark's own writer did instead (the reason is in the log), rather than "written by Runemark" with no explanation.
+- **Edits made while a save runs are kept.** A chapter renamed (or a tag, detail or person changed) while the file was saving or opening again was dropped when the saved file reopened, so the next save wrote the old name back ("Chapter 2"). Those edits now carry over to the reopened file, unsaved, and the status bar says to save again.
+- **End here (E) ends the chapter you're in.** Straight after adding a chapter and moving on (Shift+→, a frame step), E could end the *previous* chapter at the new one's start. It now always ends the chapter under the playhead, and the playhead's time is the one you moved to even before the new frame has shown. On a chapter's very first frame, E says to move to where it should end.
+- **Details from .nfo files** no longer make switching videos or closing Runemark ask "Save changes?" when the only changes are the ones filled in from the `.nfo`. The rule: details filled in from a `.nfo` stay pending, never lost. They aren't written until you save, and they're filled in again every time the video is opened, until Runemark has saved it. Anything you change yourself on top of them is an unsaved change as before, and closing or switching asks about it.
+- **.nfo ids of 0** (or empty) are skipped: no more links to an id-0 page.
+- **Health check summary** counts the videos that have something to fix, out of the videos checked.
+- **Chapter buttons** wrap onto a second line in a narrow window instead of being cut off.
+
 ## [0.8.2] - 2026-11-03
 
 ### Added

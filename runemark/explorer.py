@@ -144,22 +144,25 @@ def read_rating(path: str | os.PathLike) -> int:
 
 def write_tags(path: str | os.PathLike, tags: list[str], mode: str = MODE_AUTO, rating: int | None = None) -> str:
     """Write Explorer's Tags, and the rating (1-99, 0 clears) unless None.
-    Returns which method succeeded: 'windows' or 'builtin'.
+    Returns which method succeeded: 'windows', 'builtin', or 'fallback' (Windows was asked first but
+    couldn't write them, so the built-in writer did; the reason is in the log).
 
     Raises xtra.NeedsPadding when the built-in writer has no room (the caller makes room
     by re-saving the MP4 tags with more padding, then tries again).
     """
+    method = "builtin"
     if mode == MODE_AUTO and windows_api_available():
         try:
             write_windows(path, tags, rating)
             return "windows"
         except Exception as exc:  # noqa: BLE001
             log.warning("Windows property write failed for %s: %s; using the built-in writer", path, exc)
+            method = "fallback"
     updates: dict[str, list] = {xtra.CATEGORY: list(tags)}
     if rating is not None:
         updates[xtra.RATING] = [int(rating)] if rating else []
     xtra.write_entries(path, updates)
-    return "builtin"
+    return method
 
 
 def notify_changed(path: str | os.PathLike) -> None:

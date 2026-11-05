@@ -122,3 +122,25 @@ def _child(fileobj: BinaryIO, parent: Atom, kind: bytes, skip: int = 0) -> Atom 
         if atom.type == kind:
             return atom
     return None
+
+
+def movie_duration(fileobj: BinaryIO) -> float | None:
+    """The movie's length from moov/mvhd, in seconds: the length FFmpeg (and so the player) reports.
+    mutagen's length is the first audio track's, which can be a few seconds shorter or longer."""
+    try:
+        moov = next((a for a in top_level(fileobj) if a.type == b"moov"), None)
+        if moov is None:
+            return None
+        for atom in iter_atoms(fileobj, moov.data_offset, moov.end):
+            if atom.type != b"mvhd":
+                continue
+            fileobj.seek(atom.data_offset)
+            head = fileobj.read(32)
+            if head[:1] == b"\x01":
+                timescale, duration = struct.unpack_from(">IQ", head, 20)
+            else:
+                timescale, duration = struct.unpack_from(">II", head, 12)
+            return duration / timescale if timescale and duration and duration != 0xFFFFFFFF else None
+    except (MalformedMP4, struct.error, OSError):
+        return None
+    return None

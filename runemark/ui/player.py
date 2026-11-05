@@ -328,6 +328,14 @@ class PlayerPanel(QWidget):
             self.player.pause()
         # Qt shows the last frame that starts *before* the position, so aim just past it
         self.player.setPosition(max(0, int(math.ceil(seconds * 1000)) + 1))
+        # Until the new frame arrives (it replaces this with its own time), the frame on screen is the one
+        # asked for: M, E or a capture pressed straight after a jump must not use the frame from before it.
+        target = max(0.0, seconds)
+        if self._clock.covers(target):           # the frame's own start time, when the frame times are known
+            i = bisect.bisect_right(self._clock.times, target + 1e-6)
+            if i > 0:
+                target = self._clock.times[i - 1]
+        self._frame_us = int(round(target * 1_000_000))
 
     def nudge(self, seconds: float):
         """Jump by `seconds` from the frame on screen (Shift+arrows)."""
@@ -433,7 +441,9 @@ class PlayerPanel(QWidget):
 
     def _on_duration(self, ms: int):
         self.slider.setRange(0, max(0, ms))
-        self.duration_label.setText("/ " + fmt_duration(ms / 1000))
+        # The file's own length (as the Library and the details show it), not the playback engine's estimate
+        known = self.info.duration if getattr(self, "info", None) is not None else None
+        self.duration_label.setText("/ " + fmt_duration(known if known else ms / 1000))
 
     def _on_status(self, status):
         if status == QMediaPlayer.MediaStatus.LoadedMedia and self._first_frame_pending:

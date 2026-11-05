@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogButtonBox, QFormLayout,
                                QHeaderView, QLabel, QLineEdit, QMenu, QStyledItemDelegate, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..media.chapters import ChapterMark, add_mark, copy_marks, end_at, renumber
 from ..media.probe import fmt_duration
-from .widgets import Banner, text_button
+from .widgets import Banner, FlowLayout, text_button
 
 COL_TIME, COL_NAME, COL_END = 0, 1, 2
 CHAPTER_KEYS = [str(n) for n in range(1, 10)]
@@ -125,7 +125,10 @@ class ChaptersPanel(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        buttons = QHBoxLayout()
+        # The buttons wrap onto a second line when the panel is narrow, instead of being squeezed until their
+        # labels are cut off ("Add chapt", "Clear en").
+        button_row = QWidget()
+        buttons = FlowLayout(button_row, spacing=6)
         self.add_button = text_button("Add chapter", "plus", primary=True)
         self.add_button.setToolTip("Start a chapter at the frame on screen (M)")
         self.add_button.clicked.connect(self.addRequested)
@@ -147,13 +150,12 @@ class ChaptersPanel(QWidget):
         self.keys_button.setToolTip("Choose the chapter name each number key (1-9) adds")
         self.keys_button.clicked.connect(self.edit_keys)
         for b in (self.add_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
-                  self.delete_button):
+                  self.delete_button, self.keys_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.ensurePolished()                        # the style sheet's padding counts in the width
+            b.setMinimumWidth(b.sizeHint().width())
             buttons.addWidget(b)
-        buttons.addStretch(1)
-        self.keys_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        buttons.addWidget(self.keys_button)
-        layout.addLayout(buttons)
+        layout.addWidget(button_row)
         self.keys_line = QLabel("")
         self.keys_line.setObjectName("Faint")
         self.keys_line.setWordWrap(True)
