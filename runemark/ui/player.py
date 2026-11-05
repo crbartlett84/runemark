@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -39,9 +39,131 @@ def bytes_to_pixmap(data: bytes | None) -> QPixmap | None:
 
 
 
+SPEEDS = (1.0, 1.5, 2.0, 4.0)
+
+
+class Shuttle:
+    """J/K/L (0.9.0). L plays forward, and each L again goes faster (1×, 1.5×, 2×, 4×); K pauses; J goes backward:
+    Qt's player can't play in reverse, so going backward steps back through the video (about five steps a second),
+    and each J again steps back further. J while playing forward slows down first, then backs up."""
+
+    def __init__(self):
+        self.direction = 0           # -1 backward, 0 paused, 1 forward
+        self.index = 0               # into SPEEDS
+
+    @property
+    def rate(self) -> float:
+        return SPEEDS[self.index]
+
+    def press(self, key: str) -> tuple[int, float]:
+        key = key.upper()
+        if key == "K":
+            self.direction = 0
+        elif key == "L":
+            if self.direction == 1:
+                self.index = min(self.index + 1, len(SPEEDS) - 1)
+            else:
+                self.direction, self.index = 1, 0
+        elif key == "J":
+            if self.direction == 1 and self.index > 0:
+                self.index -= 1
+            elif self.direction == -1:
+                self.index = min(self.index + 1, len(SPEEDS) - 1)
+            else:
+                self.direction, self.index = -1, 0
+        return self.direction, self.rate
+
+    def set_rate(self, rate: float):
+        self.index = min(range(len(SPEEDS)), key=lambda i: abs(SPEEDS[i] - rate))
+
+    def label(self) -> str:
+        """What the speed readout shows: "" at normal speed playing or paused, else "2×", "◀ 1×"."""
+        rate = f"{self.rate:g}×"
+        if self.direction == -1:
+            return f"◀ {rate}"
+        return "" if self.rate == 1.0 else rate
+
+
+def chapter_ticks(marks) -> list[float]:
+    """Where chapter ticks go on the timeline: each chapter's start. Never its end (ends stay in the Chapters tab)."""
+    return sorted({round(float(getattr(m, "start", m)), 3) for m in marks})
+
+
 class JumpSlider(QSlider):
     """The timeline: a click anywhere on the line jumps there (0.8.1; a plain slider only moves a page towards the
-    click), and the press carries straight on into a drag, so click-and-slide scrubs from that spot."""
+    click), and the press carries straight on into a drag, so click-and-slide scrubs from that spot.
+    0.9.0: chapter starts are drawn as ticks on it (never their ends), suggested cuts as faint dots under it, and
+    hovering reports the time under the mouse (for the preview frame)."""
+
+    hovered = Signal(int, object)      # ms under the mouse, global QPoint
+    hoverEnded = Signal()
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.chapter_starts: list[float] = []      # seconds
+        self.cuts: list[float] = []
+        self.setMouseTracking(True)
+
+    def set_chapter_starts(self, starts: list[float]):
+        self.chapter_starts = chapter_ticks(starts)
+        self.update()
+
+    def set_cuts(self, cuts: list[float]):
+        self.cuts = sorted(cuts or [])
+        self.update()
+
+    def _geometry(self):
+        from PySide6.QtWidgets import QStyle, QStyleOptionSlider
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove,
+                                             self)
+        handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle,
+                                             self)
+        return opt, groove, handle
+
+    def x_for_ms(self, ms: float) -> int:
+        from PySide6.QtWidgets import QStyle
+        opt, groove, handle = self._geometry()
+        span = max(1, groove.width() - handle.width())
+        return groove.x() + handle.width() // 2 + QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), int(ms), span, opt.upsideDown)
+
+    def ms_at(self, x: float) -> int:
+        from PySide6.QtWidgets import QStyle
+        opt, groove, handle = self._geometry()
+        span = max(1, groove.width() - handle.width())
+        return QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                              max(0, int(x) - groove.x() - handle.width() // 2), span, opt.upsideDown)
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        if self.maximum() <= self.minimum() or not (self.chapter_starts or self.cuts):
+            return
+        from PySide6.QtGui import QColor, QPainter, QPen
+        painter = QPainter(self)
+        t = theme.current()
+        _opt, groove, _handle = self._geometry()
+        mid = groove.center().y()
+        if self.cuts:
+            painter.setPen(Qt.PenStyle.NoPen)
+            faint = QColor(t.faint)
+            faint.setAlpha(170)
+            painter.setBrush(faint)
+            for cut in self.cuts:
+                painter.drawEllipse(QPoint(self.x_for_ms(cut * 1000), min(self.height() - 3, mid + 7)), 1, 1)
+        if self.chapter_starts:
+            pen = QPen(QColor(t.accent))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            for start in self.chapter_starts:
+                x = self.x_for_ms(start * 1000)
+                painter.drawLine(x, mid - 6, x, mid + 6)
+        painter.end()
+
+    def leaveEvent(self, event):  # noqa: N802
+        self.hoverEnded.emit()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
@@ -65,6 +187,8 @@ class JumpSlider(QSlider):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
+        if self.maximum() > self.minimum():
+            self.hovered.emit(self.ms_at(event.position().x()), event.globalPosition().toPoint())
         if getattr(self, "_jumped", False):
             from PySide6.QtWidgets import QStyle, QStyleOptionSlider
             opt = QStyleOptionSlider()
@@ -137,6 +261,12 @@ class PlayerPanel(QWidget):
         self._pending_steps = 0
         self._step_job = None
         self._first_frame_pending = False
+        self.loaded = False                       # a file is open in the player (it holds the file open)
+        self.shuttle = Shuttle()
+        self._reverse = QTimer(self)               # J: stepping backward, since Qt can't play in reverse
+        self._reverse.setInterval(200)
+        self._reverse.timeout.connect(self._reverse_tick)
+        self.preview = HoverPreview(self)
 
         self.player = QMediaPlayer(self)
         # RUNEMARK_NO_AUDIO is for test machines without sound hardware
@@ -205,9 +335,22 @@ class PlayerPanel(QWidget):
         self.capture_button = text_button("Use this frame", "camera")
         self.capture_button.setToolTip("Make the frame on screen this file's thumbnail (Ctrl+T)")
         self.capture_button.clicked.connect(self.captureRequested)
+        self.speed_button = QToolButton()
+        self.speed_button.setObjectName("SpeedButton")
+        self.speed_button.setText("1×")
+        self.speed_button.setToolTip("Playback speed. J backward · K pause · L forward; press J or L again to go "
+                                     "faster")
+        self.speed_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        from PySide6.QtWidgets import QMenu
+        speed_menu = QMenu(self.speed_button)
+        for rate in SPEEDS:
+            speed_menu.addAction(f"{rate:g}×", lambda r=rate: self.set_speed(r))
+        self.speed_button.setMenu(speed_menu)
+        self.slider.hovered.connect(self._hovered)
+        self.slider.hoverEnded.connect(self.close_preview)
 
         for widget in (self.play_button, self.prev_button, self.next_button, self.mute_button, self.volume,
-                       self.capture_button, self.slider):
+                       self.capture_button, self.slider, self.speed_button):
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Space and arrows stay with the video
         controls = QHBoxLayout()
         controls.setSpacing(4)
@@ -219,7 +362,9 @@ class PlayerPanel(QWidget):
         controls.addWidget(self.duration_label)
         controls.addSpacing(8)
         controls.addWidget(self.slider, 1)
-        controls.addSpacing(8)
+        controls.addSpacing(4)
+        controls.addWidget(self.speed_button)
+        controls.addSpacing(4)
         controls.addWidget(self.mute_button)
         controls.addWidget(self.volume)
         controls.addSpacing(10)
@@ -254,15 +399,22 @@ class PlayerPanel(QWidget):
         self._clock.clear()
         self._pending_seek_ms = position_ms or None
         self._first_frame_pending = True
+        self._stop_shuttle()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self.player.setPlaybackRate(self.shuttle.rate)
+        self.loaded = True
+        self.preview.forget()
         self._stack.setCurrentWidget(self.video)
         self._set_enabled(True)
 
     def unload(self) -> int:
         """Release the file (needed before writing to it on Windows). Returns the position in ms."""
         position = self.player.position()
+        self._stop_shuttle()
+        self.close_preview()
         self.player.stop()
         self.player.setSource(QUrl())
+        self.loaded = False
         return position
 
     def clear(self):
@@ -286,8 +438,81 @@ class PlayerPanel(QWidget):
         self.empty_text.setText("MP4 and MKV files. Drag one here, or press Ctrl+O.")
 
     def _set_enabled(self, enabled: bool):
-        for widget in (self.play_button, self.prev_button, self.next_button, self.slider, self.capture_button):
+        for widget in (self.play_button, self.prev_button, self.next_button, self.slider, self.capture_button,
+                       self.speed_button):
             widget.setEnabled(enabled)
+
+    # ---------------------------------------------------------------- timeline marks (0.9.0)
+    def set_chapter_starts(self, starts: list[float]):
+        """Ticks on the timeline where chapters start. Their ends are never drawn there."""
+        self.slider.set_chapter_starts(starts)
+
+    def set_cuts(self, cuts: list[float]):
+        self.slider.set_cuts(cuts)
+
+    # ---------------------------------------------------------------- speed and J/K/L (0.9.0)
+    def set_speed(self, rate: float):
+        self._stop_shuttle()
+        self.shuttle.set_rate(rate)
+        if self.shuttle.direction == -1:
+            self.shuttle.direction = 0
+        self.player.setPlaybackRate(self.shuttle.rate)
+        self._show_speed()
+
+    def shuttle_key(self, key: str):
+        if self.path is None:
+            return
+        direction, rate = self.shuttle.press(key)
+        if direction == 0:
+            self._stop_shuttle()
+            self.pause()
+        elif direction == 1:
+            self._reverse.stop()
+            self.player.setPlaybackRate(rate)
+            if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                self.player.play()
+        else:
+            self.pause()
+            if not self._reverse.isActive():
+                self._reverse_tick()
+                self._reverse.start()
+        self._show_speed()
+
+    def _reverse_tick(self):
+        if self.path is None or not self.loaded:
+            self._stop_shuttle()
+            return
+        base = self.current_pts()
+        if base is None:
+            base = self.player.position() / 1000
+        if base <= 0.001:
+            self._stop_shuttle()
+            return
+        # about the speed of playing backward at the chosen rate, in steps of 0.2 s
+        self.seek_seconds(max(0.0, base - self.shuttle.rate * self._reverse.interval() / 1000))
+
+    def _stop_shuttle(self):
+        self._reverse.stop()
+        if getattr(self, "shuttle", None) is not None and self.shuttle.direction == -1:
+            self.shuttle.direction = 0
+        if getattr(self, "speed_button", None) is not None:
+            self._show_speed()
+
+    def _show_speed(self):
+        label = self.shuttle.label()
+        self.speed_button.setText(label or "1×")
+        self.speed_button.setProperty("active", bool(label))
+        self.speed_button.style().unpolish(self.speed_button)
+        self.speed_button.style().polish(self.speed_button)
+
+    # ---------------------------------------------------------------- hover preview (0.9.0)
+    def _hovered(self, ms: int, global_pos):
+        if not self.loaded or self.info is None or self.info.main_video is None or self._dragging:
+            return
+        self.preview.want(self.path, self.info, ms / 1000, global_pos, self.slider)
+
+    def close_preview(self):
+        self.preview.hide_now()
 
     # ---------------------------------------------------------------- frames
     def _on_frame(self, frame: QVideoFrame):
@@ -311,14 +536,24 @@ class PlayerPanel(QWidget):
     def toggle_play(self):
         if self.path is None:
             return
+        if self._reverse.isActive():
+            self._stop_shuttle()
+            return
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
         else:
+            self.shuttle.direction = 1
+            self.player.setPlaybackRate(self.shuttle.rate)
             self.player.play()
 
     def pause(self):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
+
+    def stop_moving(self):
+        """Pause, and stop stepping backward (before marking a chapter or capturing a frame)."""
+        self._stop_shuttle()
+        self.pause()
 
     def seek_seconds(self, seconds: float):
         """Go to the frame on screen at `seconds`, including a frame that starts exactly then."""
@@ -352,6 +587,7 @@ class PlayerPanel(QWidget):
         """Move exactly one frame forward or back, using the file's real frame timestamps."""
         if self.path is None or self.info is None or self.info.main_video is None:
             return
+        self._stop_shuttle()
         self.pause()
         self._pending_steps += 1 if direction > 0 else -1
         self._run_steps()
@@ -466,11 +702,113 @@ class PlayerPanel(QWidget):
     def _on_state(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.play_button.setIcon(theme.icon("pause" if playing else "play", size=22))
+        if not playing and self.shuttle.direction == 1:
+            self.shuttle.direction = 0
 
     def _on_error(self, error, message):
         if error != QMediaPlayer.Error.NoError:
             log.warning("player error %s: %s", error, message)
             self.loadFailed.emit(message or "This file can't be played.")
+
+
+class HoverPreview(QFrame):
+    """The small picture over the timeline while the mouse hovers on it (0.9.0). Light on purpose: one quick
+    key-frame grab at a time (the latest place asked for wins), pictures kept for this video, nothing while the
+    mouse moves fast (it waits for a short pause)."""
+
+    WIDTH = 192
+    BUCKET = 2.0               # seconds: hovering within the same couple of seconds reuses the picture
+
+    def __init__(self, owner):
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("HoverPreview")
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+        self.picture = QLabel()
+        self.picture.setFixedSize(self.WIDTH, int(self.WIDTH * 9 / 16))
+        self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.time = QLabel("")
+        self.time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.picture)
+        layout.addWidget(self.time)
+        t = theme.current()
+        self.setStyleSheet(f"#HoverPreview {{ background: {t.surface}; border: 1px solid {t.border}; }}"
+                           f" QLabel {{ color: {t.text}; }}")
+        self.cache: dict[float, QPixmap] = {}
+        self._path = None
+        self._info = None
+        self._wanted: float | None = None
+        self._job = None
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._fetch)
+        self.grab = frames.grab_preview          # replaceable in tests
+
+    def key(self, seconds: float) -> float:
+        return round(seconds / self.BUCKET) * self.BUCKET
+
+    def forget(self):
+        self.cache.clear()
+        self._wanted = None
+        self._path = None
+
+    def want(self, path, info, seconds: float, global_pos, slider):
+        if self._path != path:
+            self.forget()
+            self._path, self._info = path, info
+        self.time.setText(fmt_duration(seconds))
+        key = self.key(seconds)
+        self._wanted = key
+        pix = self.cache.get(key)
+        if pix is not None:
+            self.picture.setPixmap(pix)
+        elif not self.isVisible():
+            self.picture.clear()
+        self.adjustSize()
+        top = slider.mapToGlobal(QPoint(0, 0)).y()
+        self.move(global_pos.x() - self.width() // 2, top - self.height() - 6)
+        self.show()
+        if pix is None:
+            self._timer.start()
+
+    def _fetch(self):
+        if self._job is not None or self._wanted is None or self._path is None:
+            return
+        key, path, info = self._wanted, self._path, self._info
+        if key in self.cache:
+            return
+        grab = self.grab
+
+        def work(job):
+            return key, pil_to_qimage(grab(path, info, key, max_edge=self.WIDTH))
+
+        def done(result):
+            self._job = None
+            got, image = result
+            if path != self._path:
+                return
+            pix = QPixmap.fromImage(image)
+            if len(self.cache) > 150:
+                self.cache.pop(next(iter(self.cache)))
+            self.cache[got] = pix
+            if got == self._wanted and self.isVisible():
+                self.picture.setPixmap(pix)
+            if self._wanted is not None and self._wanted not in self.cache:
+                self._timer.start()              # the mouse moved on meanwhile
+
+        def failed(_exc, _tb):
+            self._job = None
+
+        self._job = workers.start(work, on_done=done, on_error=failed)
+
+    def hide_now(self):
+        self._timer.stop()
+        self._wanted = None
+        self.hide()
 
 
 class Filmstrip(QScrollArea):

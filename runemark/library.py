@@ -111,6 +111,123 @@ def matches(record: FileRecord, search: Search) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ smart filters (0.9.0)
+# A smart filter is a named set of rules, matched all together (AND) or any of them (OR); pinned ones sit above the
+# Library's list with how many videos match. Rules: [field, op, value].
+SMART_FIELDS = {
+    # field: (label, [(op, label)], takes a value)
+    "tag": ("Tag", [("has", "is on it"), ("lacks", "isn't on it")], True),
+    "person": ("Person", [("has", "is in it"), ("lacks", "isn't in it")], True),
+    "studio": ("Studio", [("is", "is"), ("not", "isn't"), ("contains", "contains")], True),
+    "text": ("Name or title", [("contains", "contains"), ("lacks", "doesn't contain")], True),
+    "rating": ("Rating", [("ge", "at least"), ("le", "at most"), ("eq", "exactly")], True),
+    "year": ("Year", [("ge", "from"), ("le", "up to"), ("eq", "is")], True),
+    "genre": ("Genre", [("has", "is"), ("lacks", "isn't"), ("none", "has none")], True),
+    "thumbnail": ("Thumbnail", [("yes", "has one"), ("no", "has none")], False),
+    "chapters": ("Chapters", [("yes", "has some"), ("no", "has none")], False),
+    "people": ("People", [("yes", "has some"), ("no", "has none")], False),
+    "saved": ("Saved in Runemark", [("yes", "yes"), ("no", "not yet")], False),
+    "inbox": ("Inbox", [("yes", "in the inbox"), ("no", "not in the inbox")], False),
+    "mkv": ("MKV", [("yes", "is an MKV"), ("no", "is an MP4")], False),
+}
+
+
+@dataclass
+class SmartRule:
+    field: str
+    op: str
+    value: str = ""
+
+    def describe(self) -> str:
+        label, ops, takes = SMART_FIELDS.get(self.field, (self.field, [], True))
+        op = dict(ops).get(self.op, self.op)
+        return f"{label} {op}" + (f" “{self.value}”" if takes and self.value and self.op != "none" else "")
+
+
+@dataclass
+class SmartFilter:
+    name: str
+    rules: list[SmartRule] = field(default_factory=list)
+    match: str = "all"              # "all" (AND) or "any" (OR)
+    pinned: bool = True
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "match": self.match, "pinned": self.pinned,
+                "rules": [[r.field, r.op, r.value] for r in self.rules]}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SmartFilter":
+        rules = [SmartRule(str(r[0]), str(r[1]), str(r[2]) if len(r) > 2 else "") for r in data.get("rules", [])]
+        return cls(str(data["name"]), rules, "any" if data.get("match") == "any" else "all",
+                   bool(data.get("pinned", True)))
+
+    def describe(self) -> str:
+        if not self.rules:
+            return "Every video"
+        joiner = " and " if self.match == "all" else " or "
+        return joiner.join(r.describe() for r in self.rules)
+
+
+def _number(text: str) -> int | None:
+    try:
+        return int(str(text).strip())
+    except ValueError:
+        return None
+
+
+def rule_matches(rec: FileRecord, rule: SmartRule) -> bool:
+    f, op, value = rule.field, rule.op, (rule.value or "").strip()
+    folded = value.casefold()
+    if f == "tag":
+        has = folded in {t.casefold() for t in rec.tags}
+        return has if op == "has" else not has
+    if f == "person":
+        names = {n.casefold() for n in rec.people + rec.people_aliases}
+        return (folded in names) if op == "has" else (folded not in names)
+    if f == "studio":
+        studio = (rec.studio or "").casefold()
+        return {"is": studio == folded, "not": studio != folded, "contains": bool(folded) and folded in studio}.get(
+            op, False)
+    if f == "text":
+        hay = (Path(rec.path).name + " " + (rec.title or "")).casefold()
+        return (folded in hay) if op == "contains" else (folded not in hay)
+    if f in ("rating", "year"):
+        have = (rec.rating or 0) if f == "rating" else rec.year
+        want = _number(value)
+        if want is None or have is None:
+            return False
+        return {"ge": have >= want, "le": have <= want, "eq": have == want}.get(op, False)
+    if f == "genre":
+        genres = {g.casefold() for g in rec.genre}
+        if op == "none":
+            return not genres
+        return (folded in genres) if op == "has" else (folded not in genres)
+    yes = op == "yes"
+    if f == "thumbnail":
+        return bool(rec.has_cover) == yes
+    if f == "chapters":
+        return bool(rec.chapters) == yes
+    if f == "people":
+        return bool(rec.people) == yes
+    if f == "saved":
+        return bool(rec.saved_at) == yes
+    if f == "inbox":
+        return rec.in_inbox == yes
+    if f == "mkv":
+        return (rec.container == "mkv") == yes
+    return False
+
+
+def smart_matches(rec: FileRecord, smart: SmartFilter) -> bool:
+    """Missing videos never match (they'd only clutter a filter)."""
+    if rec.missing:
+        return False
+    if not smart.rules:
+        return True
+    results = (rule_matches(rec, r) for r in smart.rules)
+    return all(results) if smart.match == "all" else any(results)
+
+
 # ------------------------------------------------------------------ libraries (0.7.0)
 # A library is a name, its folders, and subfolders left out of it ("skip"). One video can belong to several
 # libraries (a folder of favourites inside a bigger collection). Scans walk every library's folders once.
@@ -390,14 +507,34 @@ def new_batch_id() -> str:
 
 def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False):
     """Put a file's tags, genre and details back to a history entry, then forget that entry
-    (so the next undo goes one step further back). Cover and chapters aren't part of history."""
+    (so the next undo goes one step further back). The chapters go back too when that save changed them (0.9.0;
+    history from before 0.9.0 has none, and leaves them). The cover isn't part of history."""
     path = Path(entry.path)
     if not path.exists():
         raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
-    outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
-                       preserve_mtime=preserve_mtime,
-                       meta=VideoMeta(entry.title, entry.year, entry.description, entry.rating, entry.studio),
-                       data=entry.data)      # people too (None removes a block the save added)
+    meta = VideoMeta(entry.title, entry.year, entry.description, entry.rating, entry.studio)
+    outcome = None
+    if getattr(entry, "chapters", None) is not None:
+        from .media import chapters as chapter_io
+        from .media import frames
+        from .tagsync import save_mp4_with_chapters
+        info = probe(path)
+        wanted = chapter_io.marks_from_json(entry.chapters)
+        if not chapter_io.same_marks(chapter_io.marks_from_info(info), wanted):
+            sources = info.cover_sources
+            state = read_state(path, info, lambda i: frames.dump_attachment(i.path, sources[0]) if sources else None)
+            full = VideoMeta(**vars(state.meta))
+            for name in ("title", "year", "description", "rating", "studio"):
+                setattr(full, name, getattr(meta, name))
+            if entry.studio is None:
+                full.studio = state.meta.studio
+            outcome = save_mp4_with_chapters(path, info, wanted, keywords=entry.keywords, genre=entry.genre,
+                                             cover=state.cover, meta=full, explorer_mode=explorer_mode,
+                                             preserve_mtime=preserve_mtime, data=entry.data)
+    if outcome is None:
+        outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
+                           preserve_mtime=preserve_mtime, meta=meta,
+                           data=entry.data)      # people too (None removes a block the save added)
     db.remember_file(path, entry.keywords)
     reindex(db, path)
     db.drop_history(entry.id)

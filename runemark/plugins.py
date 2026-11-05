@@ -30,7 +30,8 @@ from .paths import app_data_dir
 
 log = logging.getLogger(__name__)
 
-API_VERSION = 1
+API_VERSION = 2          # 2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
+                         # opening files, names from details, changing a video that isn't open; everything in 1 stays
 EVENTS = ("file_opened", "file_saved", "file_closed")
 
 
@@ -93,12 +94,25 @@ class _Action:
 
 
 @dataclass
+class LibraryColumn:
+    """A column a plugin adds to the Library (0.9.0). cell(path) gives the text (None: not known yet, so fetch is
+    asked for it); fetch(paths) is called, a few at a time, for the rows on show that have no value yet."""
+    plugin: str
+    title: str
+    cell: Callable[[str], str | None]
+    fetch: Callable[[list[str]], Any] | None = None
+    tooltip: Callable[[str], str | None] | None = None
+    sort_key: Callable[[str], Any] | None = None
+
+
+@dataclass
 class PluginHost:
     """What the plugins added, for the windows to show. Filled in by load_all()."""
     plugins: list[Plugin] = field(default_factory=list)
     panes: list[tuple[str, str, Any]] = field(default_factory=list)          # (plugin, title, widget)
     actions: list[_Action] = field(default_factory=list)                    # main window ⋯ → Plugins
     library_actions: list[_Action] = field(default_factory=list)            # Library → More → plugin actions
+    library_columns: list[LibraryColumn] = field(default_factory=list)      # extra Library columns (0.9.0)
     listeners: dict[str, list[tuple[str, Callable]]] = field(default_factory=lambda: {e: [] for e in EVENTS})
 
     def emit(self, event: str, *args) -> None:
@@ -172,6 +186,30 @@ class PluginAPI:
         """An entry in the Library's More menu; the callback gets the selected videos' paths."""
         self._host.library_actions.append(_Action(self._plugin.name, text, callback))
 
+    def add_tags_panel(self, title: str, widget, collapsed: bool = False):
+        """A strip in the Tags tab, under the tag editor, that folds down to its title (0.9.0). Returns the strip
+        (strip.set_open(True/False) opens or folds it)."""
+        self._host.panes.append((self._plugin.name, title, widget))
+        return self._w.add_tags_panel(title, widget, collapsed)
+
+    def add_header_widget(self, widget) -> None:
+        """Put a widget (buttons, say) in the header, just before Save (0.9.0). The plugin enables and hides it."""
+        self._w.add_header_widget(widget)
+
+    def add_library_column(self, title: str, cell: Callable[[str], str | None],
+                           fetch: Callable[[list[str]], Any] | None = None,
+                           tooltip: Callable[[str], str | None] | None = None,
+                           sort_key: Callable[[str], Any] | None = None) -> None:
+        """A column in the Library (0.9.0). cell(path) -> the text to show, or None when it isn't known yet: then
+        fetch(paths) is called (on the window's thread, batched) for the rows on show without a value, and the plugin
+        calls library_column_changed() once it has them. Keep cell() quick: it's called as rows are drawn."""
+        self._host.library_columns.append(LibraryColumn(self._plugin.name, title, cell, fetch, tooltip, sort_key))
+        self._w.library_columns_changed()
+
+    def library_column_changed(self) -> None:
+        """Values for a plugin column have arrived: the Library redraws its plugin columns."""
+        self._w.library_columns_changed()
+
     def on(self, event: str, callback: Callable) -> None:
         """file_opened(path): a video was opened (or reopened after a save). file_saved(path): a video was saved,
         in the editor or by a Library change. file_closed(path): the open video is about to move (move_file)."""
@@ -196,8 +234,52 @@ class PluginAPI:
         return self._w.plugin_apply(changes)
 
     def save(self, then: Callable[[], Any] | None = None) -> None:
-        """Save the open video (the same as Ctrl+S), then call `then`."""
+        """Save the open video (the same as Ctrl+S), then call `then`. From 0.9.0 MP4s are saved in the background:
+        `then` runs once the file is written, and the window carries on meanwhile."""
         self._w.save(after=then)
+
+    def saving(self, path: Path | str) -> bool:
+        """True while a save of this video is waiting or being written (0.9.0)."""
+        return self._w.saving(Path(path))
+
+    def open_file(self, path: Path | str) -> None:
+        """Open a video in the editor (added to the open-file list), as if picked in the Library (0.9.0)."""
+        self._w.open_paths([Path(path)])
+
+    def open_list(self) -> list[Path]:
+        """The open-file list (Ctrl+PgUp / Ctrl+PgDown walk through it), in order (0.9.0)."""
+        return list(self._w.queue)
+
+    def open_next(self) -> bool:
+        """Open the next video in the open-file list (False when there's no other one) (0.9.0)."""
+        return self._w.open_next_in_list()
+
+    def set_chapter_keys(self, keys: dict[str, str] | None, label: str = "") -> None:
+        """Number keys 1-9 for the open video only: {"1": "Name", ...}; each adds a chapter with that name, as the
+        chapter keys do. Shown under the player (with `label`) and in the Chapters tab. They go when another video
+        opens; None or {} gives back the usual chapter keys now (0.9.0)."""
+        self._w.set_session_chapter_keys(keys, label)
+
+    def toast(self, text: str, action: str | None = None, callback: Callable[[], Any] | None = None,
+              kind: str = "info", seconds: float | None = None) -> None:
+        """A message floating over the window, optionally with one button (Undo, Retry…) (0.9.0).
+        kind: "info", "warn" or "error" (errors stay until closed)."""
+        actions = [(action, lambda: self._w._run_plugin(callback))] if action and callback else None
+        self._w.toast(text, kind, actions, seconds)
+
+    def name_from_details(self, details: dict | None = None) -> str:
+        """The file name (without extension) Library → Rename from details would give the open video (or these
+        details: title, year, people, studio, rating, path), with the pattern last used there. Folders in the
+        pattern are left out. "" when the pattern gives nothing (the details it needs are empty) (0.9.0)."""
+        return self._w.plugin_name_from_details(details)
+
+    def change_file(self, path: Path | str, changes: dict,
+                    then: Callable[[Path | None, str], Any] | None = None) -> None:
+        """Change a video that isn't necessarily open, as apply_details would and then saving it: in the background,
+        with the same safe write, check and history (Undo last save works on it). changes: what apply_details takes,
+        plus cover_if_missing (bytes: a thumbnail only if it has none). then(path, "") when it's written, or
+        then(None, reason) (0.9.0)."""
+        self._w.plugin_change_file(Path(path), dict(changes), then)
 
     # ---- your tag database and people
     def tags(self) -> list[dict]:

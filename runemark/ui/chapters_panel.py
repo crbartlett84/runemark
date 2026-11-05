@@ -100,6 +100,7 @@ class ChaptersPanel(QWidget):
     nameTagged = Signal(str)                # a chapter was named: tag the file with that name
     keysChanged = Signal(dict)              # the chapter keys were set up: {"1": "name", ...}
     endRequested = Signal()                 # "End here": the window supplies the frame time (E)
+    findCutsRequested = Signal()            # 0.9.0: look through the video for likely cut points
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,8 +150,12 @@ class ChaptersPanel(QWidget):
         self.keys_button = text_button("Keys…", "edit")
         self.keys_button.setToolTip("Choose the chapter name each number key (1-9) adds")
         self.keys_button.clicked.connect(self.edit_keys)
+        self.cuts_button = text_button("Find cuts", "search")
+        self.cuts_button.setToolTip("Look through the video for likely cut points (in the background). Then [ and ] "
+                                    "jump between them, and a chapter added within a second of one starts on it.")
+        self.cuts_button.clicked.connect(self.findCutsRequested)
         for b in (self.add_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
-                  self.delete_button, self.keys_button):
+                  self.delete_button, self.keys_button, self.cuts_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.ensurePolished()                        # the style sheet's padding counts in the width
             b.setMinimumWidth(b.sizeHint().width())
@@ -160,6 +165,8 @@ class ChaptersPanel(QWidget):
         self.keys_line.setObjectName("Faint")
         self.keys_line.setWordWrap(True)
         layout.addWidget(self.keys_line)
+        self.session_keys: dict = {}
+        self.session_label = ""
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Starts at", "Name", "Ends at"])
@@ -195,9 +202,36 @@ class ChaptersPanel(QWidget):
 
     def set_chapter_keys(self, keys: dict):
         self.chapter_keys = dict(keys or {})
+        self._show_keys()
+
+    def set_session_keys(self, keys: dict, label: str = ""):
+        """A plugin's number keys for this video (0.9.0): they stand in for the chapter keys until the next one."""
+        self.session_keys, self.session_label = dict(keys or {}), label
+        self._show_keys()
+
+    def _show_keys(self):
+        if self.session_keys:
+            used = [f"{k} {self.session_keys[k]}" for k in CHAPTER_KEYS if self.session_keys.get(k)]
+            self.keys_line.setText((self.session_label or "Keys for this video") + ": " + " · ".join(used))
+            return
         used = [f"{k} {self.chapter_keys[k]}" for k in CHAPTER_KEYS if self.chapter_keys.get(k)]
         self.keys_line.setText("Keys: " + " · ".join(used) if used else
                                "Tip: set up number keys that add a named chapter in one press (Keys…).")
+
+    def set_cuts_state(self, state: str, value: int = 0):
+        """idle: not looked for yet · busy: looking (value = percent) · done: value = how many were found."""
+        self.cuts_state = state
+        if state == "busy":
+            self.cuts_button.setText(f"Finding cuts… {value}%" if value else "Finding cuts…")
+            self.cuts_button.setEnabled(False)
+        elif state == "done":
+            self.cuts_button.setText(f"{value} cuts" if value != 1 else "1 cut")
+            self.cuts_button.setToolTip("Likely cut points found in this video: [ and ] jump between them, and a "
+                                        "chapter added within a second of one starts on it.")
+            self.cuts_button.setEnabled(False)
+        else:
+            self.cuts_button.setText("Find cuts")
+            self.cuts_button.setEnabled(self._enabled)
 
     def edit_keys(self):
         dialog = ChapterKeysDialog(self.chapter_keys, self.names, self)
@@ -228,6 +262,8 @@ class ChaptersPanel(QWidget):
         self._enabled = enabled
         self.add_button.setEnabled(enabled)
         self.table.setEnabled(enabled)
+        if getattr(self, "cuts_state", "idle") == "idle":
+            self.cuts_button.setEnabled(enabled)
         if container == "mkv":
             self.banner.show_message("info", "These chapters go into the MP4 when this MKV is converted.")
         elif enabled:

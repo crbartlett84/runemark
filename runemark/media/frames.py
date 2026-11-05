@@ -73,6 +73,25 @@ def grab_frame(path: str | os.PathLike, seconds: float, stream: Stream | None = 
     return image
 
 
+def grab_preview(path: str | os.PathLike, info: MediaInfo, seconds: float, *, max_edge: int = 200) -> Image.Image:
+    """A quick, small picture near `seconds` for the timeline's hover preview (0.9.0): the key frame at or just
+    before it, so ffmpeg decodes one frame instead of everything since the last key frame. Not frame-exact."""
+    stream = info.main_video
+    seconds = max(0.0, seconds - (info.start_time or 0.0))
+    chain = _filter_chain(stream, False).replace("format=rgb24", f"scale='min({max_edge},iw)':-2,format=rgb24")
+    args = [proc.ffmpeg(), "-v", "error", "-nostdin", "-skip_frame", "nokey", "-noaccurate_seek",
+            "-ss", f"{seconds:.3f}", "-i", str(path), "-map", f"0:{stream.index}" if stream is not None else "0:V:0",
+            "-an", "-sn", "-frames:v", "1", "-vf", chain, "-f", "image2pipe", "-c:v", "bmp", "-"]
+    result = proc.run(args, timeout=20)
+    if not result.stdout:
+        raise RuntimeError(f"No frame near {seconds:.1f}s")
+    image = Image.open(io.BytesIO(result.stdout))
+    image.load()
+    image = image.convert("RGB")
+    image.thumbnail((max_edge, max_edge), Image.Resampling.BILINEAR)
+    return image
+
+
 def frame_time_at(path: str | os.PathLike, stream: Stream, timestamp: float) -> float:
     """Timestamp of the frame on screen at `timestamp`: the last frame starting at or before it.
 

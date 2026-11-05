@@ -4,6 +4,44 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-05
+
+### Added
+- **Saving in the background.** Saving no longer stops everything behind a progress box (chapters on a big file
+  took the best part of a minute). Saves wait their turn and are written one at a time, with the same safe write and
+  read-back check as before, while you carry on; the status bar shows how far the save has got and how many are
+  waiting. **Ctrl+Enter** opens the next video straight away while the previous one saves. A save that fails changes
+  nothing in the file: its changes come back as unsaved and a message offers **Retry**. A video opened again while it's
+  still saving is shown read-only until it's written, then opens normally. Closing Runemark with saves still running
+  says so and closes once they're done. (Converting an MKV still shows its progress box, as before.)
+- **Chapter ticks on the timeline**, where each chapter starts (chapter ends never show there; they stay in the
+  Chapters tab's *Ends at* column). **Hover over the timeline** for a small picture of that moment.
+- **Suggested cut points.** *Find cuts* in the Chapters tab looks through the video in the background for places
+  where the picture changes completely, and remembers them for that video (saving its tags or chapters keeps them).
+  **[** and **]** jump to the previous and next cut, and a chapter added (M or a number key) within a second of a
+  cut starts exactly on it. The cuts show as faint dots under the timeline (Settings can hide them, or make Runemark
+  look as each video opens). Opening a video never waits for this.
+- **Playback speed and J/K/L.** A speed button beside the timeline (1×, 1.5×, 2×, 4×). **L** plays, and each L again
+  goes faster; **K** pauses; **J** goes backward (by stepping back through the video, as the player can't play in
+  reverse), and each J again goes back faster. The speed button shows the current speed.
+- **Undo and redo for chapters**: **Ctrl+Z** and **Ctrl+Y** (outside text boxes) step through every change to the
+  chapters since the video was opened in this session, saves included. **Undo last save** now puts a save's chapters
+  back too, for saves made from 0.9.0 on.
+- **Smart filters in the Library**: saved filters with rules (tag, person, studio, name or title, rating, year,
+  genre, thumbnail, chapters, people, saved, inbox, MKV), matched all together or any of them. Pinned ones sit above
+  the list with a live count of the videos each matches; click one to show just those.
+- **Plugins (API 2)**: strips in the Tags tab, buttons beside Save, Library columns, number keys for one video,
+  floating messages with a button, opening videos, the *Rename from details* name, and changing a video that isn't
+  open (saved in the background, undoable). See docs/plugins.md.
+
+### Changed
+- **The Library opens maximised** (make it smaller and it remembers), and lists each video by its title when it has
+  one; the file name has its own column.
+- Short notices float over the bottom of the window for a few seconds instead of only changing the status bar.
+
+### Fixed
+- **The Library's filter list** (Inbox, Still to do…) was cut off; it now opens wide enough for every entry.
+
 ## [0.8.3] - 2026-11-04
 
 ### Fixed

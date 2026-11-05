@@ -117,7 +117,8 @@ def test_save_and_next_then_paste_tags(tmp_path, media, qapp):
         win._tags_edited(["Lake"])
         assert win.doc.dirty()
         win.save_and_next()
-        assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == b and not win._busy), \
+        assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == b and not win._busy
+                          and win.saves.idle()), \
             "Save and next should save a.mp4 and then open b.mp4"
         assert read_state(a).keywords == ["Lake"]
         assert win.doc.tags == []

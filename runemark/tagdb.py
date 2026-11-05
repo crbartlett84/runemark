@@ -274,6 +274,7 @@ class HistoryEntry:
     rating: int
     data: dict | None = None      # Runemark's data block before the save (schema 4+)
     studio: str | None = None     # None: recorded before 0.5.0 (undo leaves the studio alone)
+    chapters: list | None = None  # the chapters before a save that changed them (0.9.0); None: that save left them
 
     def summary(self) -> str:
         bits = ["; ".join(self.keywords + [g for g in self.genre if g.casefold() not in
@@ -348,6 +349,8 @@ class TagDB:
             self.conn.execute("ALTER TABLE file_history ADD COLUMN data TEXT")
         if "studio" not in history_cols:
             self.conn.execute("ALTER TABLE file_history ADD COLUMN studio TEXT")
+        if "chapters" not in history_cols:
+            self.conn.execute("ALTER TABLE file_history ADD COLUMN chapters TEXT")   # 0.9.0: JSON chapter list
         people_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(people)").fetchall()}
         if "links" not in people_cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN links TEXT")          # 0.7.0: JSON list of addresses
@@ -720,15 +723,17 @@ class TagDB:
     # ------------------------------------------------------------------ history (undo)
     def record_history(self, path: str | os.PathLike, *, keywords: list[str], genre: list[str], title: str = "",
                        year: int | None = None, description: str = "", rating: int = 0, label: str = "",
-                       batch: str | None = None, data: dict | None = None, studio: str | None = None) -> None:
-        """Remember a file's state from just before a save. Keeps the newest HISTORY_KEEP per file."""
+                       batch: str | None = None, data: dict | None = None, studio: str | None = None,
+                       chapters: list | None = None) -> None:
+        """Remember a file's state from just before a save. Keeps the newest HISTORY_KEEP per file.
+        chapters: the file's chapters before this save ([{"start", "name", "auto"}]), when the save changes them."""
         key = file_key(path)
         self.conn.execute(
             "INSERT INTO file_history(key, path, saved_at, batch, label, keywords, genre, title, year, description,"
-            " rating, data, studio) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rating, data, studio, chapters) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (key, str(path), _now(), batch, label, json.dumps(list(keywords)), json.dumps(list(genre)),
              title or "", year, description or "", int(rating or 0), json.dumps(data) if data else None,
-             studio))
+             studio, json.dumps(list(chapters)) if chapters is not None else None))
         self.log_activity(label or "Saved", path, batch, commit=False)
         self.conn.execute(
             "DELETE FROM file_history WHERE key = ? AND id NOT IN "
@@ -740,7 +745,7 @@ class TagDB:
         return HistoryEntry(row["id"], row["path"], row["saved_at"], row["batch"], row["label"],
                             json.loads(row["keywords"]), json.loads(row["genre"]), row["title"], row["year"],
                             row["description"], row["rating"], json.loads(row["data"]) if row["data"] else None,
-                            row["studio"])
+                            row["studio"], json.loads(row["chapters"]) if row["chapters"] else None)
 
     def history(self, path: str | os.PathLike) -> list[HistoryEntry]:
         """Earlier states of a file, newest first."""

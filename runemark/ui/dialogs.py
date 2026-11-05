@@ -266,6 +266,14 @@ class SettingsDialog(QDialog):
         self.check_updates.setChecked(settings.check_updates)
         form.addRow("", self.scan_on_start)
         form.addRow("", self.check_updates)
+        self.find_cuts = QCheckBox("Look for likely cuts in each video a few seconds after it opens")
+        self.find_cuts.setToolTip("Otherwise Chapters → Find cuts looks when you ask. Either way it runs in the "
+                                  "background and is remembered for each video.")
+        self.find_cuts.setChecked(getattr(settings, "find_cuts_on_open", False))
+        self.cut_marks = QCheckBox("Show the cuts as faint dots under the timeline")
+        self.cut_marks.setChecked(getattr(settings, "show_cut_marks", True))
+        form.addRow("", self.find_cuts)
+        form.addRow("", self.cut_marks)
 
         self.writer = QComboBox()
         self.writer.addItem("Windows (falls back to Runemark's own writer)", "auto")
@@ -436,6 +444,8 @@ class SettingsDialog(QDialog):
         s.read_nfo = self.read_nfo.isChecked()
         s.scan_on_start = self.scan_on_start.isChecked()
         s.check_updates = self.check_updates.isChecked()
+        s.find_cuts_on_open = self.find_cuts.isChecked()
+        s.show_cut_marks = self.cut_marks.isChecked()
         s.explorer_writer = self.writer.currentData()
         s.save()
         if not self._apply_portable():

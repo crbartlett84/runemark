@@ -19,7 +19,7 @@ from .. import __version__, explorer, library, selftest
 from .. import people as people_io
 from ..media import chapters as chapter_io
 from ..media import convert as C
-from ..media import frames, suggest
+from ..media import frames, scenes, suggest
 from ..media.mp4meta import UNCHANGED, VideoMeta
 from ..media.probe import MediaInfo, VIDEO_EXTENSIONS, describe, fmt_duration, fmt_size, frame_rate_mode, probe
 from ..paths import log_dir
@@ -32,6 +32,8 @@ from .dialogs import ConvertDialog, ProgressDialog, SettingsDialog, TextReportDi
 from .chapters_panel import ChaptersPanel
 from .panels import DetailsPanel, ThumbnailPanel
 from .player import Filmstrip, PlayerPanel, bytes_to_pixmap, pil_to_qimage
+from .save_queue import SaveJob, SaveQueue
+from .toast import ToastHost
 from .tag_editor import TagEditor
 from .tagdb_dialog import FileChange, TagDatabaseDialog, ask_new_tag
 from .widgets import icon_button, text_button
@@ -73,6 +75,7 @@ class Document:
         self.saved_chapters = chapter_io.copy_marks(self.chapters)
         self.suggestions: list[tuple[float, QPixmap]] | None = None
         self._auto_filled = None        # the details and people as the .nfo filled them in, before any edits
+        self.read_only = False          # shown while its save is still being written (0.9.0)
 
     @property
     def container(self) -> str:
@@ -168,7 +171,14 @@ class MainWindow(QMainWindow):
         self._tag_clipboard: list[str] = []   # Copy tags, or the last saved file's tags; Paste tags adds them
         self._open_token = 0
         self._suggest_job = None
+        self._thumb_job = None
         self.library_window = None
+        self._close_when_saved = False
+        self._chapter_history: dict[str, tuple[list, list]] = {}   # file key -> (undo, redo) chapter lists (0.9.0)
+        self.session_chapter_keys: dict = {}      # 1-9 for this video only, set by a plugin (0.9.0)
+        self.session_keys_label = ""
+        self.saves = SaveQueue(self._release_for_save, self)
+        self.saves.changed.connect(self._saves_changed)
         self.setWindowTitle("Runemark")
         self.setWindowIcon(theme.app_icon())
         self.setAcceptDrops(True)
@@ -180,6 +190,7 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
         self._build_status()
         self._build_actions()
+        self.toasts = ToastHost(self.centralWidget())
 
         self.player.set_volume(settings.volume, settings.muted)
         self.tag_editor.set_db(db)
@@ -208,6 +219,19 @@ class MainWindow(QMainWindow):
 
     def add_plugin_pane(self, title: str, widget):
         self.tabs.addTab(widget, theme.icon("plugin", size=16), title)
+
+    def add_tags_panel(self, title: str, widget, collapsed: bool = False):
+        """A plugin's collapsible strip in the Tags tab, under the tag editor (0.9.0)."""
+        from .widgets import CollapsibleStrip
+        strip = CollapsibleStrip(title, widget, collapsed=collapsed)
+        self.tags_tab.addWidget(strip)
+        self.tags_tab.setStretchFactor(self.tags_tab.count() - 1, 2)
+        return strip
+
+    def add_header_widget(self, widget):
+        """A plugin's buttons in the header, just before Save (0.9.0)."""
+        row = self.header.layout()
+        row.insertWidget(row.indexOf(self.save_button), widget)
 
     def add_plugin_action(self, text: str, callback, shortcut: str | None = None):
         act = QAction(text, self)
@@ -244,10 +268,24 @@ class MainWindow(QMainWindow):
 
     def plugin_apply(self, changes: dict) -> list[str]:
         """apply_details for plugins: the same edits a person could make, left unsaved."""
-        from ..media.mp4meta import clean_links, parse_date
         doc = self.doc
-        if doc is None or self._busy:
+        if doc is None or self._busy or doc.read_only:
             return []
+        done = self._apply_changes(doc, changes)
+        self.details.meta.set_meta(doc.meta, doc.container)
+        if "tags" in done:
+            self.tag_editor.set_tags(doc.tags)
+        if "people" in done:
+            self.tag_editor.refresh_database()
+            self._refresh_people()
+        if "thumbnail" in done:
+            self._refresh_thumbs()
+        self._refresh_ui()
+        return done
+
+    def _apply_changes(self, doc: Document, changes: dict) -> list[str]:
+        """Plugin changes to a document (open or not): details, links, tags, people, a thumbnail. Unsaved."""
+        from ..media.mp4meta import clean_links, parse_date
         done: list[str] = []
         meta = VideoMeta(**vars(doc.meta))
         for key in ("title", "studio", "description"):
@@ -272,12 +310,10 @@ class MainWindow(QMainWindow):
             meta.links = clean_links(list(meta.links or []) + list(changes["add_links"]))
             done.append("links")
         doc.meta = meta
-        self.details.meta.set_meta(doc.meta, doc.container)
         if changes.get("add_tags"):
             tags = merge_unique(doc.tags, [self.db.canonical(t) for t in changes["add_tags"]])
             if tags != doc.tags:
                 doc.tags = tags
-                self.tag_editor.set_tags(doc.tags)
                 done.append("tags")
         added = 0
         for name in changes.get("people") or []:
@@ -286,18 +322,93 @@ class MainWindow(QMainWindow):
                 doc.people = doc.people + [(person, [])]
                 added += 1
         if added:
-            self.tag_editor.refresh_database()
-            self._refresh_people()
             done.append("people")
-        if changes.get("cover"):
-            data = changes["cover"]
+        data = changes.get("cover")
+        if not data and changes.get("cover_if_missing") and not doc.whole_cover():
+            data = changes["cover_if_missing"]
+        if data:
             doc.cover = data if data[:3] == b"\xff\xd8\xff" else frames.image_bytes_to_jpeg(
                 data, max_edge=self.settings.thumbnail_max_edge or None, quality=self.settings.jpeg_quality)
             doc.cover_note = "From a plugin"
-            self._refresh_thumbs()
             done.append("thumbnail")
-        self._refresh_ui()
         return done
+
+    def open_next_in_list(self) -> bool:
+        if len(self.queue) < 2 and not (self.queue and self.doc is None):
+            return False
+        if self.doc is None:
+            self.open_file(self.queue[0])
+            return True
+        self._move_in_queue(1)
+        return True
+
+    def plugin_name_from_details(self, details: dict | None = None) -> str:
+        from .. import names as N
+        from .names_dialog import RENAME_PRESETS
+        if details is None:
+            details = self.plugin_details() or {}
+        pattern = (getattr(self.settings, "name_patterns", {}) or {}).get("rename") or RENAME_PRESETS[0]
+        pattern = pattern.replace("/", "\\").split("\\")[-1]          # the name only, not folders
+        path = details.get("path")
+        values = {"Title": details.get("title") or "", "Year": str(details.get("year") or ""),
+                  "People": ", ".join(details.get("people") or []), "Studio": details.get("studio") or "",
+                  "Rating": str(details.get("rating") or ""), "Name": Path(path).stem if path else ""}
+        try:
+            name = N.build_name(pattern, values)
+        except N.PatternError:
+            return ""
+        return name[:N.MAX_NAME].strip()
+
+    def plugin_change_file(self, path: Path, changes: dict, then=None):
+        """change_file for plugins: open the video out of sight, change it, and queue its save."""
+        def finish(new_path, reason):
+            if then:
+                self._run_plugin(then, new_path, reason)
+
+        if self.saves.pending(path) is not None:
+            self.saves.when_done(path, lambda ok: self.plugin_change_file(path, changes, then) if ok
+                                 else finish(None, "an earlier save of it didn't work"))
+            return
+        doc = self.doc
+        if doc is not None and file_key(doc.path) == file_key(path):
+            if doc.read_only:
+                finish(None, "it's being saved")
+                return
+            self.plugin_apply(changes)
+            if not doc.dirty():
+                finish(path, "")
+                return
+            if doc.container != "mp4":
+                finish(None, "it's an MKV: open it and convert it first")
+                return
+            self._queue_mp4_save(doc, after=lambda: finish(path, ""), on_failed=lambda exc: finish(None, str(exc)))
+            return
+        if path.suffix.lower() not in (".mp4", ".m4v"):
+            finish(None, "it's an MKV: open it and convert it first")
+            return
+
+        def work(job):
+            info = probe(path)
+            sources = info.cover_sources
+            state = read_state(path, info, lambda i: frames.dump_attachment(i.path, sources[0]) if sources else None)
+            return info, state
+
+        def loaded(result):
+            info, state = result
+            other = Document(path, info, state, self.db)
+            self._apply_changes(other, changes)
+            if not other.dirty():
+                finish(path, "")
+                return
+            if self._queue_mp4_save(other, after=lambda: finish(path, ""),
+                                    on_failed=lambda exc: finish(None, str(exc))) is None:
+                finish(None, "it couldn't be saved")
+
+        workers.start(work, on_done=loaded, on_error=lambda exc, _tb: finish(None, str(exc)))
+
+    def library_columns_changed(self):
+        if self.library_window is not None:
+            self.library_window.plugin_columns_changed()
 
     def _show_nothing(self, status: str = ""):
         """No video open: empty the panels (after the open one was moved away)."""
@@ -345,6 +456,15 @@ class MainWindow(QMainWindow):
         """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it.
         open_after=False: if it was open, go on to the next open file (or none) instead of reopening it."""
         from ..plugins import move_with_sidecars
+        if self.saves.pending(path) is not None:
+            # 0.9.0: still being saved: move it once the save is written (or not at all if it failed)
+            def after_save(ok):
+                if ok:
+                    self.plugin_move(path, folder, new_name, then, open_after)
+                elif then:
+                    self._run_plugin(then, None, "it couldn't be saved")
+            self.saves.when_done(path, after_save)
+            return
         was_open = self.doc is not None and file_key(self.doc.path) == file_key(path)
         reopen = was_open
 
@@ -559,6 +679,13 @@ class MainWindow(QMainWindow):
         self.player.loadFailed.connect(self._player_failed)
         self.player.frame.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         left_layout.addWidget(self.player, 1)
+        self.session_keys = QLabel("")          # 0.9.0: a plugin's number keys for this video
+        self.session_keys.setObjectName("SessionKeys")
+        self.session_keys.setWordWrap(True)
+        self.session_keys.setToolTip("Number keys for this video only: each adds a chapter with that name. They go "
+                                     "back to your own chapter keys when another video opens.")
+        self.session_keys.hide()
+        left_layout.addWidget(self.session_keys)
         strip_head = QHBoxLayout()
         strip_label = QLabel("FRAMES ACROSS THE VIDEO")
         strip_label.setObjectName("CardTitle")
@@ -610,8 +737,14 @@ class MainWindow(QMainWindow):
         self.chapters.changed.connect(self._chapters_edited)
         self.chapters.nameTagged.connect(self._chapter_named)
         self.chapters.keysChanged.connect(self._chapter_keys_changed)
+        self.chapters.findCutsRequested.connect(lambda: self.find_cuts())
         self.chapters.set_chapter_keys(self.settings.chapter_keys)
-        self.tabs.addTab(self.tag_editor, theme.icon("tag", size=16), "Tags")
+        # The Tags tab: the tag editor, with room below it for plugin strips (0.9.0, api.add_tags_panel)
+        self.tags_tab = QSplitter(Qt.Orientation.Vertical)
+        self.tags_tab.setChildrenCollapsible(False)
+        self.tags_tab.addWidget(self.tag_editor)
+        self.tags_tab.setStretchFactor(0, 3)
+        self.tabs.addTab(self.tags_tab, theme.icon("tag", size=16), "Tags")
         self.tabs.addTab(self.chapters, theme.icon("chapters", size=16), "Chapters")
         self.tabs.addTab(self.thumbs, theme.icon("image", size=16), "Thumbnail")
         self.tabs.addTab(self.details, theme.icon("info", size=16), "Details")
@@ -635,11 +768,16 @@ class MainWindow(QMainWindow):
         self.status_progress.setFixedWidth(140)
         self.status_progress.setRange(0, 0)
         self.status_progress.hide()
+        self._status_busy = False
+        self.status_saves = QLabel("")
+        self.status_saves.setObjectName("Muted")
+        self.status_saves.hide()
         writer = "Windows" if explorer.windows_api_available() and self.settings.explorer_writer == "auto" \
             else "built-in writer"
         self.status_writer = QLabel(f"Explorer Tags: {writer}")
         self.status_writer.setObjectName("Faint")
         status.addWidget(self.status_text, 1)
+        status.addPermanentWidget(self.status_saves)
         status.addPermanentWidget(self.status_progress)
         status.addPermanentWidget(self.status_writer)
 
@@ -676,7 +814,7 @@ class MainWindow(QMainWindow):
         self.act_copy_tags = action("Copy tags", self.copy_tags, "Ctrl+Shift+C")
         self.act_paste_tags = action("Paste tags (add the copied or last saved file's tags)",
                                      self.paste_tags, "Ctrl+Shift+V")
-        action("Focus tag box", lambda: (self.tabs.setCurrentWidget(self.tag_editor), self.tag_editor.input.setFocus()),
+        action("Focus tag box", lambda: (self.tabs.setCurrentWidget(self.tags_tab), self.tag_editor.input.setFocus()),
                "Ctrl+L")
         for n in range(1, 10):                     # tag keys: Alt+1-9 add or remove a chosen tag
             act = QAction(f"Tag key {n}", self)
@@ -730,11 +868,29 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _player_key(self, event) -> bool:
-        """The player and chapter keys (Space, arrows, Home, M, E, 1-9). True when one was used."""
+        """The player and chapter keys (Space, arrows, Home, M, E, 1-9, J/K/L, [ and ], Ctrl+Z/Ctrl+Y for
+        chapters). True when one was used."""
         if self.doc is None or takes_typing(QApplication.focusWidget()):
             return False
         key = event.key()
+        mods = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
         shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if mods & ctrl and not (mods & Qt.KeyboardModifier.AltModifier):
+            if key == Qt.Key.Key_Z and not shift:
+                self.undo_chapters()
+                return True
+            if key == Qt.Key.Key_Y or (key == Qt.Key.Key_Z and shift):
+                self.redo_chapters()
+                return True
+            return False
+        if not mods:
+            if key in (Qt.Key.Key_J, Qt.Key.Key_K, Qt.Key.Key_L):
+                self.player.shuttle_key(chr(key))
+                return True
+            if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BracketRight):
+                self.jump_to_cut(-1 if key == Qt.Key.Key_BracketLeft else 1)
+                return True
         if key == Qt.Key.Key_Space:
             self.player.toggle_play()
             return True
@@ -750,6 +906,9 @@ class MainWindow(QMainWindow):
         if key == Qt.Key.Key_Home:
             self.player.seek_seconds(0)
             return True
+        read_only = getattr(self.doc, "read_only", False)
+        if read_only and (key in (Qt.Key.Key_M, Qt.Key.Key_E) or Qt.Key.Key_1 <= key <= Qt.Key.Key_9):
+            return True                          # nothing can change while it's saving
         if key == Qt.Key.Key_M and not event.modifiers():
             self.add_chapter()
             return True
@@ -802,11 +961,18 @@ class MainWindow(QMainWindow):
         """Open `path` in the background. `status` replaces "Opened …" once it's shown (after a save).
         `carry`: the document that was just saved; edits made in it during the save (or while the file opens
         again) aren't lost when the new document replaces it."""
+        pending = self.saves.pending(path)
+        if pending is not None and pending.doc is not None and carry is None:
+            self._show_while_saving(pending)
+            return
         self._open_token += 1
         token = self._open_token
         self.player.unload()
         self.filmstrip.clear()
         self._cancel_suggestions()
+        if self.doc is None or file_key(self.doc.path) != file_key(path):
+            self._cancel_cuts()
+            self._cancel_chapter_thumbs()
         if self.doc is not None and file_key(self.doc.path) != file_key(path):
             self.doc = None          # nothing can be saved or captured while the next file loads
             self._refresh_ui()
@@ -863,6 +1029,21 @@ class MainWindow(QMainWindow):
 
         workers.start(work, on_done=done, on_error=failed)
 
+    def _show_while_saving(self, job: SaveJob):
+        """The video was opened again while its save is still being written: show it as saved, read-only, and
+        open it properly once the save is done (0.9.0)."""
+        self._open_token += 1
+        self.player.unload()
+        self.filmstrip.clear()
+        self._cancel_suggestions()
+        doc = job.doc
+        doc.read_only = True
+        self.doc = doc
+        self._show_document(play=False)
+        self.player.show_message("Still saving this video", f"{doc.path.name} opens again by itself as soon as "
+                                 "it's written. Until then it's read-only.")
+        self.set_status(f"{doc.path.name} is still saving: read-only until it's written")
+
     def _fill_from_nfo(self, doc: Document, details) -> str:
         """Fill the empty details of a video Runemark hasn't saved yet from the .nfo beside it (unsaved, so it can
         be checked first). People in it are added, and added to the People list if they're new.
@@ -903,8 +1084,8 @@ class MainWindow(QMainWindow):
     def _offer_leftover_cleanup(self, path: Path):
         """A crash or power cut mid-save leaves a near-complete working copy (<name>.runemark-*) beside the
         video. The Library hides those, so offer to delete them here, where the user is looking at the file."""
-        if self._busy:
-            return
+        if self._busy or self.saves.pending(path) is not None:
+            return                    # a save's working copy beside the video is not a leftover
         leftovers = leftover_temp_files(path)
         if not leftovers:
             return
@@ -929,19 +1110,22 @@ class MainWindow(QMainWindow):
         else:
             self.set_status(f"Deleted {len(leftovers)} leftover working file(s), {fmt_size(total)}")
 
-    def _show_document(self, position_ms: int = 0):
+    def _show_document(self, position_ms: int = 0, play: bool = True):
         doc = self.doc
         if doc is None:
             return
         QTimer.singleShot(0, lambda p=doc.path: self._emit("file_opened", p))
-        self.player.reset_message()
-        self.player.load(doc.path, doc.info, position_ms)
-        if self.settings.filmstrip_count:
-            self.filmstrip.load(doc.path, doc.info, self.settings.filmstrip_count)
+        self._reset_session_keys(doc.path)
+        if play:
+            self.player.reset_message()
+            self.player.load(doc.path, doc.info, position_ms)
+            if self.settings.filmstrip_count:
+                self.filmstrip.load(doc.path, doc.info, self.settings.filmstrip_count)
         for widget in self.strip_widgets:
             widget.setVisible(bool(self.settings.filmstrip_count))
         self.details.show_sections(describe(doc.info))
-        self._load_frame_mode(doc)
+        if play:
+            self._load_frame_mode(doc)            # not while it's saving: nothing reads the file then
         self.tag_editor.set_enabled(True)
         self.tag_editor.set_tags(doc.tags)
         self._refresh_people()
@@ -955,11 +1139,14 @@ class MainWindow(QMainWindow):
         self.chapters.set_enabled(True, doc.container)
         self.chapters.clear_thumbs()
         self.chapters.set_marks(doc.chapters)
-        self._load_chapter_thumbs()
+        self.player.set_chapter_starts([m.start for m in doc.chapters])
+        if play:
+            self._load_chapter_thumbs()
+            self._load_cuts(doc)
         self._fill_combo()
         self._refresh_ui()
         self.player.frame.setFocus()
-        if self.tabs.currentWidget() is self.thumbs:
+        if play and self.tabs.currentWidget() is self.thumbs:
             self.find_suggestions()
 
     def _load_frame_mode(self, doc: Document):
@@ -1011,7 +1198,10 @@ class MainWindow(QMainWindow):
     def undo_last_save(self):
         """Put the open file's tags, genre and details back to how they were before its last save."""
         doc = self.doc
-        if doc is None or self._busy:
+        if doc is None or self._busy or doc.read_only:
+            return
+        if self.saves.pending(doc.path):
+            self.toast(f"{doc.path.name} is still saving: undo once it's written.")
             return
         history = self.db.history(doc.path)
         if not history:
@@ -1021,7 +1211,8 @@ class MainWindow(QMainWindow):
         when = entry.saved_at.replace("T", " ")[:16]
         text = (f"Put {doc.path.name} back to how it was before the save on {when} ({entry.label or 'saved'})?\n\n"
                 f"Tags and details then: {entry.summary()}\n\n"
-                "The thumbnail and chapters aren't changed."
+                + ("The chapters go back too; the thumbnail isn't changed." if entry.chapters is not None else
+                   "The thumbnail and chapters aren't changed.")
                 + (f"\n\n{len(history) - 1} earlier step(s) can be undone after this." if len(history) > 1 else ""))
         if doc.dirty():
             text += "\n\nYour unsaved changes to this file will be discarded."
@@ -1075,10 +1266,14 @@ class MainWindow(QMainWindow):
                 self.save()
             self.toast("This is the only file in the list: open a folder or several files to step through them.")
             return
-        if doc.dirty():
-            self.save(after=lambda: self._move_in_queue(1))
-        else:
+        if not doc.dirty():
             self._move_in_queue(1)
+        elif doc.container == "mp4":
+            # 0.9.0: the save goes in the queue and the next video opens straight away
+            if self._queue_mp4_save(doc) is not None:
+                self._move_in_queue(1)
+        else:
+            self.save(after=lambda: self._move_in_queue(1))
 
     def copy_tags(self):
         doc = self.doc
@@ -1229,6 +1424,9 @@ class MainWindow(QMainWindow):
 
     def _update_people_files(self, paths: list[str], label: str, drop: list[str]):
         """After People closes: offer to bring the videos with the changed people up to date (one undoable batch)."""
+        if not self.saves.idle():
+            self.saves.when_idle(lambda: self._update_people_files(paths, label, drop))
+            return
         doc = self.doc
         files = {file_key(p): Path(p) for p in paths}
         doc_key = file_key(doc.path) if doc else None
@@ -1503,32 +1701,194 @@ class MainWindow(QMainWindow):
     def add_chapter(self, key: str | None = None):
         """Start a chapter at the frame on screen: numbered, or named by a chapter key (1-9)."""
         doc = self.doc
-        if doc is None:
+        if doc is None or doc.read_only:
             return
         name = None
         if key is not None:
-            name = self.settings.chapter_keys.get(key)
+            name = self.chapter_key_name(key)
             if not name:
                 self.toast(f"Key {key} doesn't add a chapter yet: set it up in Chapters → Keys…, or right-click "
                            "a chapter's name → Put on a key.")
                 return
-        self.player.pause()
+        self.player.stop_moving()
         pts = self.player.current_pts()
         if pts is None:
             pts = self.player.player.position() / 1000
+        snapped = scenes.nearest(getattr(doc, "cuts", None) or [], pts)
+        if snapped is not None and abs(snapped - pts) > 0.0005:
+            pts = snapped
+            self.player.seek_seconds(pts)
         if self.tabs.currentWidget() is not self.chapters:
             self.tabs.setCurrentWidget(self.chapters)
         mark = self.chapters.add_at(pts, name)
-        self.set_status(f"Chapter “{mark.name}” added at {fmt_duration(pts, millis=True)}" if name else
-                        f"Chapter added at {fmt_duration(pts, millis=True)}")
+        where = fmt_duration(pts, millis=True) + (" (on the cut)" if snapped is not None else "")
+        self.set_status(f"Chapter “{mark.name}” added at {where}" if name else f"Chapter added at {where}")
+
+    def chapter_key_name(self, key: str) -> str | None:
+        """What a number key adds: this video's own keys from a plugin first (0.9.0), else the chapter keys."""
+        return self.session_chapter_keys.get(key) or self.settings.chapter_keys.get(key)
+
+    def set_session_chapter_keys(self, keys: dict | None, label: str = ""):
+        """Number keys for the open video only (a plugin's, from a lookup). They're shown under the player and in
+        the Chapters tab, and go when another video opens."""
+        self.session_chapter_keys = {str(k): str(v) for k, v in (keys or {}).items() if str(k) in
+                                     [str(n) for n in range(1, 10)] and str(v).strip()}
+        self.session_keys_label = label if self.session_chapter_keys else ""
+        self._show_session_keys()
+
+    def _reset_session_keys(self, path):
+        if self.session_chapter_keys and file_key(getattr(self, "_session_keys_for", path) or path) != file_key(path):
+            self.session_chapter_keys = {}
+            self.session_keys_label = ""
+        self._session_keys_for = path
+        self._show_session_keys()
+
+    def _show_session_keys(self):
+        keys = self.session_chapter_keys
+        if keys:
+            text = (f"{self.session_keys_label}: " if self.session_keys_label else "Keys for this video: ") + \
+                "  ·  ".join(f"<b>{k}</b> {keys[k]}" for k in sorted(keys))
+            self.session_keys.setText(text)
+            self.session_keys.show()
+        else:
+            self.session_keys.hide()
+        self.chapters.set_session_keys(keys, self.session_keys_label)
+
+    # ---- suggested cuts (0.9.0)
+    def _load_cuts(self, doc: Document):
+        """Cuts found before are shown straight away; looking for them is done on request, or (if set) a few
+        seconds after the video opens, so opening never waits for it."""
+        doc.cuts = None
+        self.player.set_cuts([])
+        self.chapters.set_cuts_state("idle")
+
+        def work(job):
+            return scenes.cached_cuts(doc.path, doc.info)
+
+        def done(cuts):
+            if self.doc is not doc:
+                return
+            if cuts is not None:
+                self._show_cuts(doc, cuts)
+            elif self.settings.find_cuts_on_open:
+                QTimer.singleShot(3000, lambda: self.find_cuts(doc) if self.doc is doc else None)
+
+        workers.start(work, on_done=done)
+
+    def _show_cuts(self, doc: Document, cuts: list[float]):
+        doc.cuts = list(cuts)
+        self.player.set_cuts(cuts if self.settings.show_cut_marks else [])
+        self.chapters.set_cuts_state("done", len(cuts))
+
+    def find_cuts(self, doc: Document | None = None):
+        """Look through the open video for cuts, in the background (Chapters → Find cuts)."""
+        doc = doc if isinstance(doc, Document) else self.doc
+        if doc is None or doc.read_only or getattr(self, "_cuts_job", None) is not None:
+            return
+        if doc.info.main_video is None:
+            return
+        self.chapters.set_cuts_state("busy", 0)
+
+        def work(job):
+            cuts = scenes.detect_cuts(doc.info, progress=job.report, cancel=job.cancel)
+            scenes.store_cuts(doc.path, doc.info, cuts)
+            return cuts
+
+        def done(cuts):
+            self._cuts_job = None
+            if self.doc is doc:
+                self._show_cuts(doc, cuts)
+                self.set_status(f"Found {len(cuts)} likely cut{'s' if len(cuts) != 1 else ''}: [ and ] jump "
+                                "between them, and new chapters snap to one nearby")
+
+        def failed(exc, _tb):
+            self._cuts_job = None
+            if self.doc is doc:
+                self.chapters.set_cuts_state("idle")
+                if not isinstance(exc, scenes.Cancelled):
+                    self.toast(f"Couldn't look for cuts: {exc}", "warn")
+
+        def progress(percent, _message):
+            if self.doc is doc:
+                self.chapters.set_cuts_state("busy", percent)
+
+        self._cuts_job = workers.start(work, on_done=done, on_error=failed, on_progress=progress)
+
+    def _cancel_cuts(self):
+        job = getattr(self, "_cuts_job", None)
+        if job is not None:
+            job.cancel.set()
+            self._cuts_job = None
+
+    def jump_to_cut(self, direction: int):
+        doc = self.doc
+        if doc is None:
+            return
+        cuts = getattr(doc, "cuts", None)
+        if not cuts:
+            self.toast("No cuts found for this video yet: Chapters → Find cuts looks for them.")
+            return
+        self.player.stop_moving()
+        pts = self.player.current_pts()
+        if pts is None:
+            pts = self.player.player.position() / 1000
+        target = scenes.neighbour(cuts, pts, direction)
+        if target is None:
+            self.set_status("No more cuts that way")
+            return
+        self.player.seek_seconds(target)
+        n = sorted(cuts).index(target) + 1
+        self.set_status(f"Cut {n} of {len(cuts)} at {fmt_duration(target, millis=True)}")
+
+    # ---- chapter undo and redo (0.9.0): every change to the chapters in this session, per video
+    def _chapter_stacks(self, doc: Document | None = None) -> tuple[list, list]:
+        doc = doc or self.doc
+        return self._chapter_history.setdefault(file_key(doc.path), ([], []))
+
+    def _remember_chapters(self, before):
+        undo, redo = self._chapter_stacks()
+        undo.append(chapter_io.copy_marks(before))
+        del undo[:-100]
+        redo.clear()
+
+    def _set_chapters(self, marks):
+        self.doc.chapters = chapter_io.copy_marks(marks)
+        self.chapters.set_marks(self.doc.chapters)
+        self.player.set_chapter_starts([m.start for m in self.doc.chapters])
+        self._refresh_ui()
+        self._load_chapter_thumbs()
+
+    def undo_chapters(self):
+        doc = self.doc
+        if doc is None or doc.read_only:
+            return
+        undo, redo = self._chapter_stacks()
+        if not undo:
+            self.set_status("No chapter change to undo")
+            return
+        redo.append(chapter_io.copy_marks(doc.chapters))
+        self._set_chapters(undo.pop())
+        self.set_status("Undid a chapter change (Ctrl+Y redoes it)")
+
+    def redo_chapters(self):
+        doc = self.doc
+        if doc is None or doc.read_only:
+            return
+        undo, redo = self._chapter_stacks()
+        if not redo:
+            self.set_status("Nothing to redo")
+            return
+        undo.append(chapter_io.copy_marks(doc.chapters))
+        self._set_chapters(redo.pop())
+        self.set_status("Redid the chapter change")
 
     def end_chapter(self):
         """End the chapter playing now at the frame on screen (E): filler after it isn't part of its moment.
         The end isn't a chapter: it's kept with the video's details, off the timeline and the chapter list."""
         doc = self.doc
-        if doc is None:
+        if doc is None or doc.read_only:
             return
-        self.player.pause()
+        self.player.stop_moving()
         pts = self.player.current_pts()
         if pts is None:
             pts = self.player.player.position() / 1000
@@ -1607,7 +1967,11 @@ class MainWindow(QMainWindow):
 
     def _chapters_edited(self):
         if self.doc is not None:
+            if not chapter_io.same_marks(self.doc.chapters, self.chapters.marks) or \
+                    chapter_io.ends_block(self.doc.chapters) != chapter_io.ends_block(self.chapters.marks):
+                self._remember_chapters(self.doc.chapters)
             self.doc.chapters = chapter_io.copy_marks(self.chapters.marks)
+            self.player.set_chapter_starts([m.start for m in self.doc.chapters])
             self._refresh_ui()
             self._load_chapter_thumbs()
 
@@ -1615,7 +1979,7 @@ class MainWindow(QMainWindow):
         """Small pictures of each chapter's first frame, decoded in the background (a few at a time)."""
         doc = self.doc
         starts = self.chapters.missing_thumbs()[:40]
-        if doc is None or not starts or getattr(self, "_thumb_job_busy", False):
+        if doc is None or not starts or getattr(self, "_thumb_job_busy", False) or doc.read_only:
             return
         self._thumb_job_busy = True
 
@@ -1645,7 +2009,7 @@ class MainWindow(QMainWindow):
         def failed(_exc, _tb):
             self._thumb_job_busy = False
 
-        workers.start(work, on_done=done, on_error=failed)
+        self._thumb_job = workers.start(work, on_done=done, on_error=failed)
 
     def _chapter_named(self, name: str):
         if self.doc is not None and name.casefold() not in {t.casefold() for t in self.doc.tags}:
@@ -1682,17 +2046,25 @@ class MainWindow(QMainWindow):
             self.library_window.openRequested.connect(self.open_paths)
             self.library_window.finished.connect(lambda *_: setattr(self, "library_window", None))
             self.library_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-            self.library_window.show()
+            self.library_window.show_window()
             if self.settings.library_folders:
                 self.library_window.scan()
         else:
             self.library_window.refresh()
-            self.library_window.show()
+            if self.library_window.isHidden():
+                self.library_window.show_window()
         self.library_window.raise_()
         self.library_window.activateWindow()
 
     def release_for(self, paths: list[Path], then):
         """Before the library changes files: make sure the open one is saved and let go of."""
+        pending = self.saves.pending_any(paths)
+        if pending is not None:
+            # 0.9.0: a save of one of them is still being written: carry on once it's done
+            self.set_status(f"Waiting for {pending.path.name} to finish saving…")
+            self.saves.when_done(pending.path, lambda ok: self.release_for(paths, then) if ok else self.toast(
+                f"Nothing was changed: {pending.path.name} couldn't be saved first.", "warn"))
+            return
         doc = self.doc
         keys = {file_key(p) for p in paths}
         if doc is None or file_key(doc.path) not in keys:
@@ -1710,6 +2082,8 @@ class MainWindow(QMainWindow):
     def files_moved(self, pairs: list[tuple[str, str]]):
         """Videos were renamed or moved (Library → Rename): follow the open one, and fix the open-file list."""
         moved = {file_key(old): Path(new) for old, new in pairs}
+        for old, new in pairs:
+            scenes.move_cache(old, new)                # the cuts found in it go with it
         self.queue = [moved.get(file_key(p), p) for p in self.queue]
         doc = self.doc
         if doc is not None and file_key(doc.path) in moved:
@@ -1741,15 +2115,48 @@ class MainWindow(QMainWindow):
                             original_genre=original_genre)
 
     def save(self, after=None):
+        """Save the open video. MP4s are saved in the background (0.9.0): the window carries on, the status bar
+        shows the progress, and `after` runs once the file is written. MKVs are converted first, as before."""
         doc = self.doc
-        if doc is None or self._busy:
+        if doc is None or self._busy or doc.read_only:
             return
         if doc.container == "mp4":
-            self._save_mp4(doc, after)
+            self._queue_mp4_save(doc, after)
         elif doc.container == "mkv":
             self._convert_and_save(doc, after)
 
-    def _save_mp4(self, doc: Document, after=None):
+    def saving(self, path) -> bool:
+        """True while a save of this file is waiting or being written."""
+        return self.saves.pending(path) is not None
+
+    def _release_for_save(self, path: Path, then):
+        """The save queue is about to write `path`: whatever reads it here lets go of it first (Windows can't
+        replace a file another program has open), then the write starts."""
+        doc = self.doc
+        is_open = doc is not None and file_key(doc.path) == file_key(path)
+        holding = self.player.loaded and self.player.path is not None and file_key(self.player.path) == file_key(path)
+        if not (is_open or holding):
+            QTimer.singleShot(150, lambda: then(0))          # frame grabs for it were cancelled when it closed
+            return
+        position = self.player.unload() if holding else 0
+        self.filmstrip.clear()
+        self._cancel_suggestions()
+        self._cancel_chapter_thumbs()
+        self._cancel_cuts()                       # a long read of the file would stop it being replaced
+        if is_open and getattr(doc, "cuts", None) is None:
+            self.chapters.set_cuts_state("idle")
+        self.player.close_preview()
+        if is_open:
+            self.player.show_message("Saving this video…", "It plays again as soon as it's written. You can carry "
+                                     "on with its tags and details meanwhile.")
+        QTimer.singleShot(400, lambda: then(position))
+
+    def _queue_mp4_save(self, doc: Document, after=None, on_failed=None) -> SaveJob | None:
+        """Put the open MP4's changes in the save queue. What this save writes counts as saved straight away
+        (so moving on doesn't ask); if the write fails, the changes come back as unsaved and Retry is offered."""
+        if self.saves.pending(doc.path):
+            self.toast(f"{doc.path.name} is still saving. Changes made since are kept: save again once it's done.")
+            return None
         all_tags, block = doc.compose(self.db)
         keywords, genre = self._fields(all_tags, doc.state.genre)
         cover = doc.cover
@@ -1757,9 +2164,6 @@ class MainWindow(QMainWindow):
         meta = doc.meta if (doc.meta_changed() or rewrite) else UNCHANGED
         whole_cover = doc.whole_cover()
         marks = chapter_io.copy_marks(doc.chapters)
-        # what this save writes: edits made while it runs stay unsaved (and are kept when the file reopens)
-        written_tags, written_meta = list(doc.tags), VideoMeta(**vars(doc.meta))
-        written_people = list(doc.people)
         if rewrite:
             dropped = chapter_io.extra_tracks_dropped(doc.info)
             if dropped:
@@ -1767,68 +2171,104 @@ class MainWindow(QMainWindow):
                     self, "Write chapters", f"This file has {dropped} extra data track(s) (such as camera "
                     "timecode or GPS) that aren't kept when chapters are written. Continue?")
                 if answer != QMessageBox.StandardButton.Yes:
-                    return
-        dialog = ProgressDialog("Saving", cancellable=rewrite, parent=self)
-        self._busy = True
-        position = 0
+                    return None
+        history = library.history_fields(doc.state)
+        before_chapters = chapter_io.marks_to_json(doc.saved_chapters) if rewrite else None
+        mode, preserve = self.settings.explorer_writer, self.settings.preserve_modified_date
+        path, info = doc.path, doc.info
+        rollback = (doc.saved_tags, doc.cover, doc.cover_note, doc.saved_meta, doc.saved_chapters, doc.saved_people)
+        doc.saved_tags = list(doc.tags)
+        if cover is not UNCHANGED:
+            doc.cover = UNCHANGED
+        doc.saved_meta = VideoMeta(**vars(doc.meta))
+        doc.saved_chapters = chapter_io.copy_marks(marks)
+        doc.saved_people = list(doc.people)
+        if doc is self.doc:
+            self._tag_clipboard = list(doc.tags)
 
         def work(job):
             if rewrite:
-                return save_mp4_with_chapters(doc.path, doc.info, marks, keywords=keywords, genre=genre,
-                                              cover=whole_cover, meta=meta,
-                                              explorer_mode=self.settings.explorer_writer,
-                                              preserve_mtime=self.settings.preserve_modified_date,
-                                              progress=job.report, cancel=job.cancel,
+                return save_mp4_with_chapters(path, info, marks, keywords=keywords, genre=genre,
+                                              cover=whole_cover, meta=meta, explorer_mode=mode,
+                                              preserve_mtime=preserve, progress=job.report, cancel=job.cancel,
                                               data=block)   # the rewrite starts without the data block
-            return save_mp4(doc.path, keywords=keywords, genre=genre, cover=cover,
-                            explorer_mode=self.settings.explorer_writer,
-                            preserve_mtime=self.settings.preserve_modified_date, progress=job.report,
-                            meta=meta, data=block)
+            return save_mp4(path, keywords=keywords, genre=genre, cover=cover, explorer_mode=mode,
+                            preserve_mtime=preserve, progress=job.report, meta=meta, data=block)
 
         def done(outcome):
-            self._busy = False
-            dialog.finish()
-            self.db.record_history(doc.path, **library.history_fields(doc.state), label="Saved in the editor")
-            self.db.remember_file(doc.path, keywords)
-            self._tag_clipboard = list(doc.tags)
-            if outcome.problems:
-                QMessageBox.warning(self, "Saved, with warnings",
-                                    "The file was saved, but some things didn't read back as expected:\n\n• "
-                                    + "\n• ".join(outcome.problems))
-            message = f"Saved {doc.path.name}" + (" with its chapters" if rewrite else "") \
+            self.db.record_history(path, **history, chapters=before_chapters, label="Saved in the editor")
+            self.db.remember_file(path, keywords)
+            message = f"Saved {path.name}" + (" with its chapters" if rewrite else "") \
                 + _explorer_note(outcome.explorer_method)
-            self.set_status(message)
-            doc.saved_tags = written_tags     # no longer dirty while the file reloads
-            if doc.cover is cover:
-                doc.cover = UNCHANGED
-            doc.saved_meta = written_meta
-            doc.saved_chapters = chapter_io.copy_marks(marks)
-            doc.saved_people = written_people
-            self._library_saved(doc.path)
-            self._load(doc.path, position, status=message, carry=doc)
+            self._library_saved(path)
+            if self.doc is doc:                       # still open, or opened again (read-only) while it saved
+                was_read_only, doc.read_only = doc.read_only, False
+                self._load(path, job.position_ms, status=message, carry=None if was_read_only else doc)
+            else:
+                self.set_status(message)
+            if outcome.problems:
+                problems = "\n".join(f"• {p}" for p in outcome.problems)
+                self.toasts.show(f"Saved {path.name}, but some things didn't read back as expected.", "warn",
+                                 [("Details", lambda: TextReportDialog("Saved, with warnings", problems,
+                                                                       self).exec())])
             if after:
                 QTimer.singleShot(300, after)
 
-        def failed(exc, _tb):
-            self._busy = False
-            dialog.finish()
-            if isinstance(exc, chapter_io.Cancelled):
-                self.set_status("Save cancelled; the file is unchanged")
-                self.player.load(doc.path, doc.info, position)
-                return
-            self.set_status("Save failed")
-            QMessageBox.critical(self, "Save failed", f"Couldn't save {doc.path.name}:\n\n{exc}\n\n"
-                                 "The file is unchanged unless noted above. Details are in the log.")
-            self.player.load(doc.path, doc.info, position)
+        def failed(exc):
+            self._close_when_saved = False
+            if on_failed is not None:
+                QTimer.singleShot(0, lambda: on_failed(exc))
+            if self.doc is doc:
+                (doc.saved_tags, old_cover, old_note, doc.saved_meta, doc.saved_chapters,
+                 doc.saved_people) = rollback
+                if doc.cover is UNCHANGED and old_cover is not UNCHANGED:
+                    doc.cover, doc.cover_note = old_cover, old_note
+                if doc.read_only:
+                    doc.read_only = False
+                    self._show_document(job.position_ms)
+                else:
+                    self.player.load(path, info, job.position_ms)
+                self._refresh_ui()
 
-        def begin(pos):
-            nonlocal position
-            position = pos
-            job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
-            dialog.cancelRequested.connect(job.cancel.set)
+                def retry():
+                    if self.doc is doc:
+                        self.save(after)
+                    else:
+                        self.toast("Open the video again to save it.")
+            else:
+                def retry():
+                    again = job.clone()
+                    self.saves.add(again)
+            self.set_status(f"Couldn't save {path.name}")
+            self.toasts.show(f"Couldn't save {path.name}: {exc}. The file is unchanged; details are in the log.",
+                             "error", [("Retry", retry)])
 
-        dialog.show()
-        self._release_then(begin)
+        job = SaveJob(path, work, done, failed, label="Saved in the editor", doc=doc)
+        self.saves.add(job)
+        self._refresh_ui()
+        return job
+
+    def _saves_changed(self):
+        """The status bar's save line and progress."""
+        text = self.saves.summary()
+        self.status_saves.setText(text)
+        self.status_saves.setVisible(bool(text))
+        running = self.saves.running
+        if running is not None:
+            if running.percent >= 0:
+                self.status_progress.setRange(0, 100)
+                self.status_progress.setValue(running.percent)
+            else:
+                self.status_progress.setRange(0, 0)
+            self.status_progress.show()
+        elif not self._status_busy:
+            self.status_progress.hide()
+        if self.doc is not None:
+            self._refresh_ui()
+
+    def _cancel_chapter_thumbs(self):
+        if self._thumb_job is not None:
+            self._thumb_job.cancel.set()
 
     def _convert_and_save(self, doc: Document, after=None):
         plan = C.plan_conversion(doc.info)
@@ -1926,6 +2366,10 @@ class MainWindow(QMainWindow):
     # ================================================================ database changes → files
     def _apply_file_changes(self, changes: list[FileChange]):
         self.tag_editor.refresh_database()
+        if not self.saves.idle():
+            self.set_status("Updating the tagged files once the saves running now are written…")
+            self.saves.when_idle(lambda: self._apply_file_changes(changes))
+            return
         files: dict[str, Path] = {}
         for change in changes:
             for f in change.files:
@@ -2048,6 +2492,9 @@ class MainWindow(QMainWindow):
             writer = "Windows" if explorer.windows_api_available() and self.settings.explorer_writer == "auto" \
                 else "built-in writer"
             self.status_writer.setText(f"Explorer Tags: {writer}")
+            doc = self.doc
+            if doc is not None and getattr(doc, "cuts", None) is not None:
+                self.player.set_cuts(doc.cuts if self.settings.show_cut_marks else [])
 
     def _database_restored(self):
         self.tag_editor.refresh_database()
@@ -2104,6 +2551,8 @@ class MainWindow(QMainWindow):
             self._fill_combo()
             return False
         if clicked is save:
+            if doc.container == "mp4":
+                return self._queue_mp4_save(doc) is not None      # saved in the background: carry on now
             self.save(after=then)
             return False
         doc.discard()
@@ -2114,6 +2563,8 @@ class MainWindow(QMainWindow):
         dirty = bool(doc and doc.dirty())
         self.dirty_dot.setVisible(dirty)
         if doc is None:
+            for widget in (self.tags_tab, self.chapters, self.details, self.thumbs):
+                widget.setEnabled(True)
             self.save_button.setEnabled(False)
             self.save_button.setText("Save")
             self.setWindowTitle("Runemark")
@@ -2129,31 +2580,53 @@ class MainWindow(QMainWindow):
             self._refresh_thumbs()
             self._fill_combo()
             return
+        read_only = doc.read_only
+        for widget in (self.tags_tab, self.chapters, self.details, self.thumbs):
+            widget.setEnabled(not read_only)
+        if read_only:
+            self.save_button.setText("Saving…")
+            self.save_button.setEnabled(False)
+            self.setWindowTitle(f"{doc.path.name} (saving…) — Runemark")
+            return
         if doc.container == "mkv":
             self.save_button.setText("Convert and save")
             self.save_button.setToolTip("Convert to MP4 (video isn't re-encoded) and write tags and thumbnail")
             self.save_button.setEnabled(True)
         else:
             self.save_button.setText("Save")
-            self.save_button.setToolTip("Write your changes to the file (Ctrl+S)")
-            self.save_button.setEnabled(dirty or doc.needs_sync())
+            self.save_button.setToolTip("Write your changes to the file (Ctrl+S). It's written in the background: "
+                                        "Ctrl+Enter saves and goes straight on to the next video.")
+            self.save_button.setEnabled((dirty or doc.needs_sync()) and self.saves.pending(doc.path) is None)
         self.setWindowTitle(f"{doc.path.name}{' •' if dirty else ''} — Runemark")
 
     def set_status(self, text: str, busy: bool = False):
         self.status_text.setText(text)
-        self.status_progress.setVisible(busy)
+        self._status_busy = busy
         if busy:
-            QTimer.singleShot(4000, lambda: self.status_progress.hide())
+            self.status_progress.setRange(0, 0)
+            self.status_progress.show()
+            QTimer.singleShot(4000, self._status_idle)
+        elif self.saves.running is None:
+            self.status_progress.hide()
 
-    def toast(self, text: str):
+    def _status_idle(self):
+        self._status_busy = False
+        if self.saves.running is None:
+            self.status_progress.hide()
+
+    def toast(self, text: str, kind: str = "info", actions=None, seconds: float | None = None):
+        """A short message that floats over the window (and stays in the status bar)."""
         self.status_text.setText(text)
+        if getattr(self, "toasts", None) is not None:
+            return self.toasts.show(text, kind, actions, seconds)
+        return None
 
     def closeEvent(self, event):  # noqa: N802
         if self._busy:
             QMessageBox.information(self, "Runemark", "Please wait until the current save finishes.")
             event.ignore()
             return
-        if self.doc is not None and self.doc.has_own_changes():
+        if self.doc is not None and not self.doc.read_only and self.doc.has_own_changes():
             box = QMessageBox(self)
             box.setWindowTitle("Unsaved changes")
             box.setText(f"Save changes to {self.doc.path.name} before closing?")
@@ -2162,13 +2635,34 @@ class MainWindow(QMainWindow):
             box.addButton(QMessageBox.StandardButton.Cancel)
             box.exec()
             if box.clickedButton() is save:
+                if self.doc.container != "mp4" or self.saves.pending(self.doc.path) is not None:
+                    event.ignore()
+                    self.save(after=self.close)
+                    return
+                if self._queue_mp4_save(self.doc) is None:
+                    event.ignore()
+                    return
+                self._close_when_saved = True          # asked to save and close: no second question
+            elif box.clickedButton() is not discard:
                 event.ignore()
-                self.save(after=self.close)
                 return
-            if box.clickedButton() is not discard:
-                event.ignore()
-                return
-            self.doc.discard()
+            else:
+                self.doc.discard()
+        if not self.saves.idle():
+            # 0.9.0: saves still being written: say so, and close once they're done (never halfway through one)
+            event.ignore()
+            if not self._close_when_saved:
+                n = self.saves.count()
+                answer = QMessageBox.question(
+                    self, "Saves still running", f"{n} save{'s are' if n != 1 else ' is'} still being written "
+                    f"({self.saves.summary()}).\n\nRunemark closes as soon as {'they are' if n != 1 else 'it is'} "
+                    "done. Wait and close?")
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                self._close_when_saved = True
+            self.set_status("Closing once the saves are written…")
+            self.saves.when_idle(lambda: QTimer.singleShot(0, self._close_after_saves))
+            return
         if self.library_window is not None:
             self.library_window.close()
         self.player.unload()
@@ -2178,6 +2672,12 @@ class MainWindow(QMainWindow):
         self.settings.splitter_state = bytes(self.splitter.saveState().toBase64()).decode()
         self.settings.save()
         event.accept()
+
+    def _close_after_saves(self):
+        if self._close_when_saved:
+            self.close()
+        else:
+            self.toast("Runemark stayed open because a save didn't work: see the message about it.", "warn")
 
     # ================================================================ start-up: scan, updates
     def after_start(self, updated: bool = False, update_failed: bool = False):
@@ -2276,7 +2776,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Update", why)
             QDesktopServices.openUrl(QUrl(release.page))
             return
-        if self._busy:
+        if self._busy or not self.saves.idle():
             QMessageBox.information(self, "Update", "Please wait until the current save finishes.")
             return
         if not self._confirm_leave(lambda: self._install_update(release)):

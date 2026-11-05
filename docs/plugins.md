@@ -16,7 +16,8 @@ plugins/
 {"name": "My plugin", "version": "1.0", "description": "What it does, in a line.", "api": 1}
 ```
 
-`api` is the plugin API version it was written for. Runemark refuses plugins that need a newer one and says so.
+`api` is the plugin API version it was written for (`2` for the calls marked *2* below, Runemark 0.9.0+; `1`
+otherwise). Runemark refuses plugins that need a newer one and says so.
 
 **plugin.py** defines `register(api)`, called once when Runemark starts:
 
@@ -51,7 +52,9 @@ folder and import them from `plugin.py` (the folder is on the import path while 
   event handler that raises shows or logs the error; Runemark carries on.
 - **Trust.** Plugins run with the same access to your files as Runemark. Only install plugins you trust.
 
-## The API (version 1)
+## The API (version 2)
+
+Everything from version 1 is still there. Calls new in version 2 (Runemark 0.9.0) are marked *2*.
 
 ### Adding things
 | Call | What it does |
@@ -59,6 +62,9 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.add_pane(title, widget)` | A tab beside Tags, Chapters, Thumbnail and Details showing your QWidget. |
 | `api.add_action(text, callback, shortcut=None)` | An entry in **⋯ → Plugins**; `shortcut` like `"Ctrl+Alt+L"`. |
 | `api.add_library_action(text, callback)` | An entry in the Library's **More → Plugins**; `callback(paths)` gets the selected videos. |
+| `api.add_tags_panel(title, widget, collapsed=False)` *2* | A strip in the **Tags** tab, under the tag editor, that folds down to its title. Returns the strip (`strip.set_open(True)` opens it). |
+| `api.add_header_widget(widget)` *2* | Your widget (buttons, say) in the header just before **Save**. Enable, disable and hide it yourself. |
+| `api.add_library_column(title, cell, fetch=None, tooltip=None, sort_key=None)` *2* | A column in the Library. `cell(path)` returns its text, or `None` when you don't know it yet: then `fetch(paths)` is called (batched, on the window's thread) for the rows on show without a value. Fetch in the background and call `api.library_column_changed()` when the values are in. Keep `cell` quick. |
 | `api.on(event, callback)` | `file_opened(path)`, `file_saved(path)` (editor or Library), `file_closed(path)` (before `move_file` moves the open video). |
 
 ### The open video
@@ -67,7 +73,11 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.current_file()` | Its path, or `None`. |
 | `api.current_details()` | `{"path", "title", "year", "date", "studio", "description", "rating", "links", "tags", "people", "has_cover", "container", "unsaved"}` as shown now (unsaved edits included), or `None`. `tags` are the hand-typed ones; tags from people's profiles are added when saving. |
 | `api.apply_details(**changes)` | Any of `title`, `year`, `date` (`"YYYY-MM-DD"`, sets the year too), `studio`, `description`, `rating` (0–5), `links` (replaces), `add_links`, `add_tags` (names; spelled as in the database when they exist there), `people` (names or aliases; new names are added to People), `cover` (JPEG or PNG bytes). Returns what changed. |
-| `api.save(then=None)` | Save, like Ctrl+S, then call `then()`. |
+| `api.save(then=None)` | Save, like Ctrl+S, then call `then()`. From 0.9.0 MP4s are saved in the background: `then` runs once the file is written, while the window carries on. |
+| `api.saving(path)` *2* | True while a save of that video is waiting or being written. (`move_file` and `change_file` wait for it by themselves.) |
+| `api.set_chapter_keys(keys, label="")` *2* | Number keys 1–9 for the open video only, `{"1": "Name", …}`: each adds a chapter with that name. Shown under the player (with `label`) and in the Chapters tab; they go when another video opens, or with `None`. |
+| `api.name_from_details(details=None)` *2* | The file name (no extension) **Rename from details** would give the open video (or these details), using the pattern last used there. Folders in the pattern are left out; `""` when it gives nothing. |
+| `api.open_file(path)` / `api.open_next()` / `api.open_list()` *2* | Open a video (added to the open-file list); open the next one in the list (`False` if there isn't one); the list itself. |
 
 ### Your database
 | Call | What it does |
@@ -92,12 +102,14 @@ folder and import them from `plugin.py` (the folder is on the import path while 
 | `api.libraries()` | `[{"name", "folders", "skip"}]` as set up in the Library (a copy). |
 | `api.upgrade_copy(curated, better, old_to=None, then=None)` | Put `better` (a sharper or more complete copy of the same video) in `curated`'s place, same folder and name, with all of curated's tags, people, details, links, thumbnail and chapters (moved to the matching moments). Runemark compares the two, shows the user what will happen and asks first; it refuses two different videos. The curated copy goes to the `old_to` folder, or the Recycle Bin. `then(final_path, "")`, or `then(None, reason)`. |
 | `api.video_info(path)` | `{"width", "height", "duration", "bit_rate", "size", "container"}` of any video. |
-| `api.move_file(path, folder, new_name=None, then=None, open_after=True)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. `then(new_path, "")`, or `then(None, reason)`. |
+| `api.change_file(path, changes, then=None)` *2* | Change a video that needn't be open, then save it, in the background with the same safe write, check and history as the editor (Undo last save works). `changes` are what `apply_details` takes, plus `cover_if_missing` (a thumbnail only if it has none). `then(path, "")` once written, or `then(None, reason)`. |
+| `api.move_file(path, folder, new_name=None, then=None, open_after=True)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. While the video is still being saved, the move waits for the save (and doesn't happen if the save fails). `then(new_path, "")`, or `then(None, reason)`. |
 
 ### Settings and messages
 | Call | What it does |
 |---|---|
 | `api.settings` | A dict for the plugin's own settings, kept with Runemark's; call `api.save_settings()` after changing it. |
 | `api.status(text)` | A message in the status bar. |
+| `api.toast(text, action=None, callback=None, kind="info", seconds=None)` *2* | A message floating over the window, with one optional button (`"Undo"`, `"Retry"`…) that calls `callback`. `kind` `"warn"` or `"error"` (errors stay until closed). |
 | `api.run_in_background(work, done=None, failed=None)` | `work()` off the window's thread; then `done(result)` or `failed(exc)` on it. |
 | `api.folder`, `api.runemark_version`, `api.api_version` | The plugin's folder; Runemark's version; the API version. |

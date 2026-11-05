@@ -174,7 +174,7 @@ def test_editor_save_then_undo(tmp_path, media, qapp, monkeypatch):
         assert wait_until(qapp, lambda: win.doc is not None)
         win._tags_edited(["Lake"])
         win.save()
-        assert wait_until(qapp, lambda: not win._busy and read_state(a).keywords == ["Lake"])
+        assert wait_until(qapp, lambda: not win._busy and win.saves.idle() and read_state(a).keywords == ["Lake"])
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.tags == ["Lake"])
         win.undo_last_save()
         assert wait_until(qapp, lambda: not win._busy and read_state(a).keywords == [])

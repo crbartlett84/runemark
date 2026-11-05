@@ -46,6 +46,10 @@ class Settings:
     library_view: str = "list"            # "list" or "grid"
     plugins_disabled: list[str] = field(default_factory=list)   # plugin folder names turned off (0.7.0)
     plugin_settings: dict = field(default_factory=dict)         # plugin folder name -> that plugin's own settings
+    find_cuts_on_open: bool = False       # 0.9.0: look for cuts a few seconds after a video opens
+    show_cut_marks: bool = True           # 0.9.0: faint dots under the timeline where the cuts are
+    library_maximized: bool = True        # 0.9.0: the Library opens maximised (until you make it smaller)
+    smart_filters: list = field(default_factory=list)   # 0.9.0: [{"name", "match": "all"|"any", "rules", "pinned"}]
 
     @classmethod
     def path(cls) -> Path:

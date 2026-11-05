@@ -360,3 +360,42 @@ def spinner_style(widget: QWidget) -> None:
 
 __all__ = ["FlowLayout", "Chip", "ChipArea", "Card", "Banner", "ImageBox", "ElidedLabel", "icon_button",
            "text_button", "separator", "QStyle"]
+
+
+class CollapsibleStrip(QFrame):
+    """A titled strip that folds down to its title bar (0.9.0: plugin panels in the Tags tab)."""
+
+    def __init__(self, title: str, body: QWidget, collapsed: bool = False, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QVBoxLayout
+        self.setObjectName("CollapsibleStrip")
+        self.body = body
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(4)
+        self.toggle = QToolButton()
+        self.toggle.setObjectName("StripToggle")
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setAutoRaise(True)
+        self.toggle.setCheckable(True)
+        self.toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.title = title
+        self.toggle.toggled.connect(self.set_open)
+        layout.addWidget(self.toggle)
+        layout.addWidget(body, 1)
+        self.toggle.setChecked(not collapsed)
+        self.set_open(not collapsed)
+
+    def set_open(self, open_: bool):
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(open_)
+        self.toggle.blockSignals(False)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if open_ else Qt.ArrowType.RightArrow)
+        self.toggle.setText(self.title.upper())
+        self.body.setVisible(open_)
+        self.setMaximumHeight(16777215 if open_ else self.toggle.sizeHint().height() + 8)
+
+    @property
+    def is_open(self) -> bool:
+        return self.body.isVisible() or self.toggle.isChecked()

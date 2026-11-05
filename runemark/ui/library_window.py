@@ -60,10 +60,15 @@ class LibraryWindow(QDialog):
         for value, label in L.FILTERS:
             self.filter.addItem(label, value)
         self.filter.currentIndexChanged.connect(self._filter_changed)
+        # 0.9.0: the list opens wide enough for its longest entry ("Inbox · 1234", "Still to do …"), and the box
+        # itself is never squeezed below a readable width
+        self.filter.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.filter.setMinimumContentsLength(16)
         self.library_pick = QComboBox()
         self.library_pick.setToolTip("Which library to show. Each library is folders you choose; files you saved "
                                      "from anywhere else (Downloads…) only show under Everything else.")
         self.library_pick.activated.connect(self._library_picked)
+        self.library_pick.setMinimumContentsLength(14)
         row.addWidget(self.library_pick, 1)
         row.addWidget(self.text, 2)
         row.addWidget(self.tag_input, 2)
@@ -84,10 +89,25 @@ class LibraryWindow(QDialog):
         menu = QMenu(self.save_search_button)
         menu.addAction("Delete this saved search", self._delete_saved)
         self.save_search_button.setMenu(menu)
+        self.smart_button = QToolButton()
+        self.smart_button.setText("Smart filter…")
+        self.smart_button.setToolTip("A saved filter with rules (tags, people, studio, rating, year…), all or any of "
+                                     "them. Pinned filters sit above the list with how many videos match.")
+        self.smart_button.clicked.connect(lambda: self._edit_smart_filter(None))
+        chips_row.addWidget(self.smart_button)
         chips_row.addWidget(QLabel("Saved searches"))
         chips_row.addWidget(self.saved)
         chips_row.addWidget(self.save_search_button)
         layout.addLayout(chips_row)
+
+        # ---- pinned smart filters (0.9.0), with live counts
+        from PySide6.QtWidgets import QWidget
+        from .widgets import FlowLayout
+        self.pins_row = QWidget()
+        self.pins = FlowLayout(self.pins_row, spacing=6)
+        self.pins_row.hide()
+        layout.addWidget(self.pins_row)
+        self.active_smart: str | None = None
 
         # ---- table
         self.model = LibraryModel(self)
@@ -136,6 +156,13 @@ class LibraryWindow(QDialog):
         self._cover_queue: list[str] = []
         self._cover_busy = False
         self.model.request_cover = self._want_cover
+        self._plugin_wanted: dict[int, tuple] = {}      # id(column) -> (column, set of paths waiting for a value)
+        self._plugin_timer = QTimer(self)
+        self._plugin_timer.setSingleShot(True)
+        self._plugin_timer.setInterval(200)
+        self._plugin_timer.timeout.connect(self._fetch_plugin_values)
+        self.model.request_plugin_values = self._want_plugin_value
+        self.plugin_columns_changed()
 
         self.empty = QLabel("")
         self.empty.setObjectName("Muted")
@@ -238,6 +265,19 @@ class LibraryWindow(QDialog):
             self.settings.library_view = view
             self.settings.save()
 
+    def _remember_size(self):
+        """Maximised or not (0.9.0: it opens maximised until you make it smaller), and the size when it isn't."""
+        self.settings.library_maximized = self.isMaximized()
+        if not self.isMaximized():
+            self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()
+
+    def show_window(self):
+        """Show it maximised (the default) or at the size it last had."""
+        if getattr(self.settings, "library_maximized", True):
+            self.showMaximized()
+        else:
+            self.showNormal()
+
     def _want_cover(self, path: str):
         if path not in self._cover_queue:
             self._cover_queue.append(path)
@@ -278,6 +318,126 @@ class LibraryWindow(QDialog):
             self._run_bulk(L.BulkChange(rating=stars_))
 
     # ---------------------------------------------------------------- data
+    # ---------------------------------------------------------------- plugin columns (0.9.0)
+    def plugin_columns_changed(self):
+        host = getattr(self.host, "plugins", None)
+        columns = list(host.library_columns) if host is not None else []
+        if [id(c) for c in columns] != [id(c) for c in self.model.plugin_columns]:
+            self.model.set_plugin_columns(columns)
+            for n in range(len(columns)):
+                self.table.setColumnWidth(len(COLUMNS) + n, 110)
+        else:
+            self.model.plugin_values_changed()
+
+    def _want_plugin_value(self, column, path: str):
+        if column.fetch is None:
+            return
+        entry = self._plugin_wanted.setdefault(id(column), (column, set()))
+        entry[1].add(path)
+        if not self._plugin_timer.isActive():
+            self._plugin_timer.start()
+
+    def _fetch_plugin_values(self):
+        wanted, self._plugin_wanted = self._plugin_wanted, {}
+        for column, paths in wanted.values():
+            batch = sorted(paths)
+            for start in range(0, len(batch), 100):
+                try:
+                    column.fetch(batch[start:start + 100])
+                except Exception:  # noqa: BLE001
+                    import logging
+                    logging.getLogger(__name__).exception("plugin column %s couldn't fetch", column.title)
+
+    # ---------------------------------------------------------------- smart filters (0.9.0)
+    def _smart_filters(self) -> list[L.SmartFilter]:
+        out = []
+        for item in getattr(self.settings, "smart_filters", []) or []:
+            try:
+                out.append(L.SmartFilter.from_dict(item))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def _save_smart_filters(self, filters: list[L.SmartFilter]):
+        self.settings.smart_filters = [f.to_dict() for f in filters]
+        self.settings.save()
+
+    def _show_pins(self, in_view: list[FileRecord]):
+        from PySide6.QtWidgets import QToolButton as _Button
+        self.pins.clear()
+        pinned = [f for f in self._smart_filters() if f.pinned]
+        for sf in pinned:
+            count = sum(1 for r in in_view if L.smart_matches(r, sf))
+            button = _Button()
+            button.setObjectName("SmartPin")
+            button.setCheckable(True)
+            button.setChecked(sf.name == self.active_smart)
+            button.setText(f"{sf.name} · {count}")
+            button.setToolTip(sf.describe() + "\n\nClick to show only these; click again to show everything. "
+                              "Right-click to change, unpin or delete it.")
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _=False, n=sf.name: self._toggle_smart(n))
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(lambda _pos, n=sf.name, b=button: self._smart_menu(n, b))
+            self.pins.addWidget(button)
+        unpinned = [f for f in self._smart_filters() if not f.pinned]
+        if unpinned:
+            more = _Button()
+            more.setText("More filters")
+            more.setPopupMode(_Button.ToolButtonPopupMode.InstantPopup)
+            menu = QMenu(more)
+            for sf in unpinned:
+                count = sum(1 for r in in_view if L.smart_matches(r, sf))
+                act = menu.addAction(f"{sf.name} · {count}", lambda n=sf.name: self._toggle_smart(n))
+                act.setCheckable(True)
+                act.setChecked(sf.name == self.active_smart)
+            more.setMenu(menu)
+            self.pins.addWidget(more)
+        self.pins_row.setVisible(bool(pinned or unpinned))
+
+    def _toggle_smart(self, name: str):
+        self.active_smart = None if self.active_smart == name else name
+        self._apply()
+
+    def _smart_menu(self, name: str, button):
+        menu = QMenu(self)
+        menu.addAction("Change…", lambda: self._edit_smart_filter(name))
+        menu.addAction("Unpin (keep it under More filters)", lambda: self._pin_smart(name, False))
+        menu.addAction("Delete", lambda: self._delete_smart(name))
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _pin_smart(self, name: str, pinned: bool):
+        filters = self._smart_filters()
+        for f in filters:
+            if f.name == name:
+                f.pinned = pinned
+        self._save_smart_filters(filters)
+        self._apply()
+
+    def _delete_smart(self, name: str):
+        if QMessageBox.question(self, "Delete smart filter", f"Delete the smart filter “{name}”? Videos aren't "
+                                "changed.") != QMessageBox.StandardButton.Yes:
+            return
+        self._save_smart_filters([f for f in self._smart_filters() if f.name != name])
+        if self.active_smart == name:
+            self.active_smart = None
+        self._apply()
+
+    def _edit_smart_filter(self, name: str | None):
+        from .smart_filter_dialog import SmartFilterDialog
+        filters = self._smart_filters()
+        current = next((f for f in filters if f.name == name), None)
+        names = {"tag": [t.name for t in self.db.tags()], "person": [p.name for p in self.db.people()],
+                 "studio": self.db.studios()}
+        dialog = SmartFilterDialog(current, names, self.records, [f.name for f in filters if f.name != name], self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = dialog.value()
+        filters = [f for f in filters if f.name != name] + [result]
+        self._save_smart_filters(filters)
+        self.active_smart = result.name
+        self._apply()
+
     def refresh(self):
         self.tag_model.setStringList([t.name for t in self.db.tags()])
         self.records = self.db.library()
@@ -307,6 +467,14 @@ class LibraryWindow(QDialog):
     SHOW_ALL = ""            # inside any library
     SHOW_OUTSIDE = "*outside"
     NEW_LIBRARY = "*new"
+
+    def _fit_popups(self):
+        """Every drop-down list as wide as its longest entry, so nothing in it is cut off (0.9.0)."""
+        for combo in (self.filter, self.library_pick, self.saved):
+            view = combo.view()
+            metrics = view.fontMetrics()
+            widest = max((metrics.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())), default=0)
+            view.setMinimumWidth(widest + 48)
 
     def _fill_library_pick(self):
         self.library_pick.blockSignals(True)
@@ -362,6 +530,12 @@ class LibraryWindow(QDialog):
         keep = {str(p).casefold() for p in self.selected_paths()}  # still selected after a change or rescan
         in_view = self._in_view(self.records)
         shown = [r for r in in_view if L.matches(r, self.search)]
+        active = next((f for f in self._smart_filters() if f.name == self.active_smart), None)
+        if active is None:
+            self.active_smart = None
+        else:
+            shown = [r for r in shown if L.smart_matches(r, active)]
+        self._show_pins(in_view)
         self.model.faint = _color(theme.current().faint)
         self.model.set_records(shown)
         if keep:
@@ -376,6 +550,7 @@ class LibraryWindow(QDialog):
         at = self.filter.findData(L.FILTER_GAPS)
         if at >= 0:
             self.filter.setItemText(at, f"Still to do · {gaps}" if gaps else "Still to do (nothing left)")
+        self._fit_popups()
         if not total and self.settings.library_shown == self.SHOW_OUTSIDE:
             self.empty.setText("Nothing here: every video Runemark knows is inside one of your libraries.")
             self.empty.show()
@@ -390,6 +565,9 @@ class LibraryWindow(QDialog):
         elif not shown and self.search.filter == L.FILTER_GAPS and not self.search.tags and not self.search.text:
             self.empty.setText("Nothing left to do: every video you've saved has tags, a genre, people, a thumbnail, "
                                "chapters and a studio.")
+            self.empty.show()
+        elif not shown and self.active_smart:
+            self.empty.setText(f"Nothing here matches the smart filter “{self.active_smart}” (and the search).")
             self.empty.show()
         elif not shown:
             self.empty.setText("Nothing matches this search.")
@@ -689,7 +867,7 @@ class LibraryWindow(QDialog):
         """After opening a video, get out of the way so the main window shows it (0.8.1). Hidden rather than closed,
         so a scan keeps running and the Library comes back as it was (same search, same selection)."""
         self.settings.library_last_search = self.search.to_dict()
-        self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()
+        self._remember_size()
         self.settings.save()
         self.hide()
         host = self.parent()
@@ -1010,7 +1188,7 @@ class LibraryWindow(QDialog):
         self.settings.library_last_search = self.search.to_dict()
         if self._scan_job is not None:
             self._scan_job.cancel.set()   # it finishes the current file and stops; its callbacks see _closing
-        self.settings.library_geometry = bytes(self.saveGeometry().toBase64()).decode()
+        self._remember_size()
         self.settings.save()
         super().closeEvent(event)
 

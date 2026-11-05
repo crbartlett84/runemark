@@ -51,6 +51,16 @@ def copy_marks(marks) -> list[ChapterMark]:
     return [ChapterMark(m.start, m.name, m.auto, getattr(m, "end", None)) for m in marks]
 
 
+def marks_to_json(marks) -> list[dict]:
+    """Chapters as plain data, for the save history (0.9.0). Ends aren't included: they live in the data block."""
+    return [{"start": round(m.start, 6), "name": m.name, "auto": bool(m.auto)}
+            for m in sorted(marks, key=lambda m: m.start)]
+
+
+def marks_from_json(items) -> list[ChapterMark]:
+    return [ChapterMark(float(i["start"]), str(i.get("name") or ""), bool(i.get("auto"))) for i in items or []]
+
+
 def _start_key(start: float) -> str:
     return f"{start:.3f}"
 
