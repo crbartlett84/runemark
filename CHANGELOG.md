@@ -4,6 +4,19 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-06
+
+### Fixed
+- **A save written by a save handler says where in the status bar.** A handler's progress line "Saving on X…" (or
+  "Saving on X: step") was dropped, so the status bar showed only "Saving a.mp4… 42%". It now reads
+  "Saving a.mp4 on X… 42%", and keeps saying so while the handler reports only percentages. Runemark's own saves read
+  as before.
+- **Details filled in by themselves from a .nfo aren't shown as unsaved changes on their own.** Leaving a video
+  already didn't ask about them (they're filled in again when it opens), but the unsaved-changes dot and the • in the
+  title said there were changes, so moving on looked like losing them. The dot and the • now show only changes worth
+  asking about; the fill-in is still saved with the next save. Plugins get `own_changes` in `current_details()` beside
+  `unsaved`.
+
 ## [0.10.1] - 2026-11-06
 
 ### Fixed

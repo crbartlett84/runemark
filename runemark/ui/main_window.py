@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
         return {"path": doc.path, "title": m.title, "year": m.year, "date": m.full_date(), "studio": m.studio or "",
                 "description": m.description, "rating": m.rating, "links": list(m.links or []),
                 "tags": list(doc.tags), "people": people, "has_cover": bool(doc.whole_cover()),
-                "container": doc.container, "unsaved": doc.dirty()}
+                "container": doc.container, "unsaved": doc.dirty(), "own_changes": doc.has_own_changes()}
 
     def plugin_apply(self, changes: dict) -> list[str]:
         """apply_details for plugins: the same edits a person could make, left unsaved."""
@@ -2593,7 +2593,10 @@ class MainWindow(QMainWindow):
     def _refresh_ui(self):
         doc = self.doc
         dirty = bool(doc and doc.dirty())
-        self.dirty_dot.setVisible(dirty)
+        # 0.10.2: the dot and the title's • mean what leaving the video asks about (_confirm_leave): details filled in
+        # automatically (from the .nfo) aren't unsaved changes on their own; they're still saved with the next save
+        asks = bool(doc and doc.has_own_changes())
+        self.dirty_dot.setVisible(asks)
         if doc is None:
             for widget in (self.tags_tab, self.chapters, self.details, self.thumbs):
                 widget.setEnabled(True)
@@ -2629,7 +2632,7 @@ class MainWindow(QMainWindow):
             self.save_button.setToolTip("Write your changes to the file (Ctrl+S). It's written in the background: "
                                         "Ctrl+Enter saves and goes straight on to the next video.")
             self.save_button.setEnabled((dirty or doc.needs_sync()) and self.saves.pending(doc.path) is None)
-        self.setWindowTitle(f"{doc.path.name}{' •' if dirty else ''} — Runemark")
+        self.setWindowTitle(f"{doc.path.name}{' •' if asks else ''} — Runemark")
 
     def set_status(self, text: str, busy: bool = False):
         self.status_text.setText(text)

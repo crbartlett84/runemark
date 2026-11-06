@@ -22,6 +22,16 @@ from . import workers
 log = logging.getLogger(__name__)
 
 
+def save_place(message: str, name: str = "") -> str:
+    """Where a save handler says it's writing the file (0.10.2): a progress line "Saving on X…" or
+    "Saving on X: step" gives "on X". Runemark's own "Saving <name>…" lines, and anything else, give ""."""
+    text = (message or "").strip()
+    if not text.startswith("Saving ") or (name and text.startswith(f"Saving {name}")):
+        return ""
+    place = text[len("Saving "):].split(":", 1)[0].strip().rstrip("…").rstrip(".").strip()
+    return place if place.split(" ", 1)[0] in ("on", "to", "at", "in", "via", "through") else ""
+
+
 @dataclass(eq=False)
 class SaveJob:
     """One file to write. `work(job)` runs in a pool thread (it may call job.report); `on_done(outcome)` and
@@ -35,6 +45,7 @@ class SaveJob:
     state: str = "queued"              # queued, running, done, failed
     percent: int = -1
     message: str = ""
+    where: str = ""                    # where a save handler is writing it ("on <server>"), once it has said (0.10.2)
     position_ms: int = 0               # where the player was when it let go of the file
     waiters: list = field(default_factory=list)   # callbacks(ok: bool) for when this job has finished
 
@@ -119,11 +130,12 @@ class SaveQueue(QObject):
         job = self._running
         if job is None:
             return f"{len(self._jobs)} save(s) waiting" if self._jobs else ""
-        text = f"Saving {job.path.name}…"
+        job.where = save_place(job.message, job.path.name) or job.where   # kept once said
+        text = f"Saving {job.path.name}{' ' + job.where if job.where else ''}…"
         if job.percent >= 0:
             text += f" {job.percent}%"
-        elif job.message:
-            text += f" {job.message.rstrip('…')}…" if not job.message.startswith("Saving") else ""
+        elif job.message and not job.message.startswith("Saving"):
+            text += f" {job.message.rstrip('…')}…"
         if self._jobs:
             text += f" · {len(self._jobs)} more waiting"
         return text

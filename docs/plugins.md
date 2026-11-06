@@ -72,7 +72,7 @@ version 3 (Runemark 0.10.0) *3*.
 | Call | What it does |
 |---|---|
 | `api.current_file()` | Its path, or `None`. |
-| `api.current_details()` | `{"path", "title", "year", "date", "studio", "description", "rating", "links", "tags", "people", "has_cover", "container", "unsaved"}` as shown now (unsaved edits included), or `None`. `tags` are the hand-typed ones; tags from people's profiles are added when saving. |
+| `api.current_details()` | `{"path", "title", "year", "date", "studio", "description", "rating", "links", "tags", "people", "has_cover", "container", "unsaved", "own_changes"}` as shown now (unsaved edits included), or `None`. `unsaved`: anything not saved yet, details filled in from a .nfo included; `own_changes` (0.10.2): only what leaving the video would ask about. `tags` are the hand-typed ones; tags from people's profiles are added when saving. |
 | `api.apply_details(**changes)` | Any of `title`, `year`, `date` (`"YYYY-MM-DD"`, sets the year too), `studio`, `description`, `rating` (0–5), `links` (replaces), `add_links`, `add_tags` (names; spelled as in the database when they exist there), `people` (names or aliases; new names are added to People), `cover` (JPEG or PNG bytes). Returns what changed. |
 | `api.save(then=None)` | Save, like Ctrl+S, then call `then()`. From 0.9.0 MP4s are saved in the background: `then` runs once the file is written, while the window carries on. |
 | `api.saving(path)` *2* | True while a save of that video is waiting or being written. (`move_file` and `change_file` wait for it by themselves.) |
@@ -143,7 +143,9 @@ without values, for a log.
 - `api.SaveResult.failed(reason)`: the file wasn't changed and shouldn't be saved here either (it changed since it was
   opened, say). The save fails with the usual error and **Retry**; the edits stay unsaved.
 
-`progress(percent, message)` shows in the status bar (`percent` -1 for "busy"). The rest stays as it is for every
+`progress(percent, message)` shows in the status bar (`percent` -1 for "busy"). A message "Saving on X…" or
+"Saving on X: step" says where the save is written: the status bar then reads "Saving a.mp4 on X… 42%" until the
+save ends (0.10.2). The rest stays as it is for every
 save: one at a time from the queue, a video being saved is read-only and blocks Library and plugin changes to it, and
 closing waits for it.
 
