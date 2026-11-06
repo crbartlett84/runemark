@@ -364,13 +364,15 @@ def split_tag_input(text: str, known: list[str] | None = None) -> list[str]:
 
 # ------------------------------------------------------------------ scan providers (plugin API 3, 0.10.0)
 # A plugin can list what's in some folders without Runemark opening the files: a service on the computer that holds
-# them, say, which reads them at disk speed and sends only the results. The scan asks each provider first; folders a
-# provider covers aren't walked, and their files aren't opened or even looked at: new and changed ones (by size and
-# modified time) are imported from the provider's records, and indexed files under a covered folder that it no longer
-# lists are marked missing, as when a scan finds a file gone. Everything else is scanned here as before.
+# them, say, which reads them at disk speed and sends only the results. The scan asks each provider first, then
+# lists the folders itself (names, sizes and times: cheap even over a network). A file whose size and time match
+# the provider's record is imported from it without being opened; any other new or changed file is read here, so
+# a file the provider hasn't caught up with yet (just downloaded, just moved, just saved here) is still found. Only
+# files that aren't on disk are marked missing; a provider's records for files that aren't there are ignored.
 INDEX_FIELDS = ("container", "tags", "title", "year", "rating", "has_cover", "duration", "genre", "data", "studio",
                 "chapters", "chapter_names")
 STAMP_SLACK = 0.01                 # the same modified time read through two routes can differ in the last digits
+PROVIDER_SLACK = 2.0               # a provider's time (another computer, another protocol) may be rounded (0.10.1)
 
 
 @dataclass
@@ -473,19 +475,63 @@ def index_fields(record: dict) -> dict:
     return fields
 
 
+def find_video_stamps(folders: list[str], cancel: threading.Event | None = None,
+                      skip: list[str] = ()) -> dict[str, tuple[Path, int, float]]:
+    """{file key: (path, size, modified time)} of the videos under the folders, as find_videos() finds them, with
+    each file's size and time from the folder listing itself (on Windows that costs nothing more per file, even on
+    a network share)."""
+    found: dict[str, tuple[Path, int, float]] = {}
+    skipped = {_norm(x) for x in skip}
+    todo = [str(f) for f in folders]
+    while todo:
+        if cancel is not None and cancel.is_set():
+            return found
+        folder = todo.pop()
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        subdirs = []
+        for entry in entries:
+            name = entry.name
+            try:
+                if entry.is_dir():
+                    if not name.startswith(".") and name.lower() != "$recycle.bin" \
+                            and _norm(entry.path) not in skipped:
+                        subdirs.append(entry.path)
+                    continue
+                if Path(name).suffix.lower() not in VIDEO_EXTENSIONS or ".runemark-" in name:
+                    continue
+                st = entry.stat()
+            except OSError:
+                continue
+            path = Path(entry.path)
+            found.setdefault(file_key(path), (path, st.st_size, st.st_mtime))
+        todo.extend(reversed(sorted(subdirs)))
+    return found
+
+
+def provider_matches(record: dict, size: int, mtime: float) -> bool:
+    """A provider's record describes the file on disk: the same size, and the same modified time give or take what
+    the two routes to it round away."""
+    try:
+        return int(record["size"]) == int(size) and abs(float(record["mtime"]) - float(mtime)) <= PROVIDER_SLACK
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
          cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = ()) -> ScanResult:
+    """Bring the library's index of these folders up to date. 0.10.1: every folder is listed here (names, sizes and
+    times only, which is cheap even over a network); a file a scan provider describes with the same size and time
+    is imported from its record, any other new or changed file is read here, and only files that aren't there any
+    more are marked missing. A provider's records for files that aren't on disk are ignored."""
     result = ScanResult()
     if progress:
         progress(-1, "Looking for videos…")
     listings = provider_listings(folders, cancel) if scan_providers() else []
-    covered = [c for listing in listings for c in listing.covered]
 
-    def is_covered(path: str) -> bool:
-        return any(listing.covers(path) for listing in listings)
-
-    provided: dict[str, tuple[Path, dict]] = {}
-    paths: dict[str, Path] = {}
+    provided: dict[str, dict] = {}
     for listing in listings:
         for record in listing.records:
             try:
@@ -493,51 +539,47 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
                 int(record["size"]), float(record["mtime"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if Path(path.name).suffix.lower() not in VIDEO_EXTENSIONS or ".runemark-" in path.name \
-                    or not listing.covers(str(path)) or any(_inside(str(path), s) for s in skip):
-                continue
-            if record.get("unreadable"):
-                paths[file_key(path)] = path                # read here, as a scan always has
-            else:
-                provided[file_key(path)] = (path, record)
-    # walked here: the folders nobody covers, and the folders inside covered ones that their provider leaves out
-    walk = [f for f in folders if not is_covered(f)]
-    walk += [n for listing in listings for n in listing.not_covered
-             if any(_inside(n, f) for f in folders) and not any(_inside(n, s) for s in skip)]
-    for p in find_videos(walk, cancel, list(skip) + covered):
-        if not is_covered(str(p)):
-            paths.setdefault(file_key(p), p)
+            if record.get("unreadable") or Path(path.name).suffix.lower() not in VIDEO_EXTENSIONS \
+                    or ".runemark-" in path.name or not listing.covers(str(path)) \
+                    or any(_inside(str(path), s) for s in skip):
+                continue                                    # read here if it's on disk
+            provided.setdefault(file_key(path), record)
+    on_disk = find_video_stamps(folders, cancel, list(skip))
     if cancel is not None and cancel.is_set():
         result.stopped = True
         return result
     was_missing: set[str] = set()
-    for record in db.library():                     # files saved by Runemark outside the folders
+    elsewhere: dict[str, Path] = {}
+    for record in db.library():                     # files saved by Runemark outside the folders, or gone
         key = file_key(record.path)
         if record.missing:
             was_missing.add(key)
-        if key in paths or key in provided:
-            continue
-        if covered and is_covered(record.path) and not any(_inside(record.path, s) for s in skip):
-            db.mark_missing(record.path, True, commit=False)          # a covered folder no longer lists it
-            result.missing += 1
-            continue
-        paths[key] = Path(record.path)
-    result.found = len(paths) + len(provided)
-    items = list(paths.values())
+        if key not in on_disk:
+            elsewhere[key] = Path(record.path)
+    result.found = len(on_disk) + len(elsewhere)
     indexed = db.index_states()                     # one query instead of one per file
+    imports: list[tuple[Path, int, float, dict]] = []
+    items: list[Path] = []
+    for key, (path, size, mtime) in on_disk.items():
+        known = indexed.get(key)
+        if not rescan_all and known is not None and known[0] == size and known[1] is not None \
+                and abs(known[1] - mtime) <= STAMP_SLACK and key not in was_missing:
+            continue                                # unchanged since it was last read
+        record = provided.get(key)
+        if record is not None and provider_matches(record, size, mtime):
+            imports.append((path, size, mtime, record))
+        else:
+            items.append(path)                      # new or changed, and the provider hasn't read it yet: here
+    items += list(elsewhere.values())
     pending = 0
-    for n, (key, (path, record)) in enumerate(provided.items()):
+    total = max(1, len(imports) + len(items))
+    for n, (path, size, mtime, record) in enumerate(imports):
         if cancel is not None and cancel.is_set():
             result.stopped = True
             db.commit()
             return result
-        if progress and (n % 50 == 0 or n == len(provided) - 1):
-            progress(int(n * 100 / max(1, len(provided) + len(items))), f"Reading {path.name}…")
-        known = indexed.get(key)
-        size, mtime = int(record["size"]), float(record["mtime"])
-        if not rescan_all and known is not None and known[0] == size and known[1] is not None \
-                and abs(known[1] - mtime) <= STAMP_SLACK and key not in was_missing:
-            continue
+        if progress and (n % 50 == 0 or n == len(imports) - 1):
+            progress(int(n * 100 / total), f"Reading {path.name}…")
         try:
             _index(db, path, _Stamp(size, mtime), index_fields(record), commit=False)
             result.read += 1
@@ -553,7 +595,7 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
             result.stopped = True
             break
         if progress and (n % 5 == 0 or n == len(items) - 1):
-            progress(int(n * 100 / max(1, len(items))), f"Reading {path.name}…")
+            progress(int((len(imports) + n) * 100 / total), f"Reading {path.name}…")
         try:
             stat = path.stat()
         except OSError:
@@ -561,8 +603,10 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
             result.missing += 1
             pending += 1
             continue
-        known = indexed.get(file_key(path))
-        if not rescan_all and known is not None and known[0] == stat.st_size and known[1] == stat.st_mtime:
+        key = file_key(path)
+        known = indexed.get(key)
+        if not rescan_all and known is not None and known[0] == stat.st_size and known[1] == stat.st_mtime \
+                and key not in was_missing:
             continue
         try:
             _index(db, path, stat, read_for_index(path), commit=False)
@@ -686,7 +730,7 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
     path = Path(entry.path)
     if not path.exists():
         raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
-    stamp = saving.stamp(path) or (None, None)
+    stamp = tuple((saving.read_stamp(path) if handlers else saving.stamp(path)) or (None, None)) + (None,)
     meta = VideoMeta(entry.title, entry.year, entry.description, entry.rating, entry.studio)
     request = info = None
     if getattr(entry, "chapters", None) is not None:
@@ -703,12 +747,13 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
             if entry.studio is None:
                 full.studio = state.meta.studio
             request = saving.SaveRequest(path, list(entry.keywords), list(entry.genre), state.cover, full,
-                                         entry.data, wanted, preserve_mtime, stamp[0], stamp[1], "undo")
+                                         entry.data, wanted, preserve_mtime, stamp[0], stamp[1], "undo",
+                                         expected_fp=stamp[2])
     if request is None:
         request = saving.SaveRequest(path, list(entry.keywords), list(entry.genre), meta=meta,
                                      data=entry.data,     # people too (None removes a block the save added)
                                      preserve_mtime=preserve_mtime, expected_size=stamp[0],
-                                     expected_mtime=stamp[1], kind="undo")
+                                     expected_mtime=stamp[1], kind="undo", expected_fp=stamp[2])
     if handlers:
         outcome = saving.save(request, info=info, explorer_mode=explorer_mode, progress=progress)
     elif request.rewrite:

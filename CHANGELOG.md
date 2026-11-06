@@ -4,6 +4,21 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-06
+
+### Fixed
+- **Scans through a scan provider no longer mark existing videos missing.** 0.10.0 trusted the provider's listing
+  alone, so a video it hadn't caught up with yet (just added, just moved in, just changed) showed as missing. The scan
+  now lists the folders itself (names, sizes and times only) and imports a video from the provider's record only when
+  the record matches the file on disk (same size, modified time within 2 seconds); any other new or changed video is
+  read here. Only videos that aren't there are marked missing.
+- **Saves handed to a save handler carry a fingerprint** of the file as it was opened (`request.expected["fp"]`, the
+  sha256 of its first and last MiB; `runemark.saving.fingerprint()`), so a handler can tell whether the file changed
+  without relying on modified times, which a network share may round and "keep the modified date" leaves alone.
+  `SaveResult.handled()` takes the new file's `fp` too.
+- `file_saved` is now sent for every video the Library writes itself (bulk changes, undo, **Set details**) and for
+  People updates, not only the editor's saves, so a plugin hears about every change.
+
 ## [0.10.0] - 2026-11-06
 
 ### Added

@@ -66,7 +66,7 @@ version 3 (Runemark 0.10.0) *3*.
 | `api.add_tags_panel(title, widget, collapsed=False)` *2* | A strip in the **Tags** tab, under the tag editor, that folds down to its title. Returns the strip (`strip.set_open(True)` opens it). |
 | `api.add_header_widget(widget)` *2* | Your widget (buttons, say) in the header just before **Save**. Enable, disable and hide it yourself. |
 | `api.add_library_column(title, cell, fetch=None, tooltip=None, sort_key=None)` *2* | A column in the Library. `cell(path)` returns its text, or `None` when you don't know it yet: then `fetch(paths)` is called (batched, on the window's thread) for the rows on show without a value. Fetch in the background and call `api.library_column_changed()` when the values are in. Keep `cell` quick. |
-| `api.on(event, callback)` | `file_opened(path)`, `file_saved(path)` (editor or Library), `file_closed(path)` (before `move_file` moves the open video). |
+| `api.on(event, callback)` | `file_opened(path)`, `file_saved(path)` (editor or Library; from 0.10.1 also each video a Library bulk change, a Library undo, **Set details** or a People update wrote), `file_closed(path)` (before `move_file` moves the open video). |
 
 ### The open video
 | Call | What it does |
@@ -121,17 +121,23 @@ image bytes, or `None` to remove it), `request.meta` (`UNCHANGED` or the details
 studio, links, date), `request.data` (Runemark's data block, see [data-format.md](data-format.md); `UNCHANGED`, or
 `None` to remove it), `request.chapters` (`None`: the chapter track stays; a list: the file is written again with these
 chapters, ends included, and cover, details and data are then the complete values), `request.preserve_mtime`,
-`request.kind` (`"save"` or `"undo"`) and `request.expected` (`{"size", "mtime"}`: the file as it was when it was
-read; if it isn't like that any more, someone else changed it). `request.to_dict()` is all of it except the path and
+`request.kind` (`"save"` or `"undo"`) and `request.expected` (`{"size", "mtime", "fp"}`: the file as it was when it
+was read; if it isn't like that any more, someone else changed it). `fp` (0.10.1, also `request.expected_fp`) is
+`runemark.saving.fingerprint()` of the file when it was opened: the sha256 of its first MiB followed by its last MiB
+(for a file under 2 MiB the two overlap; the same bytes are still taken). Compare size and `fp` to tell whether
+the file changed: modified times read through different routes (SMB, NFS) can be rounded differently, and "keep the
+modified date" saves leave them alone. `fp` is left out when no fingerprint was taken (no handler was registered when
+the video was opened). `request.to_dict()` is all of it except the path and
 `expected` as plain JSON-safe data (cover as base64; a missing key means unchanged), and
 `SaveRequest.from_dict(path, changes, expected)` turns it back. `request.changed_fields()` names what it writes,
 without values, for a log.
 
 **What the handler returns.**
-- `api.SaveResult.handled(problems=[], size=None, mtime=None)`: the file is written. Runemark reads it back and checks
-  it exactly as after its own saves (problems found either way come up as the usual "saved, but…" warning), records
-  the save history (chapters included, so **Undo last save** works), and opens the video again. Give the file's new
-  `size` and `mtime`: a network share can report the old ones for a few seconds, and Runemark uses yours meanwhile.
+- `api.SaveResult.handled(problems=[], size=None, mtime=None, fp=None)`: the file is written. Runemark reads it back
+  and checks it exactly as after its own saves (problems found either way come up as the usual "saved, but…" warning),
+  records the save history (chapters included, so **Undo last save** works), and opens the video again. Give the
+  file's new `size`, `mtime` and (0.10.1) `fp`: a network share can report the old ones for a few seconds, and
+  Runemark uses yours meanwhile.
 - `api.SaveResult.not_handled(reason="")`, `None`, or raising: Runemark saves the file itself, exactly as without the
   plugin. Raise only before anything was written.
 - `api.SaveResult.failed(reason)`: the file wasn't changed and shouldn't be saved here either (it changed since it was
@@ -157,10 +163,14 @@ or inside them, the listing describes completely; those aren't walked. `records`
 count, or a list of `{"start", "end", "title"}`) and `"chapter_names"`. A record with `"unreadable": True` (and only
 path, size and mtime) is read by Runemark itself. `api.ScanListing(covered, records, not_covered)`: folders inside
 the covered ones that the listing leaves out (a folder that isn't yours to list, say) are scanned by Runemark as
-usual. The scan imports new and changed videos (by size and modified time)
-without opening them, marks videos it had under a covered folder that the listing no longer has as missing, leaves out
-folders the library skips, and scans every folder that isn't covered as before. Paths are as Runemark sees them (the
-library's own folders), not as the other computer does.
+usual. **From 0.10.1** the scan still lists every folder itself (names, sizes and modified times only, which is
+cheap even over a network), and for each new or changed video on disk: when the listing has a record with the same
+size and a modified time within 2 seconds (the two routes may round times), it's imported from the record without
+being opened; otherwise (the listing doesn't have it yet, or has an older version) the file is read here as without
+a provider. Only videos that aren't on disk are marked missing; records for files that aren't there are ignored.
+Folders the library skips are left out, and folders that aren't covered are scanned as before. Paths are as Runemark
+sees them (the library's own folders), not as the other computer does. (0.10.0 trusted the listing alone: a video
+the provider hadn't caught up with yet showed as missing.)
 
 **Thumbnails.** In the Library's grid, a covered video's cover comes from `thumbnail(path)` when it's shown: a small
 JPEG (`runemark.covers.small_jpeg(cover)` makes the same one Runemark would), `b""` when it has none, or `None` to let

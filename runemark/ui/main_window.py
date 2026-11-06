@@ -76,7 +76,8 @@ class Document:
         self.suggestions: list[tuple[float, QPixmap]] | None = None
         self._auto_filled = None        # the details and people as the .nfo filled them in, before any edits
         self.read_only = False          # shown while its save is still being written (0.9.0)
-        self.stamp = None               # (size, modified time) when it was read: what a save handler expects (0.10.0)
+        self.stamp = None               # (size, modified time[, fingerprint]) when it was read: what a save handler
+                                        # expects (0.10.0; the fingerprint 0.10.1)
 
     @property
     def container(self) -> str:
@@ -394,7 +395,7 @@ class MainWindow(QMainWindow):
             return
 
         def work(job):
-            stamp = saving.stamp(path)
+            stamp = saving.read_stamp(path)
             info = probe(path)
             sources = info.cover_sources
             state = read_state(path, info, lambda i: frames.dump_attachment(i.path, sources[0]) if sources else None)
@@ -1000,7 +1001,7 @@ class MainWindow(QMainWindow):
         read_nfo = self.settings.read_nfo and status is None      # not when reopening after a save
 
         def work(job):
-            stamp = saving.stamp(path)              # before reading: a change made meanwhile counts as a change
+            stamp = saving.read_stamp(path)         # before reading: a change made meanwhile counts as a change
             info = probe(path)
             state = read_state(path, info, cover_reader)
             details = None
@@ -1487,6 +1488,7 @@ class MainWindow(QMainWindow):
             self._busy = False
             dialog.finish()
             self._library_saved()
+            self.files_saved(files.values())
             if reload_open and doc is not None:
                 self._load(doc.path, position)
 
@@ -2114,6 +2116,12 @@ class MainWindow(QMainWindow):
         if doc is not None and file_key(doc.path) in {file_key(p) for p in paths}:
             self._load(doc.path, 0, status=f"Reloaded {doc.path.name} after the library changed it")
 
+    def files_saved(self, paths):
+        """The Library or People wrote these videos itself (a bulk change, an undo, people's tags): plugins hear
+        file_saved for each, as after the editor's saves (0.10.1)."""
+        for path in paths:
+            self._emit("file_saved", Path(path))
+
     def _library_saved(self, *paths: Path):
         for path in paths:
             library.reindex(self.db, path)
@@ -2206,12 +2214,13 @@ class MainWindow(QMainWindow):
         if doc is self.doc:
             self._tag_clipboard = list(doc.tags)
 
-        stamp = doc.stamp or (None, None)
+        stamp = tuple(doc.stamp or (None, None)) + (None,)
         if rewrite:                  # the rewrite starts without the cover, details and data block: all of them
             request = saving.SaveRequest(path, keywords, genre, whole_cover, meta, block, marks, preserve,
-                                         stamp[0], stamp[1])
+                                         stamp[0], stamp[1], expected_fp=stamp[2])
         else:
-            request = saving.SaveRequest(path, keywords, genre, cover, meta, block, None, preserve, stamp[0], stamp[1])
+            request = saving.SaveRequest(path, keywords, genre, cover, meta, block, None, preserve, stamp[0], stamp[1],
+                                         expected_fp=stamp[2])
 
         def work(job):
             # 0.10.0: offered to plugins' save handlers first; written here as before when none takes it

@@ -17,6 +17,7 @@ exactly what a local save would.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import shutil
@@ -39,6 +40,7 @@ NOT_HANDLED = "not_handled"
 FAILED = "failed"
 FORMAT = 1                       # version of SaveRequest.to_dict()'s layout
 STAMP_SLACK = 0.01               # modified times read through different routes may differ in the last digits
+FP_PART = 1 << 20                # fingerprint(): the first and the last MiB of the file (0.10.1)
 
 
 @dataclass
@@ -48,10 +50,12 @@ class SaveResult:
     problems: list[str] = field(default_factory=list)   # things that didn't read back as expected (a warning)
     size: int | None = None                               # the file's size and modified time after the save
     mtime: float | None = None
+    fp: str | None = None                                 # and its fingerprint() (0.10.1)
 
     @classmethod
-    def handled(cls, problems=(), size: int | None = None, mtime: float | None = None) -> "SaveResult":
-        return cls(HANDLED, "", [str(p) for p in problems], size, mtime)
+    def handled(cls, problems=(), size: int | None = None, mtime: float | None = None,
+                fp: str | None = None) -> "SaveResult":
+        return cls(HANDLED, "", [str(p) for p in problems], size, mtime, fp)
 
     @classmethod
     def not_handled(cls, reason: str = "") -> "SaveResult":
@@ -83,6 +87,7 @@ class SaveRequest:
     expected_size: int | None = None
     expected_mtime: float | None = None
     kind: str = "save"               # "save" (the editor, change_file) or "undo" (Undo last save)
+    expected_fp: str | None = None   # fingerprint() of the file when it was read (0.10.1)
 
     def __post_init__(self):
         self.path = Path(self.path)
@@ -93,7 +98,10 @@ class SaveRequest:
 
     @property
     def expected(self) -> dict:
-        return {"size": self.expected_size, "mtime": self.expected_mtime}
+        out = {"size": self.expected_size, "mtime": self.expected_mtime}
+        if self.expected_fp:
+            out["fp"] = self.expected_fp
+        return out
 
     def changed_fields(self) -> list[str]:
         """Names of what this save writes (for logs: no values)."""
@@ -180,7 +188,8 @@ class SaveRequest:
                    bool(changes.get("preserve_mtime")),
                    int(expected["size"]) if expected.get("size") is not None else None,
                    float(expected["mtime"]) if expected.get("mtime") is not None else None,
-                   str(changes.get("kind") or "save"))
+                   str(changes.get("kind") or "save"),
+                   str(expected["fp"]) if expected.get("fp") else None)
 
 
 # ------------------------------------------------------------------ handlers
@@ -249,11 +258,47 @@ def stamp(path) -> tuple[int, float] | None:
     return now
 
 
+def fingerprint(path) -> str | None:
+    """sha256 (hex) of the file's first MiB followed by its last MiB (for a file under 2 MiB the two overlap: the
+    same bytes are still taken, so every program computes the same value). It tells two versions of a video apart
+    without reading all of it and without trusting modified times, which different routes to a file round
+    differently and "keep the modified date" leaves alone. None when the file can't be read."""
+    try:
+        with open(path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            h = hashlib.sha256(fh.read(min(size, FP_PART)))
+            fh.seek(max(0, size - FP_PART))
+            h.update(fh.read(FP_PART))
+            return h.hexdigest()
+    except OSError:
+        return None
+
+
+def open_stamp(path) -> tuple[int, float, str | None] | None:
+    """(size, modified time, fingerprint) of a file as it is read for editing: what a save handler is told to
+    expect (stamp(), plus fingerprint(); 0.10.1). Right after a handler wrote the file, the handler's own values are
+    used while the share may still report the old ones."""
+    now = stamp(path)
+    if now is None:
+        return None
+    seen = _written.get(file_key(path))
+    if seen is not None and len(seen) > 3 and seen[3] and tuple(now) == tuple(seen[1]) \
+            and time.monotonic() - seen[2] < REMEMBER_WRITTEN_S:
+        return now[0], now[1], seen[3]
+    return now[0], now[1], fingerprint(path)
+
+
+def read_stamp(path):
+    """The stamp the editor keeps for a video it opens: open_stamp() when a save handler may be asked to save it,
+    else just stamp() (no need to read any of the file then)."""
+    return open_stamp(path) if save_handlers() else stamp(path)
+
+
 def _remember_written(request: SaveRequest, result: SaveResult) -> None:
     if result.size is None or result.mtime is None or request.expected_size is None:
         return
     _written[file_key(request.path)] = ((request.expected_size, request.expected_mtime),
-                                        (int(result.size), float(result.mtime)), time.monotonic())
+                                        (int(result.size), float(result.mtime)), time.monotonic(), result.fp)
 
 
 # ------------------------------------------------------------------ saving

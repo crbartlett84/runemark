@@ -256,24 +256,36 @@ def test_a_scan_through_a_provider_matches_a_local_scan_without_opening_files(tm
         opened.clear()
         assert L.scan(db_prov, folders).read == 0 and opened == []
 
-        # changed (size or time) is imported again; a vanished one is marked missing; unreadable is read here
-        records[1] = dict(records[1], mtime=records[1]["mtime"] + 30, title="Changed")
+        # 0.10.1: a provider's record is used only when it describes the file on disk
+        records[1] = dict(records[1], mtime=records[1]["mtime"] + 30, title="Changed")    # the provider is wrong
         records[2] = {"path": records[2]["path"], "size": records[2]["size"], "mtime": records[2]["mtime"],
                       "unreadable": True}
-        gone = records.pop(0)
+        gone = records.pop(0)                                     # it doesn't list v0 (not indexed there yet)
         later = files[2].stat().st_mtime + 60
         os.utime(files[2], (later, later))                        # changed here: read here, as a scan always has
         result = L.scan(db_prov, folders)
         by_path = {r.path: r for r in db_prov.library()}
-        assert by_path[gone["path"]].missing and result.missing == 1
-        assert by_path[str(files[1])].title == "Changed"
-        assert opened == ["v2.mp4"]                                   # the unreadable one, and nothing else
+        assert result.missing == 0 and not any(r.missing for r in by_path.values())   # all still on disk
+        assert by_path[str(files[1])].title == "Title 1"          # unchanged on disk: the odd record isn't used
+        assert opened == ["v2.mp4"] and result.read == 1
+        # the provider catches up with a file changed on the other computer: imported, not opened
+        save_mp4(files[1], keywords=["Server"], genre=[], meta=VideoMeta("Server title", 2001))
+        records[0] = _record(files[1])                        # (v0's record went: v1's is first now)
+        opened.clear()
+        assert L.scan(db_prov, folders).read == 1 and opened == []
+        assert {r.path: r for r in db_prov.library()}[str(files[1])].title == "Server title"
+        # only a file that isn't on disk is missing; the provider's record for it is ignored
+        records.append(gone)
+        files[0].unlink()
+        result = L.scan(db_prov, folders)
+        by_path = {r.path: r for r in db_prov.library()}
+        assert by_path[gone["path"]].missing and result.missing == 1 and opened == []
         # a provider that fails or has nothing: the whole library is scanned here again
         L.clear_scan_providers()
         L.add_scan_provider("Broken", lambda given, cancel: 1 / 0)
         opened.clear()
         L.scan(db_prov, folders, rescan_all=True)
-        assert sorted(opened) == ["v0.mp4", "v1.mp4", "v2.mp4", "v3.mp4"]
+        assert sorted(opened) == ["v1.mp4", "v2.mp4", "v3.mp4"]
     finally:
         db_local.close()
         db_prov.close()
@@ -393,7 +405,7 @@ def test_plugin_api_3_save_handler_in_the_editor_with_history_and_undo(tmp_path,
         win.open_paths([a, b])
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == a)
         opened_stamp = win.doc.stamp
-        assert opened_stamp == saving.stamp(a)
+        assert opened_stamp == saving.open_stamp(a) and opened_stamp[:2] == saving.stamp(a)     # 0.10.1: + fp
         win._tags_edited(["Lake"])
         win.chapters.add_at(1.0)
         first = win.doc
@@ -401,7 +413,8 @@ def test_plugin_api_3_save_handler_in_the_editor_with_history_and_undo(tmp_path,
         assert wait_until(qapp, lambda: win.saves.idle() and win.doc is not None and win.doc is not first
                           and win.doc.path == a and not win.doc.dirty() and calls, 30)       # opened again
         assert calls[0]["kind"] == "save" and calls[0]["expected"] == {"size": opened_stamp[0],
-                                                                       "mtime": opened_stamp[1]}
+                                                                       "mtime": opened_stamp[1],
+                                                                       "fp": opened_stamp[2]}
         assert [c["name"] for c in calls[0]["changes"]["chapters"]] == ["Chapter 1", "Chapter 2"]
         assert read_state(a).keywords == ["Lake"] and [c.title for c in probe(a).chapters] == ["Chapter 1",
                                                                                                "Chapter 2"]

@@ -292,9 +292,9 @@ class PluginAPI:
     def add_save_handler(self, handler: Callable) -> None:
         """Offer each queued save (the editor's, change_file's, Undo last save's) to handler(request, progress)
         first, in the background, before Runemark writes the file itself (0.10.0). request is a SaveRequest: the
-        file, everything the save writes (request.to_dict() as plain data), and the size and modified time it had
-        when it was read (request.expected). progress(percent, message) feeds the status bar (-1: busy). Return
-        api.SaveResult.handled(problems, size, mtime) once the file is written (Runemark then reads it back and
+        file, everything the save writes (request.to_dict() as plain data), and the size, modified time and
+        fingerprint (0.10.1) it had when it was read (request.expected). progress(percent, message) feeds the status
+        bar (-1: busy). Return api.SaveResult.handled(problems, size, mtime, fp) once the file is written (Runemark then reads it back and
         checks it), .not_handled() (or None) to let Runemark save it as usual, or .failed(reason) when it couldn't
         and the file is unchanged: the save then fails with that reason and offers Retry. Raising counts as not
         handled, so only raise before anything was written."""
@@ -307,8 +307,9 @@ class PluginAPI:
         (or None to cover nothing). covered: the folders (given, or inside them) it lists completely; records: a dict
         per video, {"path", "size", "mtime", + what the scan reads: "container", "tags", "title", "year", "rating",
         "has_cover", "duration", "genre", "data", "studio", "chapters", "chapter_names"}, or {"path", "size",
-        "mtime", "unreadable": True} for one Runemark should read itself. New and changed videos (by size and
-        modified time) are imported, and those it no longer lists are marked missing. thumbnail(path) gives the
+        "mtime", "unreadable": True} for one Runemark should read itself. The scan still lists the folders itself
+        (0.10.1): a new or changed video whose record has the same size and time is imported, any other is read
+        here, and only videos that aren't on disk are marked missing. thumbnail(path) gives the
         cover's small JPEG (b"" for none, None: read the file) when the Library shows it."""
         from . import library
         library.add_scan_provider(self._plugin.name, listing, thumbnail)

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog
                                QTableView, QToolButton, QVBoxLayout)
 
 from .. import library as L
-from ..tagdb import FileRecord, TagDB
+from ..tagdb import FileRecord, TagDB, file_key
 from . import theme, workers
 from .dialogs import ProgressDialog, TextReportDialog
 from .library_model import COLUMNS, PATH_ROLE, LibraryModel, stars  # noqa: F401 (stars: kept for importers)
@@ -935,6 +935,7 @@ class LibraryWindow(QDialog):
             self.refresh()
             if self.host is not None and mode in ("read", "nfo"):
                 self.host.files_changed([Path(r.path) for r in records])
+                self._tell_saved([Path(r.path) for r in records], [])
             elif self.host is not None and dialog.moved and hasattr(self.host, "files_moved"):
                 self.host.files_moved(dialog.moved)
 
@@ -1043,6 +1044,7 @@ class LibraryWindow(QDialog):
             dialog.finish()
             self.refresh()
             self.host.files_changed(paths)
+            self._tell_saved(paths, problems)
             if problems:
                 TextReportDialog("Some files weren't changed",
                                  "\n".join(f"{Path(p).name}: {why}" for p, why in problems), self).exec()
@@ -1094,6 +1096,7 @@ class LibraryWindow(QDialog):
                 return
             self.refresh()
             self.host.files_changed(paths)
+            self._tell_saved(paths, problems)
             undone = len(entries) - len(problems)
             self.count.setText(self.count.text() + f"   (undid {undone} of {len(entries)})")
             if problems:
@@ -1107,6 +1110,12 @@ class LibraryWindow(QDialog):
         job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
         dialog.cancelRequested.connect(job.cancel.set)
         dialog.show()
+
+    def _tell_saved(self, paths, problems):
+        """Plugins hear file_saved for each video a bulk change or undo wrote (0.10.1)."""
+        if hasattr(self.host, "files_saved"):
+            failed = {file_key(p) for p, _why in problems or []}
+            self.host.files_saved([p for p in paths if file_key(p) not in failed])
 
     def _run_bulk(self, change: L.BulkChange):
         paths = self.selected_paths()
@@ -1137,6 +1146,7 @@ class LibraryWindow(QDialog):
             dialog.finish()
             self.refresh()
             self.host.files_changed(paths)
+            self._tell_saved(paths, problems)
             if problems:
                 TextReportDialog("Some files weren't changed",
                                  "\n".join(f"{p.name}: {why}" for p, why in problems), self).exec()
@@ -1145,6 +1155,7 @@ class LibraryWindow(QDialog):
             dialog.finish()
             self.refresh()
             self.host.files_changed(paths)
+            self._tell_saved(paths, [])
             QMessageBox.critical(self, "Change files", str(exc))
 
         job = workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
