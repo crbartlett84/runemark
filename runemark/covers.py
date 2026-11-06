@@ -37,24 +37,31 @@ def thumbnail(path: str | os.PathLike, folder: Path | None = None) -> bytes | No
     if cached.is_file():
         data = cached.read_bytes()
         return data or None                      # an empty file means "no cover"
-    try:
-        cover = read_mp4_tags(path).cover
-    except Exception as exc:  # noqa: BLE001
-        log.info("no cover from %s: %s", path, exc)
-        return None
-    data = b""
-    if cover:
-        from PIL import Image
+    from .library import provider_thumbnail
+    data = provider_thumbnail(path)              # 0.10.0: a scan provider covering the file has it ready
+    if data is None:
         try:
-            image = Image.open(io.BytesIO(cover))
-            image.thumbnail((EDGE, EDGE))
-            out = io.BytesIO()
-            image.convert("RGB").save(out, "JPEG", quality=82)
-            data = out.getvalue()
+            cover = read_mp4_tags(path).cover
         except Exception as exc:  # noqa: BLE001
-            log.info("unreadable cover in %s: %s", path, exc)
+            log.info("no cover from %s: %s", path, exc)
+            return None
+        data = small_jpeg(cover, str(path)) if cover else b""
     try:
         cached.write_bytes(data)
     except OSError:
         pass
     return data or None
+
+
+def small_jpeg(cover: bytes, name: str = "") -> bytes:
+    """The Library's small copy of a cover image (JPEG, at most EDGE pixels a side); b"" when it can't be read."""
+    from PIL import Image
+    try:
+        image = Image.open(io.BytesIO(cover))
+        image.thumbnail((EDGE, EDGE))
+        out = io.BytesIO()
+        image.convert("RGB").save(out, "JPEG", quality=82)
+        return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        log.info("unreadable cover in %s: %s", name or "a video", exc)
+        return b""

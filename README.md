@@ -145,6 +145,11 @@ lists them, turns them on and off and opens the plugins folder; changes apply wh
 fails to load is listed with its error and doesn't stop Runemark. Plugins are Python code with the same access to your
 files as Runemark, so only install ones you trust. Writing one: [docs/plugins.md](docs/plugins.md).
 
+From 0.10.0 a plugin can also take over **saves** and **Library scans** for the folders it knows about: a service on
+the computer that holds your videos can write a save there, or list what a scan would read, so over a slow network
+only the changes and the results travel instead of whole videos. Runemark still checks every save by reading it back,
+keeps the same save history (so **Undo last save** works), and saves or scans everything else itself, as before.
+
 ## People
 
 Tag the people in a video once, and everything you've recorded about them follows.

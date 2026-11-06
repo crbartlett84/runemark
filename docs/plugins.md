@@ -16,8 +16,8 @@ plugins/
 {"name": "My plugin", "version": "1.0", "description": "What it does, in a line.", "api": 1}
 ```
 
-`api` is the plugin API version it was written for (`2` for the calls marked *2* below, Runemark 0.9.0+; `1`
-otherwise). Runemark refuses plugins that need a newer one and says so.
+`api` is the plugin API version it was written for (`3` for the calls marked *3* below, Runemark 0.10.0+; `2` for
+those marked *2*, Runemark 0.9.0+; `1` otherwise). Runemark refuses plugins that need a newer one and says so.
 
 **plugin.py** defines `register(api)`, called once when Runemark starts:
 
@@ -52,9 +52,10 @@ folder and import them from `plugin.py` (the folder is on the import path while 
   event handler that raises shows or logs the error; Runemark carries on.
 - **Trust.** Plugins run with the same access to your files as Runemark. Only install plugins you trust.
 
-## The API (version 2)
+## The API (version 3)
 
-Everything from version 1 is still there. Calls new in version 2 (Runemark 0.9.0) are marked *2*.
+Everything from versions 1 and 2 is still there. Calls new in version 2 (Runemark 0.9.0) are marked *2*, those new in
+version 3 (Runemark 0.10.0) *3*.
 
 ### Adding things
 | Call | What it does |
@@ -104,6 +105,66 @@ Everything from version 1 is still there. Calls new in version 2 (Runemark 0.9.0
 | `api.video_info(path)` | `{"width", "height", "duration", "bit_rate", "size", "container"}` of any video. |
 | `api.change_file(path, changes, then=None)` *2* | Change a video that needn't be open, then save it, in the background with the same safe write, check and history as the editor (Undo last save works). `changes` are what `apply_details` takes, plus `cover_if_missing` (a thumbnail only if it has none). `then(path, "")` once written, or `then(None, reason)`. |
 | `api.move_file(path, folder, new_name=None, then=None, open_after=True)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. While the video is still being saved, the move waits for the save (and doesn't happen if the save fails). `then(new_path, "")`, or `then(None, reason)`. |
+
+### Saves and scans done elsewhere *3*
+For a library on a network share, a plugin can hand the heavy work to a program on the computer that holds the files,
+so only the changes and the results cross the network.
+
+| Call | What it does |
+|---|---|
+| `api.add_save_handler(handler)` *3* | Each queued save (the editor's, `change_file`'s and **Undo last save**'s) is offered to `handler(request, progress)` first, in the background, before Runemark writes the file itself. Several handlers are asked in the order they were added, until one answers handled or failed. |
+| `api.add_scan_provider(listing, thumbnail=None)` *3* | Library scans ask `listing(folders, cancel)` (in the background) for what's in the library folders, instead of opening the files there. `thumbnail(path)` gives a covered video's small cover picture when the Library shows it. |
+| `api.SaveResult`, `api.SaveRequest`, `api.ScanListing` *3* | The classes below (also `runemark.saving.SaveResult`, `runemark.saving.SaveRequest`, `runemark.library.ScanListing`). |
+
+**The save request.** `request.path` (the video), `request.keywords`, `request.genre`, `request.cover` (`UNCHANGED`,
+image bytes, or `None` to remove it), `request.meta` (`UNCHANGED` or the details: title, year, description, rating,
+studio, links, date), `request.data` (Runemark's data block, see [data-format.md](data-format.md); `UNCHANGED`, or
+`None` to remove it), `request.chapters` (`None`: the chapter track stays; a list: the file is written again with these
+chapters, ends included, and cover, details and data are then the complete values), `request.preserve_mtime`,
+`request.kind` (`"save"` or `"undo"`) and `request.expected` (`{"size", "mtime"}`: the file as it was when it was
+read; if it isn't like that any more, someone else changed it). `request.to_dict()` is all of it except the path and
+`expected` as plain JSON-safe data (cover as base64; a missing key means unchanged), and
+`SaveRequest.from_dict(path, changes, expected)` turns it back. `request.changed_fields()` names what it writes,
+without values, for a log.
+
+**What the handler returns.**
+- `api.SaveResult.handled(problems=[], size=None, mtime=None)`: the file is written. Runemark reads it back and checks
+  it exactly as after its own saves (problems found either way come up as the usual "saved, but…" warning), records
+  the save history (chapters included, so **Undo last save** works), and opens the video again. Give the file's new
+  `size` and `mtime`: a network share can report the old ones for a few seconds, and Runemark uses yours meanwhile.
+- `api.SaveResult.not_handled(reason="")`, `None`, or raising: Runemark saves the file itself, exactly as without the
+  plugin. Raise only before anything was written.
+- `api.SaveResult.failed(reason)`: the file wasn't changed and shouldn't be saved here either (it changed since it was
+  opened, say). The save fails with the usual error and **Retry**; the edits stay unsaved.
+
+`progress(percent, message)` shows in the status bar (`percent` -1 for "busy"). The rest stays as it is for every
+save: one at a time from the queue, a video being saved is read-only and blocks Library and plugin changes to it, and
+closing waits for it.
+
+**Writing a save somewhere else.** Wherever Runemark's package can be imported (it needs mutagen, Pillow and FFmpeg;
+not Qt), `runemark.saving.write_copy(request, source, dest)` writes the saved version of `source` to `dest` (an
+`.mp4` in the same folder is best) and leaves `source` alone: the same code as a local save, so the result is what
+Runemark would have written (Explorer's Tags by Runemark's own writer, as on any system without Windows'). It returns
+the problems its read-back found; `runemark.saving.verify(request, path)` checks a file against a request. Swapping
+the copy in, keeping the modified date when `preserve_mtime` is set, and checking `expected` first are up to the
+handler.
+
+**The scan listing.** `listing(folders, cancel)` returns `api.ScanListing(covered, records)`, or `None` to cover
+nothing (a failure counts as nothing too: the scan goes on as usual). `covered`: the folders, among the ones asked for
+or inside them, the listing describes completely; those aren't walked. `records`: one dict per video under them,
+`{"path", "size", "mtime"}` plus what a scan reads from a file (`runemark.library.read_for_index` gives exactly these):
+`"container", "tags", "title", "year", "rating", "has_cover", "duration", "genre", "data", "studio", "chapters"` (the
+count, or a list of `{"start", "end", "title"}`) and `"chapter_names"`. A record with `"unreadable": True` (and only
+path, size and mtime) is read by Runemark itself. `api.ScanListing(covered, records, not_covered)`: folders inside
+the covered ones that the listing leaves out (a folder that isn't yours to list, say) are scanned by Runemark as
+usual. The scan imports new and changed videos (by size and modified time)
+without opening them, marks videos it had under a covered folder that the listing no longer has as missing, leaves out
+folders the library skips, and scans every folder that isn't covered as before. Paths are as Runemark sees them (the
+library's own folders), not as the other computer does.
+
+**Thumbnails.** In the Library's grid, a covered video's cover comes from `thumbnail(path)` when it's shown: a small
+JPEG (`runemark.covers.small_jpeg(cover)` makes the same one Runemark would), `b""` when it has none, or `None` to let
+Runemark read the file. It's kept in Runemark's cover cache like the others.
 
 ### Settings and messages
 | Call | What it does |

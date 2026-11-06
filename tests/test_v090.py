@@ -416,7 +416,7 @@ def test_save_and_next_goes_on_while_the_save_runs(tmp_path, media, qapp):
 
 @needs_window
 def test_a_failed_save_comes_back_with_retry(tmp_path, media, qapp, monkeypatch):
-    from runemark.ui import main_window as MW
+    from runemark import saving as MW            # 0.10.0: the editor's saves are written through runemark.saving
     win, db, (a,) = _window(tmp_path, media, ("a.mp4",))
     try:
         win.open_paths([a])

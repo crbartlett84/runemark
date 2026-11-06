@@ -362,21 +362,192 @@ def split_tag_input(text: str, known: list[str] | None = None) -> list[str]:
     return out
 
 
+# ------------------------------------------------------------------ scan providers (plugin API 3, 0.10.0)
+# A plugin can list what's in some folders without Runemark opening the files: a service on the computer that holds
+# them, say, which reads them at disk speed and sends only the results. The scan asks each provider first; folders a
+# provider covers aren't walked, and their files aren't opened or even looked at: new and changed ones (by size and
+# modified time) are imported from the provider's records, and indexed files under a covered folder that it no longer
+# lists are marked missing, as when a scan finds a file gone. Everything else is scanned here as before.
+INDEX_FIELDS = ("container", "tags", "title", "year", "rating", "has_cover", "duration", "genre", "data", "studio",
+                "chapters", "chapter_names")
+STAMP_SLACK = 0.01                 # the same modified time read through two routes can differ in the last digits
+
+
+@dataclass
+class ScanListing:
+    """What a scan provider has for some folders. covered: folders it lists completely (the ones it was asked for,
+    or folders inside them). records: one dict per video under them: "path", "size", "mtime" and what
+    read_for_index() gives (chapters may be the count or a list of {"start", "end", "title"}); or "path", "size",
+    "mtime" and "unreadable": True for a file the provider couldn't read (Runemark reads it itself).
+    not_covered: folders inside the covered ones that it doesn't list (they're scanned here as usual)."""
+    covered: list[str] = field(default_factory=list)
+    records: list[dict] = field(default_factory=list)
+    not_covered: list[str] = field(default_factory=list)
+
+    def covers(self, path: str) -> bool:
+        return any(_inside(str(path), c) for c in self.covered) \
+            and not any(_inside(str(path), n) for n in self.not_covered)
+
+
+@dataclass
+class ScanProvider:
+    owner: str
+    listing: Callable[[list[str], threading.Event | None], ScanListing | dict | None]
+    thumbnail: Callable[[str], bytes | None] | None = None
+    last: ScanListing | None = None                         # its last listing's folders (for thumbnails)
+
+
+_providers: list[ScanProvider] = []
+
+
+def add_scan_provider(owner: str, listing, thumbnail=None) -> ScanProvider:
+    provider = ScanProvider(owner, listing, thumbnail)
+    _providers.append(provider)
+    return provider
+
+
+def clear_scan_providers(owner: str | None = None) -> None:
+    _providers[:] = [p for p in _providers if owner is not None and p.owner != owner]
+
+
+def scan_providers() -> list[ScanProvider]:
+    return list(_providers)
+
+
+def provider_listings(folders: list[str], cancel: threading.Event | None = None) -> list[ScanListing]:
+    """Each provider's listing for these folders. A provider that has nothing, or fails, covers nothing."""
+    out = []
+    for provider in scan_providers():
+        try:
+            found = provider.listing(list(folders), cancel)
+        except Exception:  # noqa: BLE001
+            log.exception("scan provider of %s failed; scanning its folders here", provider.owner)
+            found = None
+        if isinstance(found, dict):
+            found = ScanListing(list(found.get("covered") or []), list(found.get("records") or []),
+                                list(found.get("not_covered") or []))
+        if not isinstance(found, ScanListing):
+            provider.last = None
+            continue
+        found.covered = [str(c) for c in found.covered if any(_inside(str(c), f) for f in folders)]
+        found.not_covered = [str(n) for n in found.not_covered]
+        provider.last = ScanListing(list(found.covered), [], list(found.not_covered))
+        out.append(found)
+    return out
+
+
+def provider_thumbnail(path: str | os.PathLike) -> bytes | None:
+    """A small JPEG of the cover from the provider whose last listing covered this file: None when no provider
+    covers it (read it here), b"" when the provider says it has no cover."""
+    for provider in scan_providers():
+        if provider.thumbnail is None or provider.last is None or not provider.last.covers(str(path)):
+            continue
+        try:
+            data = provider.thumbnail(str(path))
+        except Exception as exc:  # noqa: BLE001
+            log.info("scan provider of %s couldn't give the thumbnail of %s: %s", provider.owner, path, exc)
+            continue
+        if data is not None:
+            return bytes(data)
+    return None
+
+
+class _Stamp:
+    def __init__(self, size, mtime):
+        self.st_size, self.st_mtime = int(size), float(mtime)
+
+
+def index_fields(record: dict) -> dict:
+    """read_for_index()'s fields from a provider's record."""
+    fields = {k: record[k] for k in INDEX_FIELDS if k in record}
+    chapters = fields.get("chapters")
+    if isinstance(chapters, list):
+        fields["chapters"] = len(chapters)
+        if "chapter_names" not in fields:
+            fields["chapter_names"] = named_chapters(c.get("title", "") for c in chapters if isinstance(c, dict))
+    for key in ("tags", "genre", "chapter_names"):
+        fields[key] = [str(x) for x in fields.get(key) or []]
+    fields.setdefault("container", "mp4")
+    if fields.get("data") is not None and not isinstance(fields["data"], dict):
+        fields["data"] = None
+    return fields
+
+
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
          cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = ()) -> ScanResult:
     result = ScanResult()
     if progress:
         progress(-1, "Looking for videos…")
-    paths = {file_key(p): p for p in find_videos(folders, cancel, skip)}
+    listings = provider_listings(folders, cancel) if scan_providers() else []
+    covered = [c for listing in listings for c in listing.covered]
+
+    def is_covered(path: str) -> bool:
+        return any(listing.covers(path) for listing in listings)
+
+    provided: dict[str, tuple[Path, dict]] = {}
+    paths: dict[str, Path] = {}
+    for listing in listings:
+        for record in listing.records:
+            try:
+                path = Path(str(record["path"]))
+                int(record["size"]), float(record["mtime"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if Path(path.name).suffix.lower() not in VIDEO_EXTENSIONS or ".runemark-" in path.name \
+                    or not listing.covers(str(path)) or any(_inside(str(path), s) for s in skip):
+                continue
+            if record.get("unreadable"):
+                paths[file_key(path)] = path                # read here, as a scan always has
+            else:
+                provided[file_key(path)] = (path, record)
+    # walked here: the folders nobody covers, and the folders inside covered ones that their provider leaves out
+    walk = [f for f in folders if not is_covered(f)]
+    walk += [n for listing in listings for n in listing.not_covered
+             if any(_inside(n, f) for f in folders) and not any(_inside(n, s) for s in skip)]
+    for p in find_videos(walk, cancel, list(skip) + covered):
+        if not is_covered(str(p)):
+            paths.setdefault(file_key(p), p)
     if cancel is not None and cancel.is_set():
         result.stopped = True
         return result
+    was_missing: set[str] = set()
     for record in db.library():                     # files saved by Runemark outside the folders
-        paths.setdefault(file_key(record.path), Path(record.path))
-    result.found = len(paths)
+        key = file_key(record.path)
+        if record.missing:
+            was_missing.add(key)
+        if key in paths or key in provided:
+            continue
+        if covered and is_covered(record.path) and not any(_inside(record.path, s) for s in skip):
+            db.mark_missing(record.path, True, commit=False)          # a covered folder no longer lists it
+            result.missing += 1
+            continue
+        paths[key] = Path(record.path)
+    result.found = len(paths) + len(provided)
     items = list(paths.values())
     indexed = db.index_states()                     # one query instead of one per file
     pending = 0
+    for n, (key, (path, record)) in enumerate(provided.items()):
+        if cancel is not None and cancel.is_set():
+            result.stopped = True
+            db.commit()
+            return result
+        if progress and (n % 50 == 0 or n == len(provided) - 1):
+            progress(int(n * 100 / max(1, len(provided) + len(items))), f"Reading {path.name}…")
+        known = indexed.get(key)
+        size, mtime = int(record["size"]), float(record["mtime"])
+        if not rescan_all and known is not None and known[0] == size and known[1] is not None \
+                and abs(known[1] - mtime) <= STAMP_SLACK and key not in was_missing:
+            continue
+        try:
+            _index(db, path, _Stamp(size, mtime), index_fields(record), commit=False)
+            result.read += 1
+            pending += 1
+        except Exception as exc:  # noqa: BLE001
+            result.problems.append(f"{path.name}: {exc}")
+            log.info("library: couldn't import %s: %s", path, exc)
+        if pending >= SCAN_COMMIT_EVERY:
+            db.commit()
+            pending = 0
     for n, path in enumerate(items):
         if cancel is not None and cancel.is_set():
             result.stopped = True
@@ -505,19 +676,22 @@ def new_batch_id() -> str:
     return uuid.uuid4().hex
 
 
-def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False):
+def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, preserve_mtime: bool = False,
+                handlers: bool = False, progress: Progress | None = None):
     """Put a file's tags, genre and details back to a history entry, then forget that entry
     (so the next undo goes one step further back). The chapters go back too when that save changed them (0.9.0;
-    history from before 0.9.0 has none, and leaves them). The cover isn't part of history."""
+    history from before 0.9.0 has none, and leaves them). The cover isn't part of history.
+    handlers=True (Undo last save, 0.10.0): the save is offered to plugins' save handlers first, like the editor's."""
+    from . import saving
     path = Path(entry.path)
     if not path.exists():
         raise FileNotFoundError(f"{path.name} isn't there any more (moved or deleted?)")
+    stamp = saving.stamp(path) or (None, None)
     meta = VideoMeta(entry.title, entry.year, entry.description, entry.rating, entry.studio)
-    outcome = None
+    request = info = None
     if getattr(entry, "chapters", None) is not None:
         from .media import chapters as chapter_io
         from .media import frames
-        from .tagsync import save_mp4_with_chapters
         info = probe(path)
         wanted = chapter_io.marks_from_json(entry.chapters)
         if not chapter_io.same_marks(chapter_io.marks_from_info(info), wanted):
@@ -528,13 +702,24 @@ def revert_file(db: TagDB, entry, *, explorer_mode: str = explorer.MODE_AUTO, pr
                 setattr(full, name, getattr(meta, name))
             if entry.studio is None:
                 full.studio = state.meta.studio
-            outcome = save_mp4_with_chapters(path, info, wanted, keywords=entry.keywords, genre=entry.genre,
-                                             cover=state.cover, meta=full, explorer_mode=explorer_mode,
-                                             preserve_mtime=preserve_mtime, data=entry.data)
-    if outcome is None:
-        outcome = save_mp4(path, keywords=entry.keywords, genre=entry.genre, explorer_mode=explorer_mode,
-                           preserve_mtime=preserve_mtime, meta=meta,
-                           data=entry.data)      # people too (None removes a block the save added)
+            request = saving.SaveRequest(path, list(entry.keywords), list(entry.genre), state.cover, full,
+                                         entry.data, wanted, preserve_mtime, stamp[0], stamp[1], "undo")
+    if request is None:
+        request = saving.SaveRequest(path, list(entry.keywords), list(entry.genre), meta=meta,
+                                     data=entry.data,     # people too (None removes a block the save added)
+                                     preserve_mtime=preserve_mtime, expected_size=stamp[0],
+                                     expected_mtime=stamp[1], kind="undo")
+    if handlers:
+        outcome = saving.save(request, info=info, explorer_mode=explorer_mode, progress=progress)
+    elif request.rewrite:
+        from .tagsync import save_mp4_with_chapters
+        outcome = save_mp4_with_chapters(path, info, request.chapters, keywords=request.keywords,
+                                         genre=request.genre, cover=request.cover, meta=request.meta,
+                                         explorer_mode=explorer_mode, preserve_mtime=preserve_mtime,
+                                         data=request.data)
+    else:
+        outcome = save_mp4(path, keywords=request.keywords, genre=request.genre, explorer_mode=explorer_mode,
+                           preserve_mtime=preserve_mtime, meta=meta, data=request.data)
     db.remember_file(path, entry.keywords)
     reindex(db, path)
     db.drop_history(entry.id)

@@ -30,8 +30,9 @@ from .paths import app_data_dir
 
 log = logging.getLogger(__name__)
 
-API_VERSION = 2          # 2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
+API_VERSION = 3          # 2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
                          # opening files, names from details, changing a video that isn't open; everything in 1 stays
+                         # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
 EVENTS = ("file_opened", "file_saved", "file_closed")
 
 
@@ -126,6 +127,9 @@ class PluginHost:
 
 def load_all(window, disabled: list[str], folder: Path | None = None) -> PluginHost:
     """Load every enabled plugin and let it register what it adds. `window` is the main window."""
+    from . import library, saving
+    saving.clear_save_handlers()           # plugins loaded again start from nothing
+    library.clear_scan_providers()
     host = PluginHost(discover(folder))
     for plugin in host.plugins:
         plugin.enabled = plugin.key not in disabled
@@ -280,6 +284,34 @@ class PluginAPI:
         plus cover_if_missing (bytes: a thumbnail only if it has none). then(path, "") when it's written, or
         then(None, reason) (0.9.0)."""
         self._w.plugin_change_file(Path(path), dict(changes), then)
+
+    # ---- saves and scans done elsewhere (3)
+    from .library import ScanListing  # noqa: E402  (api.ScanListing)
+    from .saving import SaveRequest, SaveResult  # noqa: E402  (api.SaveResult, api.SaveRequest)
+
+    def add_save_handler(self, handler: Callable) -> None:
+        """Offer each queued save (the editor's, change_file's, Undo last save's) to handler(request, progress)
+        first, in the background, before Runemark writes the file itself (0.10.0). request is a SaveRequest: the
+        file, everything the save writes (request.to_dict() as plain data), and the size and modified time it had
+        when it was read (request.expected). progress(percent, message) feeds the status bar (-1: busy). Return
+        api.SaveResult.handled(problems, size, mtime) once the file is written (Runemark then reads it back and
+        checks it), .not_handled() (or None) to let Runemark save it as usual, or .failed(reason) when it couldn't
+        and the file is unchanged: the save then fails with that reason and offers Retry. Raising counts as not
+        handled, so only raise before anything was written."""
+        from . import saving
+        saving.add_save_handler(self._plugin.name, handler)
+
+    def add_scan_provider(self, listing: Callable, thumbnail: Callable[[str], bytes | None] | None = None) -> None:
+        """Let Library scans take what's in some folders from the plugin instead of opening the files (0.10.0).
+        listing(folders, cancel) runs in the background for each scan: return api.ScanListing(covered, records)
+        (or None to cover nothing). covered: the folders (given, or inside them) it lists completely; records: a dict
+        per video, {"path", "size", "mtime", + what the scan reads: "container", "tags", "title", "year", "rating",
+        "has_cover", "duration", "genre", "data", "studio", "chapters", "chapter_names"}, or {"path", "size",
+        "mtime", "unreadable": True} for one Runemark should read itself. New and changed videos (by size and
+        modified time) are imported, and those it no longer lists are marked missing. thumbnail(path) gives the
+        cover's small JPEG (b"" for none, None: read the file) when the Library shows it."""
+        from . import library
+        library.add_scan_provider(self._plugin.name, listing, thumbnail)
 
     # ---- your tag database and people
     def tags(self) -> list[dict]:

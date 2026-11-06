@@ -1,4 +1,4 @@
 """Runemark: tag MP4 and MKV videos, pick their thumbnails, and keep Explorer in sync."""
 
-__version__ = "0.9.2"
+__version__ = "0.10.0"
 APP_NAME = "Runemark"

@@ -4,6 +4,27 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-06
+
+### Added
+- **Plugin API 3: save handlers.** A plugin can offer to write each queued save itself (the editor's saves,
+  `change_file` and **Undo last save**): it's given the file, everything the save writes and the size and modified
+  time the file had when it was opened, and answers handled, not handled or failed. Not handled (or a plugin that
+  isn't reachable) means Runemark saves it as before; failed means the usual error with **Retry**, the edits kept and
+  the file unchanged. Handled saves are read back and checked like Runemark's own, go into the same save history
+  (chapters included), and keep the background save queue's rules. `runemark.saving.write_copy` writes the saved
+  version of a video to another file with Runemark's own writer, so a handler elsewhere produces what a local save
+  would. See [docs/plugins.md](docs/plugins.md).
+- **Plugin API 3: scan providers.** A plugin can list what's in some library folders for a scan, so the files there
+  aren't opened: new and changed videos (by size and modified time) are imported from its records, videos it no
+  longer lists are marked missing, files it can't read and folders it doesn't cover are scanned as before. The
+  Library's thumbnails for those videos come from the plugin when they're shown.
+- Plugins written for API 2 (0.9.x) keep working.
+
+### Changed
+- **Undo last save** stops the chapter pictures, suggested cuts and timeline preview reading the video before it
+  writes, as saving does, so nothing holds the file while it's replaced.
+
 ## [0.9.2] - 2026-11-06
 
 ### Added

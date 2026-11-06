@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QSplitter, QTabWidget, QToolButton, QVBoxLayout, QWidget,
                                QAbstractSpinBox, QComboBox as _QComboBox, QTextEdit)
 
-from .. import __version__, explorer, library, selftest
+from .. import __version__, explorer, library, saving, selftest
 from .. import people as people_io
 from ..media import chapters as chapter_io
 from ..media import convert as C
@@ -26,7 +26,7 @@ from ..paths import log_dir
 from ..settings import Settings
 from ..tagdb import TagDB, file_key
 from ..tagsync import (FileState, leftover_temp_files, merge_unique, read_state, remove_file, route_fields,
-                       same_tags, save_mp4, save_mp4_with_chapters)
+                       same_tags, save_mp4)
 from . import theme, workers
 from .dialogs import ConvertDialog, ProgressDialog, SettingsDialog, TextReportDialog
 from .chapters_panel import ChaptersPanel
@@ -76,6 +76,7 @@ class Document:
         self.suggestions: list[tuple[float, QPixmap]] | None = None
         self._auto_filled = None        # the details and people as the .nfo filled them in, before any edits
         self.read_only = False          # shown while its save is still being written (0.9.0)
+        self.stamp = None               # (size, modified time) when it was read: what a save handler expects (0.10.0)
 
     @property
     def container(self) -> str:
@@ -393,14 +394,16 @@ class MainWindow(QMainWindow):
             return
 
         def work(job):
+            stamp = saving.stamp(path)
             info = probe(path)
             sources = info.cover_sources
             state = read_state(path, info, lambda i: frames.dump_attachment(i.path, sources[0]) if sources else None)
-            return info, state
+            return info, state, stamp
 
         def loaded(result):
-            info, state = result
+            info, state, stamp = result
             other = Document(path, info, state, self.db)
+            other.stamp = stamp
             self._apply_changes(other, changes)
             if not other.dirty():
                 finish(path, "")
@@ -997,6 +1000,7 @@ class MainWindow(QMainWindow):
         read_nfo = self.settings.read_nfo and status is None      # not when reopening after a save
 
         def work(job):
+            stamp = saving.stamp(path)              # before reading: a change made meanwhile counts as a change
             info = probe(path)
             state = read_state(path, info, cover_reader)
             details = None
@@ -1006,14 +1010,15 @@ class MainWindow(QMainWindow):
                     details = nfo.read_for(path)
                 except Exception as exc:  # noqa: BLE001
                     log.info("couldn't read a .nfo for %s: %s", path, exc)
-            return info, state, details
+            return info, state, details, stamp
 
         def done(result):
             if token != self._open_token:
                 return
-            info, state, details = result
+            info, state, details, stamp = result
             old = self.doc
             self.doc = Document(path, info, state, self.db)
+            self.doc.stamp = stamp
             kept = (carry is not None and old is carry and file_key(old.path) == file_key(path)
                     and self.doc.take_edits_from(old))
             filled = ""
@@ -1239,7 +1244,8 @@ class MainWindow(QMainWindow):
             db = TagDB(self.db.path)          # SQLite connections belong to one thread
             try:
                 job.report(-1, f"Writing {doc.path.name}…")
-                return library.revert_file(db, entry, explorer_mode=mode, preserve_mtime=preserve)
+                return library.revert_file(db, entry, explorer_mode=mode, preserve_mtime=preserve, handlers=True,
+                                           progress=job.report)
             finally:
                 db.close()
 
@@ -1264,6 +1270,9 @@ class MainWindow(QMainWindow):
             workers.start(work, on_done=done, on_error=failed, on_progress=dialog.update_progress)
 
         dialog.show()
+        self._cancel_chapter_thumbs()             # 0.10.0: like a save, nothing may still be reading the file
+        self._cancel_cuts()
+        self.player.close_preview()
         self._release_then(begin)
 
     # ================================================================ fast tagging
@@ -2197,14 +2206,16 @@ class MainWindow(QMainWindow):
         if doc is self.doc:
             self._tag_clipboard = list(doc.tags)
 
+        stamp = doc.stamp or (None, None)
+        if rewrite:                  # the rewrite starts without the cover, details and data block: all of them
+            request = saving.SaveRequest(path, keywords, genre, whole_cover, meta, block, marks, preserve,
+                                         stamp[0], stamp[1])
+        else:
+            request = saving.SaveRequest(path, keywords, genre, cover, meta, block, None, preserve, stamp[0], stamp[1])
+
         def work(job):
-            if rewrite:
-                return save_mp4_with_chapters(path, info, marks, keywords=keywords, genre=genre,
-                                              cover=whole_cover, meta=meta, explorer_mode=mode,
-                                              preserve_mtime=preserve, progress=job.report, cancel=job.cancel,
-                                              data=block)   # the rewrite starts without the data block
-            return save_mp4(path, keywords=keywords, genre=genre, cover=cover, explorer_mode=mode,
-                            preserve_mtime=preserve, progress=job.report, meta=meta, data=block)
+            # 0.10.0: offered to plugins' save handlers first; written here as before when none takes it
+            return saving.save(request, info=info, explorer_mode=mode, progress=job.report, cancel=job.cancel)
 
         def done(outcome):
             self.db.record_history(path, **history, chapters=before_chapters, label="Saved in the editor")
