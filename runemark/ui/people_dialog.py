@@ -31,9 +31,10 @@ def _year(text: str) -> int | None:
 class PeopleDialog(QDialog):
     filesNeedUpdate = Signal(list, str, list)     # file paths, description, person uids to take out of files
 
-    def __init__(self, db: TagDB, parent=None, select_uid: str | None = None):
+    def __init__(self, db: TagDB, parent=None, select_uid: str | None = None, actions: list | None = None):
         super().__init__(parent)
         self.db = db
+        self.actions = list(actions or [])            # 0.11.0: plugins' buttons for the selected person
         self.touched: set[int] = set()              # people whose profile changed (their videos need updating)
         self.removed: dict[str, list[str]] = {}     # deleted people: uid -> their files
         self.removed_names: list[str] = []
@@ -108,6 +109,18 @@ class PeopleDialog(QDialog):
         form.addRow("", self.write_aliases)
         form.addRow("Links", self.links)
         right_layout.addLayout(form)
+        if self.actions:
+            plugin_row = QHBoxLayout()
+            self.action_buttons = []
+            for act in self.actions:
+                button = QPushButtonLike(act.text, lambda _=False, a=act: self._run_action(a))
+                button.setToolTip(f"From the {act.plugin} plugin")
+                self.action_buttons.append(button)
+                plugin_row.addWidget(button)
+            plugin_row.addStretch(1)
+            right_layout.addLayout(plugin_row)
+        else:
+            self.action_buttons = []
         self.usage = QLabel("")
         self.usage.setObjectName("Faint")
         right_layout.addWidget(self.usage)
@@ -124,12 +137,16 @@ class PeopleDialog(QDialog):
         right_layout.addWidget(self.values, 1)
 
         add = QHBoxLayout()
-        self.attr_combo = QComboBox()
-        self.attr_combo.setEditable(True)
+        self.attr_combo = QComboBox()                 # 0.11.0: a list to pick from; new ones in Attributes…
         self.attr_combo.setPlaceholderText("Attribute")
-        self.attr_combo.setToolTip("Pick an attribute, or type a new one (for example Hair, Marks, Build)")
+        self.attr_combo.setToolTip("Pick an attribute. To add one, use Attributes… below.")
+        self.attr_combo.currentIndexChanged.connect(lambda *_: self._attribute_picked())
         self.value_edit = QLineEdit()
         self.value_edit.setPlaceholderText("Value (e.g. Red)")
+        self.value_choice = QComboBox()               # 0.11.0: the attribute's allowed values (from the tag plan)
+        self.value_choice.setToolTip("The values this attribute allows; each gives its own tag")
+        self.value_choice.currentIndexChanged.connect(lambda *_: self._choice_picked())
+        self.value_choice.hide()
         self.tag_edit = QLineEdit()
         self.tag_edit.setPlaceholderText("Tag in files (e.g. Red hair)")
         self.from_edit = QLineEdit()
@@ -143,6 +160,7 @@ class PeopleDialog(QDialog):
         self.tag_edit.returnPressed.connect(self._add_value)
         add.addWidget(self.attr_combo, 2)
         add.addWidget(self.value_edit, 2)
+        add.addWidget(self.value_choice, 2)
         add.addWidget(self.tag_edit, 2)
         add.addWidget(self.from_edit)
         add.addWidget(self.to_edit)
@@ -214,7 +232,8 @@ class PeopleDialog(QDialog):
         person = self._person()
         self._filling = True
         for widget in (self.name, self.aliases, self.write_aliases, self.values, self.attr_combo, self.value_edit,
-                       self.tag_edit, self.from_edit, self.to_edit, self.delete_button, self.links):
+                       self.value_choice, self.tag_edit, self.from_edit, self.to_edit, self.delete_button, self.links,
+                       *self.action_buttons):
             widget.setEnabled(person is not None)
         self.name.setText(person.name if person else "")
         self._show_photo(person)
@@ -223,16 +242,24 @@ class PeopleDialog(QDialog):
         self.links.setText(" ".join(person.links) if person else "")
         self.values.setRowCount(0)
         if person:
+            attrs = {a.id: a for a in self.db.attributes()}
             for v in person.values:
                 row = self.values.rowCount()
                 self.values.insertRow(row)
+                attr = attrs.get(v.attribute_id)
+                choices = attr.choices if attr else []
+                off_plan = bool(choices) and attr.choice(v.value) is None
                 cells = [v.attribute, v.value, v.tag, str(v.from_year or ""), str(v.to_year or "")]
                 for col, text in enumerate(cells):
                     cell = QTableWidgetItem(text)
                     cell.setData(ROLE_ID, v.id)
-                    if col == 0:
+                    if col == 0 or (choices and col in (1, 2)):
                         cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if off_plan and col in (1, 2):
+                        cell.setToolTip(f"“{v.value}” isn't one of {v.attribute}'s values. Pick one from the list.")
                     self.values.setItem(row, col, cell)
+                if choices:
+                    self.values.setCellWidget(row, 1, self._value_picker(v, choices, off_plan))
             n = len(self.db.files_with_person(person.id))
             self.usage.setText(f"In {n} video{'s' if n != 1 else ''} in your library" if n else
                                "Not in any videos in your library yet")
@@ -360,35 +387,108 @@ class PeopleDialog(QDialog):
 
     def _fill_attributes(self):
         current = self.attr_combo.currentText()
+        self.attr_combo.blockSignals(True)
         self.attr_combo.clear()
         for attr in self.db.attributes():
             self.attr_combo.addItem(attr.name, attr.id)
-        self.attr_combo.setCurrentText(current)
+        index = self.attr_combo.findText(current)
+        self.attr_combo.setCurrentIndex(index)
+        self.attr_combo.blockSignals(False)
+        self._attribute_picked()
+
+    def _picked_attribute(self):
+        attribute_id = self.attr_combo.currentData()
+        if attribute_id is None:
+            return None
+        try:
+            return self.db.attribute(attribute_id)
+        except TagDBError:
+            return None
+
+    def _attribute_picked(self):
+        """An attribute with choices takes a value from its list (and gives that value's tag); others are typed."""
+        attr = self._picked_attribute()
+        choices = attr.choices if attr else []
+        self.value_choice.blockSignals(True)
+        self.value_choice.clear()
+        for value, tag in choices:
+            self.value_choice.addItem(value, tag)
+        self.value_choice.setCurrentIndex(-1)
+        self.value_choice.setPlaceholderText(f"{attr.name}…" if attr else "Value")
+        self.value_choice.blockSignals(False)
+        self.value_choice.setVisible(bool(choices))
+        self.value_edit.setVisible(not choices)
+        self.tag_edit.setReadOnly(bool(choices))
+        self.tag_edit.clear()
+        self.tag_edit.setPlaceholderText("Tag (from the value)" if choices else "Tag in files (e.g. Red hair)")
+
+    def _choice_picked(self):
+        self.tag_edit.setText(self.value_choice.currentData() or "")
+
+    def _value_picker(self, v, choices, off_plan: bool) -> QComboBox:
+        """The drop-down in a value's row for an attribute with choices (a value not in the list is kept, marked)."""
+        combo = QComboBox()
+        for value, tag in choices:
+            combo.addItem(value, (value, tag))
+        if off_plan:
+            combo.insertItem(0, f"{v.value} (not in the list)", None)
+            combo.setToolTip(f"“{v.value}” isn't one of {v.attribute}'s values. Pick one to replace it.")
+            combo.setStyleSheet("QComboBox { color: #c0392b; }")
+            combo.setCurrentIndex(0)
+        else:
+            combo.setCurrentIndex(max(0, next((i for i, (val, _t) in enumerate(choices)
+                                                if val.casefold() == v.value.casefold()), 0)))
+        combo.currentIndexChanged.connect(lambda _i, c=combo, vid=v.id: self._value_chosen(vid, c.currentData()))
+        return combo
+
+    def _value_chosen(self, value_id: int, data):
+        if self._filling or not data:
+            return
+        value, tag = data
+        try:
+            self.db.update_person_value(value_id, value=value, tag=tag)
+        except TagDBError as exc:
+            return self._error(exc)
+        self._changed()
+        self._fill_person()
+
+    def _run_action(self, act):
+        person = self._person()
+        if person is None:
+            return
+        try:
+            act.callback(person.name)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, act.text, f"{act.plugin} couldn't do that: {exc}")
+
+    def refresh_person(self):
+        """A plugin changed someone: show it."""
+        self._fill_list()
+        self._fill_person()
 
     def _add_value(self):
         person = self._person()
         if person is None:
             return
-        attr_name = " ".join(self.attr_combo.currentText().split())
-        if not attr_name:
-            return self._error(TagDBError("Choose an attribute (or type a new one, such as Hair)."))
+        attr = self._picked_attribute()
+        if attr is None:
+            return self._error(TagDBError("Choose an attribute. To add a new one, use Attributes… below."))
+        if attr.choices:
+            if self.value_choice.currentIndex() < 0:
+                return self._error(TagDBError(f"Choose one of {attr.name}'s values."))
+            value, tag = self.value_choice.currentText(), self.value_choice.currentData()
+        else:
+            value, tag = self.value_edit.text(), self.tag_edit.text() or None
         try:
-            attr = self.db.find_attribute(attr_name)
-            if attr is None:
-                answer = QMessageBox.question(self, "New attribute", f"Add a new attribute “{attr_name}”?")
-                if answer != QMessageBox.StandardButton.Yes:
-                    return
-                attr = self.db.add_attribute(attr_name)
-                self._fill_attributes()
-            self.db.add_person_value(person.id, attr.id, self.value_edit.text(), tag=self.tag_edit.text() or None,
+            self.db.add_person_value(person.id, attr.id, value, tag=tag,
                                      from_year=_year(self.from_edit.text()), to_year=_year(self.to_edit.text()))
         except TagDBError as exc:
             return self._error(exc)
         self._changed()
         for edit in (self.value_edit, self.tag_edit, self.from_edit, self.to_edit):
             edit.clear()
-        self.attr_combo.setCurrentText(attr.name)
-        self.value_edit.setFocus()
+        self.value_choice.setCurrentIndex(-1)
+        (self.value_choice if attr.choices else self.value_edit).setFocus()
         self._fill_person()
 
     def _value_edited(self, cell: QTableWidgetItem):
@@ -471,8 +571,8 @@ class AttributesDialog(QDialog):
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Attribute", "Stash field", "Write as tags"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Attribute", "Stash field", "Write as tags", "Values"])
         self.table.verticalHeader().hide()
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -512,6 +612,11 @@ class AttributesDialog(QDialog):
             box.setChecked(attr.write_tags)
             box.toggled.connect(lambda on, a=attr.id: self._set_write(a, on))
             self.table.setCellWidget(row, 2, box)
+            values = QTableWidgetItem(", ".join(v for v, _t in attr.choices) if attr.choices else "Any (typed)")
+            values.setToolTip("\n".join(f"{v} → {t}" for v, t in attr.choices) if attr.choices
+                              else "Any value can be typed")
+            values.setFlags(values.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 3, values)
 
     def _selected(self) -> int | None:
         rows = {i.row() for i in self.table.selectedIndexes()}

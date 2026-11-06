@@ -1,6 +1,6 @@
 name: Runemark Import
 description: Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos. Fills in blanks only.
-version: 0.3.0
+version: 0.3.1
 url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
 exec:
   - python

@@ -1426,10 +1426,21 @@ class MainWindow(QMainWindow):
 
     def manage_people(self, uid: str | None = None):
         from .people_dialog import PeopleDialog
-        dialog = PeopleDialog(self.db, self, select_uid=uid if isinstance(uid, str) else None)
+        host = getattr(self, "plugins", None)
+        dialog = PeopleDialog(self.db, self, select_uid=uid if isinstance(uid, str) else None,
+                              actions=list(host.person_actions) if host is not None else [])
         pending = []
         dialog.filesNeedUpdate.connect(lambda *args: pending.append(args))
-        dialog.exec()
+        self._people_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._people_dialog = None
+        self._profiles_changed()
+        for args in pending:
+            self._update_people_files(*args)
+
+    def _profiles_changed(self):
         self.tag_editor.refresh_database()
         if self.doc is not None:
             # profiles may have changed: pick up the new names and values (unsaved edits are kept)
@@ -1440,8 +1451,36 @@ class MainWindow(QMainWindow):
             self._refresh_people()
         if self.library_window is not None:
             self.library_window.refresh()
-        for args in pending:
-            self._update_people_files(*args)
+
+    def people_changed(self, person_ids: list[int], now: bool = False):
+        """A plugin changed people's profiles (0.11.0). With People open, it offers the video update when it closes;
+        otherwise the changes add up until `now`, when the update is offered for all of them."""
+        dialog = getattr(self, "_people_dialog", None)
+        if dialog is not None:
+            dialog.touched |= set(person_ids)
+            dialog.refresh_person()
+            return
+        pending = getattr(self, "_people_pending", set())
+        pending |= set(person_ids)
+        self._people_pending = pending
+        self._profiles_changed()
+        if not now or not pending:
+            return
+        self._people_pending = set()
+        files, names = {}, []
+        for person_id in sorted(pending):
+            try:
+                person = self.db.person(person_id)
+            except Exception:  # noqa: BLE001
+                continue
+            paths = self.db.files_with_person(person_id)
+            if paths:
+                names.append(person.name)
+            for path in paths:
+                files.setdefault(path.casefold(), path)
+        if files:
+            self._update_people_files(list(files.values()), "People: changed " + ", ".join(names[:8])
+                                      + (f" and {len(names) - 8} more" if len(names) > 8 else ""), [])
 
     def _update_people_files(self, paths: list[str], label: str, drop: list[str]):
         """After People closes: offer to bring the videos with the changed people up to date (one undoable batch)."""

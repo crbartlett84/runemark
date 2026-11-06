@@ -16,7 +16,8 @@ plugins/
 {"name": "My plugin", "version": "1.0", "description": "What it does, in a line.", "api": 1}
 ```
 
-`api` is the plugin API version it was written for (`3` for the calls marked *3* below, Runemark 0.10.0+; `2` for
+`api` is the plugin API version it was written for (`4` for the calls marked *4* below, Runemark 0.11.0+; `3` for
+those marked *3*, Runemark 0.10.0+; `2` for
 those marked *2*, Runemark 0.9.0+; `1` otherwise). Runemark refuses plugins that need a newer one and says so.
 
 **plugin.py** defines `register(api)`, called once when Runemark starts:
@@ -92,10 +93,15 @@ version 3 (Runemark 0.10.0) *3*.
 | `api.add_tag(name, category=None)` | Add a tag (in an existing category path); returns its name. Does nothing if it exists. |
 | `api.clear_tags(keep)` | Remove every tag except those named in `keep`, their rules, and every category left empty, after a backup (`before-clear-….db`, restorable from Settings → Backups). Videos aren't changed. Returns `{"tags_removed", "categories_removed", "backup"}`. |
 | `api.rename_tag(old, new)` | Rename a tag (or merge it into an existing `new`), then offer to update the videos that carry it, like renaming in the Tag database. Returns the new name. |
-| `api.find_person(name)` | `{"name", "aliases", "links", "has_photo"}` by name or alias, or `None`. |
+| `api.find_person(name)` | `{"name", "aliases", "links", "has_photo", "values"}` by name or alias, or `None`. `values` *4*: `[{"attribute", "value", "tag", "from_year", "to_year"}]`. |
+| `api.people()` *4* | Everyone in People, by name. |
+| `api.set_person_values(name, values, photo=None)` *4* | Set a person's values: `{"Hair": "Red"}` or `{"Hair": ("Red", "Red Hair")}` replaces what they have for each attribute named (`None` or `""` takes it away); an attribute with choices takes the allowed value's own tag. `photo` replaces theirs. Their videos are offered an update when People closes, or on `offer_video_update()`. Returns the attributes that changed. |
+| `api.offer_video_update(names)` *4* | Offer now to bring these people's videos up to date (as People does when it closes). |
+| `api.add_person_action(text, callback)` *4* | A button in People for the selected person; `callback(name)`. |
 | `api.add_person(name, aliases=(), links=(), photo=None, values=None)` | Add someone, or fill in what their profile lacks: new aliases, links, a photo if they have none (any picture; the top-centre square is used), attribute values they don't have yet (`{"Hair": "Red"}`, or `{"Hair": ("Red", "Red hair")}` to choose the tag it becomes; attributes are created if missing). Returns their main name. |
-| `api.add_attribute(name, stash_field=None, as_tag=True)` | Add a people attribute field, optionally linked to a Stash performer field and written as tags or not. Returns its name. |
-| `api.attributes()` | People's attribute fields: `[{"name", "stash_field", "as_tag"}]`. |
+| `api.add_attribute(name, stash_field=None, as_tag=True, choices=None)` | Add a people attribute field, optionally linked to a Stash performer field and written as tags or not. *4*: `choices`, the values it allows each with its tag (`[("Red", "Red Hair")]`), shown in People as a drop-down; set even when the attribute exists. Returns its name. |
+| `api.set_attribute_choices(name, choices)` *4* | The values an attribute allows, each with its tag; `None` or `[]` lets it take any value. |
+| `api.attributes()` | People's attribute fields: `[{"name", "stash_field", "as_tag", "choices"}]` (`choices` *4*). |
 
 ### Libraries and files
 | Call | What it does |

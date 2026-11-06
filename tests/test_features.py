@@ -43,7 +43,7 @@ def test_details_survive_on_a_faststart_file(copy_of):
 
 # ------------------------------------------------------------------ chapters
 def test_marks_number_themselves_and_start_at_zero():
-    marks, first = CH.add_mark([], 12.0)
+    marks, first = CH.add_mark([], 12.0, at_zero_too=True)
     assert [(m.start, m.name) for m in marks] == [(0.0, "Chapter 1"), (12.0, "Chapter 2")]
     marks, middle = CH.add_mark(marks, 5.0)
     marks[2].name, marks[2].auto = "Halifax", False
@@ -53,6 +53,40 @@ def test_marks_number_themselves_and_start_at_zero():
     assert again is middle and len(marks) == 3
     ends = CH.with_ends(marks, 20.0)
     assert [(c.start, c.end) for c in ends] == [(0.0, 5.0), (5.0, 12.0), (12.0, 20.0)]
+
+
+def test_first_chapter_adds_no_chapter_at_zero():
+    marks, first = CH.add_mark([], 12.0)
+    assert [(m.start, m.name) for m in marks] == [(12.0, "Chapter 1")] and first is marks[0]
+    marks, _ = CH.add_mark(marks, 30.0)
+    assert [m.start for m in marks] == [12.0, 30.0]
+
+
+def test_chapters_saved_without_one_at_zero(copy_of):
+    path = copy_of("mp4_cover")
+    info = probe(path)
+    marks, first = CH.add_mark([], 1.0)
+    first.name, first.auto = "The action", False
+    state = read_state(path)
+    outcome = save_mp4_with_chapters(path, info, marks, keywords=state.keywords,
+                                     genre=state.genre, cover=state.cover, meta=state.meta)
+    assert outcome.ok, outcome.problems
+    after = probe(path)
+    assert [c.title for c in after.chapters] == [CH.LEAD_IN, "The action"]     # MP4 needs one at 0:00
+    assert abs(after.chapters[1].start - 1.0) < 0.05
+    shown = CH.marks_from_info(after)                                          # but it's never shown
+    assert [(round(m.start, 1), m.name) for m in shown] == [(1.0, "The action")]
+
+
+def test_only_the_written_lead_in_is_hidden():
+    from runemark.media.probe import Chapter
+    class Info:
+        chapters = [Chapter(0.0, 5.0, CH.LEAD_IN), Chapter(5.0, 9.0, "Scene")]
+    assert [m.name for m in CH.marks_from_info(Info)] == ["Scene"]
+    Info.chapters = [Chapter(0.0, 5.0, "Chapter 1"), Chapter(5.0, 9.0, "Scene")]  # one you placed: kept
+    assert [m.name for m in CH.marks_from_info(Info)] == ["Chapter 1", "Scene"]
+    Info.chapters = [Chapter(0.0, 9.0, CH.LEAD_IN)]                               # the only one: kept
+    assert len(CH.marks_from_info(Info)) == 1
 
 
 def test_write_chapters_keeps_everything_else(copy_of, media):

@@ -301,6 +301,9 @@ def read_for_index(path: Path) -> dict:
         except Exception:  # noqa: BLE001
             explorer_tags, rating = [], 0
         chapters = getattr(mp4, "chapters", None)
+        if chapters:
+            from .media.chapters import without_lead_in
+            chapters = without_lead_in(sorted(chapters, key=lambda c: c.start))      # 0.11.0: the hidden "Start"
         return dict(container="mp4", tags=merge_unique(tags.keywords, explorer_tags, tags.genre),
                     title=tags.title, year=tags.year, rating=rating, has_cover=bool(tags.cover),
                     duration=duration, genre=tags.genre, data=tags.data, studio=tags.studio,
@@ -312,8 +315,13 @@ def read_for_index(path: Path) -> dict:
     return dict(container="mkv" if ext in MKV_EXTENSIONS else "other", tags=merge_unique(keywords, genre),
                 title=info.tag("title"), year=parse_year(info.tag("date") or info.tag("year")), rating=0,
                 has_cover=bool(info.cover_sources), duration=info.duration, genre=genre, data=None,
-                studio=info.tag("studio") or info.tag("publisher"), chapters=len(info.chapters),
-                chapter_names=named_chapters(c.title for c in info.chapters))
+                studio=info.tag("studio") or info.tag("publisher"), chapters=len(_shown(info.chapters)),
+                chapter_names=named_chapters(c.title for c in _shown(info.chapters)))
+
+
+def _shown(chapters) -> list:
+    from .media.chapters import without_lead_in
+    return without_lead_in(sorted(chapters or [], key=lambda c: c.start))
 
 
 def named_chapters(titles) -> list[str]:
@@ -322,7 +330,7 @@ def named_chapters(titles) -> list[str]:
     out, seen = [], set()
     for title in titles:
         name = " ".join(str(title or "").split())
-        if name and not is_auto_name(name) and name.casefold() not in seen:
+        if name and not is_auto_name(name) and name != "Start" and name.casefold() not in seen:
             seen.add(name.casefold())
             out.append(name)
     return out

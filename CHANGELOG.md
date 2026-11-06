@@ -4,6 +4,26 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
+### Changed
+- **The first chapter you place is the only chapter.** Adding a chapter no longer adds a "Chapter 1" at 0:00 as
+  well (it got in the way of skipping to the action and was deleted by hand every time). MP4 chapter lists must start
+  at 0:00, so when the first chapter starts later Runemark writes a lead-in called "Start" before it; Runemark never
+  shows it, doesn't count it in the Library, and the Stash plugin (0.3.1) doesn't make a marker of it. A chapter you
+  put at 0:00 yourself stays a chapter.
+- **Attributes in People are picked from a list.** The Attribute box is a drop-down of your attributes (new ones are
+  made in Attributes…). An attribute can have choices, the values it allows, each with its own tag ("Red" gives
+  "Red Hair"): its value is then a drop-down too, and the tag follows the value. A value that isn't in the list (from
+  an older file) is shown in red in its row with the list to pick a replacement from. Attributes… shows each
+  attribute's values.
+
+### Added
+- **Plugin API 4:** attribute choices (`add_attribute(..., choices=)`, `set_attribute_choices()`, `attributes()`
+  lists them); buttons in People for the selected person (`add_person_action()`); a person's values in
+  `find_person()`, `people()`, and `set_person_values()` to set or take away values (and a photo), whose videos are
+  offered an update when People closes or on `offer_video_update()`.
+
 ## [0.10.2] - 2026-11-06
 
 ### Fixed

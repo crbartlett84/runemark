@@ -30,9 +30,11 @@ from .paths import app_data_dir
 
 log = logging.getLogger(__name__)
 
-API_VERSION = 3          # 2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
+# API history:          2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
                          # opening files, names from details, changing a video that isn't open; everything in 1 stays
                          # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
+API_VERSION = 4          # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
+                         # person's values read and set, video updates for changed people; everything in 3 stays
 EVENTS = ("file_opened", "file_saved", "file_closed")
 
 
@@ -114,6 +116,7 @@ class PluginHost:
     actions: list[_Action] = field(default_factory=list)                    # main window ⋯ → Plugins
     library_actions: list[_Action] = field(default_factory=list)            # Library → More → plugin actions
     library_columns: list[LibraryColumn] = field(default_factory=list)      # extra Library columns (0.9.0)
+    person_actions: list[_Action] = field(default_factory=list)             # buttons in People (0.11.0)
     listeners: dict[str, list[tuple[str, Callable]]] = field(default_factory=lambda: {e: [] for e in EVENTS})
 
     def emit(self, event: str, *args) -> None:
@@ -417,11 +420,62 @@ class PluginAPI:
         return self._w.plugin_rename_tag(old, new)
 
     def find_person(self, name: str) -> dict | None:
-        """{"name", "aliases", "links", "has_photo"} for the person with this name or alias, or None."""
+        """{"name", "aliases", "links", "has_photo", "values"} for the person with this name or alias, or None.
+        values (0.11.0): [{"attribute", "value", "tag", "from_year", "to_year"}]."""
         db = self._w.db
         p = db.find_person(name)
         return None if p is None else {"name": p.name, "aliases": list(p.aliases), "links": list(p.links),
-                                       "has_photo": db.person_photo(p.id) is not None}
+                                       "has_photo": db.person_photo(p.id) is not None,
+                                       "values": [{"attribute": v.attribute, "value": v.value, "tag": v.tag,
+                                                   "from_year": v.from_year, "to_year": v.to_year}
+                                                  for v in p.values]}
+
+    def people(self) -> list[str]:
+        """Everyone in People, by name (0.11.0)."""
+        return [p.name for p in self._w.db.people()]
+
+    def add_person_action(self, text: str, callback: Callable[[str], Any]) -> None:
+        """A button in People for the selected person (0.11.0); the callback gets their name."""
+        self._host.person_actions.append(_Action(self._plugin.name, text, callback))
+
+    def set_person_values(self, name: str, values: dict, photo: bytes | None = None) -> list[str]:
+        """Set a person's values (0.11.0): {"Hair": "Red"} or {"Hair": ("Red", "Red Hair")} replaces what they have
+        for each attribute named (None or "" takes it away); attributes are created if missing; an attribute with
+        choices takes the allowed value's own tag. photo replaces theirs. Their videos are offered an update (when
+        People closes, or right away). Returns the attributes that changed."""
+        db = self._w.db
+        person = db.find_person(name)
+        if person is None:
+            raise ValueError(f"{name} isn't in People.")
+        changed = []
+        for attr_name, value in (values or {}).items():
+            value, tag = (value if isinstance(value, (tuple, list)) else (value, None))
+            attr = db.find_attribute(attr_name) or db.add_attribute(attr_name)
+            had = [v for v in db.person(person.id).values if v.attribute_id == attr.id]
+            if value and len(had) == 1 and had[0].value == str(value) and (not tag or had[0].tag == str(tag)):
+                continue
+            if not value and not had:
+                continue
+            for v in had:
+                db.remove_person_value(v.id)
+            if value:
+                db.add_person_value(person.id, attr.id, str(value), tag=str(tag) if tag else None)
+            changed.append(attr.name)
+        if photo:
+            jpeg = square_photo(photo)
+            if jpeg:
+                db.set_person_photo(person.id, jpeg)
+                changed.append("photo")
+        if changed:
+            self._w.people_changed([person.id])
+        return changed
+
+    def offer_video_update(self, names: list[str]) -> None:
+        """Offer to bring the videos of these people up to date now (0.11.0), as People does when it closes."""
+        db = self._w.db
+        ids = [p.id for p in (db.find_person(n) for n in names) if p is not None]
+        if ids:
+            self._w.people_changed(ids, now=True)
 
     def add_person(self, name: str, aliases: list[str] = (), links: list[str] = (), photo: bytes | None = None,
                    values: dict | None = None) -> str:
@@ -455,16 +509,30 @@ class PluginAPI:
         self._w.tag_editor.refresh_database()
         return db.person(person.id).name
 
-    def add_attribute(self, name: str, stash_field: str | None = None, as_tag: bool = True) -> str:
+    def add_attribute(self, name: str, stash_field: str | None = None, as_tag: bool = True,
+                      choices: list | None = None) -> str:
         """Add a people attribute field ("Hair"), optionally linked to a Stash performer field ("hair_color") and
-        written to videos as tags or not. Does nothing if it exists. Returns its name."""
+        written to videos as tags or not. Does nothing if it exists, except that choices (0.11.0) are set when given:
+        the values it allows, each with its tag ([("Red", "Red Hair")...]), shown in People as a drop-down.
+        Returns its name."""
         db = self._w.db
         attr = db.find_attribute(name) or db.add_attribute(name, stash_field=stash_field, write_tags=as_tag)
+        if choices is not None:
+            attr = db.update_attribute(attr.id, choices=list(choices))
         return attr.name
 
+    def set_attribute_choices(self, name: str, choices: list | None) -> None:
+        """The values an attribute allows, each with its tag (0.11.0); None or [] lets it take any value."""
+        db = self._w.db
+        attr = db.find_attribute(name)
+        if attr is None:
+            raise ValueError(f"There's no attribute called {name}.")
+        db.update_attribute(attr.id, choices=list(choices or []))
+
     def attributes(self) -> list[dict]:
-        """People's attribute fields: [{"name", "stash_field", "as_tag"}]."""
-        return [{"name": a.name, "stash_field": a.stash_field, "as_tag": a.write_tags} for a in self._w.db.attributes()]
+        """People's attribute fields: [{"name", "stash_field", "as_tag", "choices"}]."""
+        return [{"name": a.name, "stash_field": a.stash_field, "as_tag": a.write_tags,
+                 "choices": [list(c) for c in a.choices]} for a in self._w.db.attributes()]
 
     # ---- libraries and files
     def libraries(self) -> list[dict]:

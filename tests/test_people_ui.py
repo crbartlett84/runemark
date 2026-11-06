@@ -49,11 +49,12 @@ def test_people_window_edits_and_offers_the_update(tmp_path, media, db, qapp, ye
     P.save_people(db, f, [(ana, [])], label="test")
     other = db.add_person("Nobody Here")                       # not in any video: nothing to update
 
+    db.add_attribute("Hair")                                   # 0.11.0: made in Attributes…, then picked
     dialog = PeopleDialog(db, select_uid=ana.uid)
     assert dialog.name.text() == "Ana Lee" and "1 video" in dialog.usage.text()
     dialog.aliases.setText("Annie, Ana L.")
     dialog._save_names()
-    dialog.attr_combo.setCurrentText("Hair")                   # a new attribute, created on the spot
+    dialog.attr_combo.setCurrentIndex(dialog.attr_combo.findText("Hair"))
     dialog.value_edit.setText("Red")
     dialog.tag_edit.setText("Red hair")
     dialog.from_edit.setText("2010")

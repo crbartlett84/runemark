@@ -288,10 +288,13 @@ def import_chapters(stash: Stash, scene: dict, path: str, settings: dict, ends: 
             name = m.get("title") or ""
         existing[(round(float(m["seconds"]), 1), name.strip().casefold())] = m
     added = 0
-    for c in chapters:
+    chapters = sorted(chapters, key=lambda c: c["start"])
+    for n, c in enumerate(chapters):
         name = c["title"].strip()
         if not name:
             continue
+        if n == 0 and len(chapters) > 1 and c["start"] <= 0.0005 and name == "Start":
+            continue        # Runemark 0.11.0's hidden lead-in (MP4 chapter lists start at 0:00): not a moment
         recorded = ends.get(f"{c['start']:.3f}")
         if recorded is None:
             recorded = R.end_near(ends, c["start"])

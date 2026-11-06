@@ -82,7 +82,7 @@ def test_edits_made_while_saving_carry_over(tmp_path, media):
     db = TagDB(tmp_path / "t.db")
     info = probe(path)
     old = Document(path, info, read_state(path, info), db)
-    old.chapters, _ = CH.add_mark(old.chapters, 1.0)
+    old.chapters, _ = CH.add_mark(old.chapters, 1.0, at_zero_too=True)
     old.saved_chapters = CH.copy_marks(old.chapters)   # what the save wrote ("Chapter 2")
     old.chapters[1].name, old.chapters[1].auto = "Lake", False   # renamed while it saved
     new = Document(path, info, read_state(path, info), db)

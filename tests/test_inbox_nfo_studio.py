@@ -238,10 +238,10 @@ def test_chapter_panel_named_chapters_and_keys():
     panel.keysChanged.connect(keys.append)
     panel.set_enabled(True, "mp4")
     panel.add_at(5.0, "swimming")                       # matches the tag's spelling
-    assert [(m.start, m.name, m.auto) for m in panel.marks] == [(0.0, "Chapter 1", True), (5.0, "Swimming", False)]
+    assert [(m.start, m.name, m.auto) for m in panel.marks] == [(5.0, "Swimming", False)]   # no 0:00 one (0.11.0)
     assert tagged == ["Swimming"]
     panel.add_at(9.0)
-    assert panel.marks[-1].name == "Chapter 3" and panel.marks[-1].auto
+    assert panel.marks[-1].name == "Chapter 2" and panel.marks[-1].auto
     panel._set_key("3", "Swimming")
     panel._set_key("4", "Swimming")                     # one key per name: moves from 3 to 4
     assert keys[-1] == {"4": "Swimming"} and "4 Swimming" in panel.keys_line.text()

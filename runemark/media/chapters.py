@@ -31,6 +31,10 @@ from .probe import Chapter, MediaInfo, probe
 log = logging.getLogger(__name__)
 
 AUTO_NAME = re.compile(r"^Chapter \d+$")
+# 0.11.0: MP4 players need the chapter list to start at 0:00, so when the first real chapter starts later, a
+# lead-in chapter called "Start" is written before it. Runemark never shows it (nor makes a marker of it): the
+# first chapter you place is the first chapter. A chapter you put at 0:00 yourself stays a chapter.
+LEAD_IN = "Start"
 
 
 @dataclass
@@ -123,21 +127,35 @@ def renumber(marks: list[ChapterMark]) -> list[ChapterMark]:
     return marks
 
 
+def is_lead_in(chapters: list, index: int = 0) -> bool:
+    """Whether chapters[index] is the hidden lead-in Runemark writes: the first chapter, at 0:00, named "Start",
+    with a later chapter after it."""
+    if index != 0 or len(chapters) < 2:
+        return False
+    first = chapters[0]
+    name = (getattr(first, "title", None) if hasattr(first, "title") else getattr(first, "name", "")) or ""
+    return first.start <= 0.0005 and name.strip() == LEAD_IN
+
+
+def without_lead_in(chapters: list) -> list:
+    return list(chapters[1:]) if is_lead_in(chapters) else list(chapters)
+
+
 def marks_from_info(info: MediaInfo) -> list[ChapterMark]:
-    """The file's existing chapters, ready to edit."""
+    """The file's existing chapters, ready to edit (the hidden lead-in left out)."""
     marks = []
-    for chap in info.chapters:
+    for chap in without_lead_in(sorted(info.chapters, key=lambda c: c.start)):
         name = chap.title.strip() or ""
         auto = not name or is_auto_name(name)
         marks.append(ChapterMark(max(0.0, chap.start), name, auto))   # ends: apply_ends(marks, state.data)
     return renumber(marks)
 
 
-def add_mark(marks: list[ChapterMark], start: float, at_zero_too: bool = True) -> tuple[list[ChapterMark], ChapterMark]:
+def add_mark(marks: list[ChapterMark], start: float, at_zero_too: bool = False) -> tuple[list[ChapterMark], ChapterMark]:
     """Add an automatic chapter at `start` (or return the one already there).
 
-    When it's the first chapter and doesn't start at the beginning, a chapter at 0:00 is added
-    as well: players expect the first chapter to start at the beginning.
+    0.11.0: the first chapter is just that chapter. No chapter at 0:00 is added any more (it got in the way of
+    skipping to the first real chapter and was deleted by hand every time); at_zero_too=True brings it back.
     """
     for mark in marks:
         if abs(mark.start - start) < 0.0005:
@@ -154,9 +172,12 @@ def same_marks(a: list[ChapterMark], b: list[ChapterMark]) -> bool:
 
 
 def with_ends(marks: list[ChapterMark], end: float) -> list[Chapter]:
-    """Chapters with end times: each runs to the next one, the last to `end`."""
+    """Chapters with end times: each runs to the next one, the last to `end`. When the first starts after 0:00,
+    the hidden "Start" lead-in comes first (MP4 chapter lists begin at 0:00)."""
     ordered = sorted(marks, key=lambda m: m.start)
     out = []
+    if ordered and ordered[0].start > 0.0005:
+        out.append(Chapter(0.0, ordered[0].start, LEAD_IN))
     for i, mark in enumerate(ordered):
         stop = ordered[i + 1].start if i + 1 < len(ordered) else end
         out.append(Chapter(mark.start, max(stop, mark.start), mark.name.strip() or f"Chapter {i + 1}"))

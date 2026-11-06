@@ -130,3 +130,29 @@ def test_editor_document_loads_compares_and_saves_ends(tmp_path, media):
     _tags, block = doc.compose(db)
     assert block is None or "chapter_ends" not in block   # all cleared: nothing left behind
     db.close()
+
+
+def test_lead_in_is_not_a_marker(tmp_path, media):
+    """0.11.0: a first chapter after 0:00 gets the hidden "Start" lead-in in the file; it never becomes a marker."""
+    R, I = _load("runemark_read"), _load("runemark_import")
+    path = tmp_path / "late.mp4"
+    shutil.copy2(media["mp4"], path)
+    marks, first = CH.add_mark([], 1.0)
+    first.name, first.auto = "Missionary", False
+    state = read_state(path)
+    assert save_mp4_with_chapters(path, probe(path), marks, keywords=state.keywords, genre=state.genre,
+                                  cover=state.cover, meta=state.meta).ok
+    assert [c["title"] for c in R.chapters(str(path))] == [CH.LEAD_IN, "Missionary"]
+
+    class S:
+        created = []
+        def tag_id(self, name):
+            return name
+        def q(self, query, variables=None):
+            if "sceneMarkerCreate" in query:
+                self.created.append(variables["i"])
+            return {}
+
+    s = S()
+    I.import_chapters(s, {"id": "1", "scene_markers": []}, str(path), {})
+    assert [(round(m["seconds"]), m["primary_tag_id"]) for m in s.created] == [(1, "Missionary")]

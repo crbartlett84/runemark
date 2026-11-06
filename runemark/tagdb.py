@@ -201,6 +201,13 @@ class Attribute:
     name: str
     stash_field: str | None
     write_tags: bool
+    # 0.11.0: the values it allows, each with the tag it becomes ([("Red", "Red Hair")...]); empty = any value
+    choices: list = field(default_factory=list)
+
+    def choice(self, value: str) -> tuple[str, str] | None:
+        """The allowed (value, tag) matching this value, or None."""
+        key = " ".join(str(value or "").split()).casefold()
+        return next((tuple(c) for c in self.choices if c[0].casefold() == key), None)
 
 
 @dataclass
@@ -354,6 +361,9 @@ class TagDB:
         people_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(people)").fetchall()}
         if "links" not in people_cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN links TEXT")          # 0.7.0: JSON list of addresses
+        attr_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(attributes)").fetchall()}
+        if "choices" not in attr_cols:
+            self.conn.execute("ALTER TABLE attributes ADD COLUMN choices TEXT")    # 0.11.0: JSON [[value, tag]]
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                           (str(SCHEMA_VERSION),))
         self.conn.commit()
@@ -1176,8 +1186,19 @@ class TagDB:
         return self.attribute(cur.lastrowid)
 
     def update_attribute(self, attribute_id: int, *, name: str | None = None, stash_field: str | None = ...,
-                         write_tags: bool | None = None) -> Attribute:
+                         write_tags: bool | None = None, choices: list | None = ...) -> Attribute:
         current = self.attribute(attribute_id)
+        if choices is not ...:
+            clean, seen = [], set()
+            for item in choices or []:
+                value, tag = (item if isinstance(item, (tuple, list)) else (item, item))[:2]
+                value = clean_name(str(value), "Value")
+                tag = clean_name(str(tag or value), "Tag")
+                if value.casefold() not in seen:
+                    seen.add(value.casefold())
+                    clean.append([value, tag])
+            self.conn.execute("UPDATE attributes SET choices = ? WHERE id = ?",
+                              (json.dumps(clean) if clean else None, attribute_id))
         if name is not None:
             name = clean_name(name, "Attribute")
             clash = self.find_attribute(name)
@@ -1197,7 +1218,12 @@ class TagDB:
 
     @staticmethod
     def _attribute_from_row(row) -> Attribute:
-        return Attribute(row["id"], row["uid"], row["name"], row["stash_field"], bool(row["write_tags"]))
+        try:
+            choices = json.loads(row["choices"]) if "choices" in row.keys() and row["choices"] else []
+        except ValueError:
+            choices = []
+        return Attribute(row["id"], row["uid"], row["name"], row["stash_field"], bool(row["write_tags"]),
+                         [tuple(c) for c in choices if isinstance(c, list) and len(c) == 2])
 
     def attribute(self, attribute_id: int) -> Attribute:
         row = self.conn.execute("SELECT * FROM attributes WHERE id = ?", (attribute_id,)).fetchone()
@@ -1225,6 +1251,9 @@ class TagDB:
         attr = self.attribute(attribute_id)
         value = clean_name(value, "Value")
         tag = clean_name(tag, "Tag") if tag else value
+        chosen = attr.choice(value)
+        if chosen:
+            value, tag = chosen                              # 0.11.0: an allowed value always gives its own tag
         if from_year and to_year and from_year > to_year:
             raise InvalidName("The 'from' year is after the 'to' year.")
         cur = self.conn.execute("INSERT INTO person_values(uid, person_id, attribute_id, value, tag, from_year, "
@@ -1238,6 +1267,9 @@ class TagDB:
         current = self.person_value(value_id)
         new_value = clean_name(value, "Value") if value is not None else current.value
         new_tag = clean_name(tag, "Tag") if tag else (current.tag if tag is None else new_value)
+        chosen = self.attribute(current.attribute_id).choice(new_value)
+        if chosen and value is not None:
+            new_value, new_tag = chosen
         fy = current.from_year if from_year is ... else from_year
         ty = current.to_year if to_year is ... else to_year
         if fy and ty and fy > ty:
