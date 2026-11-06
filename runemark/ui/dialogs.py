@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
@@ -242,6 +242,29 @@ class SettingsDialog(QDialog):
         self.film.setSpecialValueText("Off")
         form.addRow("Filmstrip frames", self.film)
 
+        # 0.9.2: the four nudge sizes (the buttons under the player and Alt / Ctrl+Shift / Shift / Ctrl + arrows)
+        from .player import NUDGE_MODIFIERS, clean_nudge_steps
+        steps = clean_nudge_steps(getattr(settings, "nudge_steps", None))
+        nudge_row = QHBoxLayout()
+        self.nudge_spins: list[QDoubleSpinBox] = []
+        for value, modifier in zip(steps, NUDGE_MODIFIERS):
+            spin = QDoubleSpinBox()
+            spin.setRange(0.05, 600.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.5)
+            spin.setSuffix(" s")
+            spin.setValue(value)
+            spin.setToolTip(f"{modifier}+← →")
+            nudge_row.addWidget(spin)
+            self.nudge_spins.append(spin)
+        nudge_row.addStretch(1)
+        form.addRow("Nudge steps", nudge_row)
+        nudge_note = QLabel("The buttons under the player, and Alt, Ctrl+Shift, Shift and Ctrl with ← →, in that "
+                            "order. ← → alone (and , .) still step one frame.")
+        nudge_note.setObjectName("Faint")
+        nudge_note.setWordWrap(True)
+        form.addRow("", nudge_note)
+
         self.preserve = QCheckBox("Keep each file's “Date modified” when saving")
         self.preserve.setChecked(settings.preserve_modified_date)
         note = QLabel("Off by default: Plex, Jellyfin and Explorer's thumbnail cache notice changes by that date.")
@@ -440,6 +463,8 @@ class SettingsDialog(QDialog):
         s.thumbnail_max_edge = self.max_edge.currentData()
         s.jpeg_quality = self.quality.value()
         s.filmstrip_count = self.film.value()
+        from .player import clean_nudge_steps
+        s.nudge_steps = list(clean_nudge_steps([spin.value() for spin in self.nudge_spins]))
         s.preserve_modified_date = self.preserve.isChecked()
         s.read_nfo = self.read_nfo.isChecked()
         s.scan_on_start = self.scan_on_start.isChecked()

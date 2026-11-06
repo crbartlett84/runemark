@@ -41,6 +41,49 @@ def bytes_to_pixmap(data: bytes | None) -> QPixmap | None:
 
 SPEEDS = (1.0, 1.5, 2.0, 4.0)
 
+# Nudges (0.9.2): the four step sizes in seconds (smallest first; editable in Settings) and the key for each.
+# Plain ← → stay on frame stepping (as before 0.9.2), so the 1-second step is Ctrl+Shift+← →.
+DEFAULT_NUDGE_STEPS = (0.5, 1.0, 5.0, 10.0)
+NUDGE_MODIFIERS = ("Alt", "Ctrl+Shift", "Shift", "Ctrl")
+FALLBACK_FPS = 30.0
+
+
+def clean_nudge_steps(steps) -> tuple[float, float, float, float]:
+    """Four positive step sizes (seconds), or the defaults where a value is missing or unusable."""
+    out = []
+    for i, default in enumerate(DEFAULT_NUDGE_STEPS):
+        try:
+            value = float(list(steps or [])[i])
+        except (IndexError, TypeError, ValueError):
+            value = default
+        out.append(value if math.isfinite(value) and 0 < value <= 3600 else default)
+    return tuple(out)
+
+
+def step_label(seconds: float) -> str:
+    """How a step size reads on its button: "½", "¼", "1", "2.5"."""
+    fractions = {0.5: "½", 0.25: "¼", 0.75: "¾"}
+    for value, text in fractions.items():
+        if abs(seconds - value) < 1e-9:
+            return text
+    return f"{seconds:g}"
+
+
+def nudge_level(modifiers) -> int | None:
+    """Which step size ← → use with these modifiers (index into the steps), or None for plain frame stepping."""
+    alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
+    ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+    shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+    if alt and not (ctrl or shift):
+        return 0
+    if ctrl and shift and not alt:
+        return 1
+    if shift and not (ctrl or alt):
+        return 2
+    if ctrl and not (shift or alt):
+        return 3
+    return None
+
 
 class Shuttle:
     """J/K/L (0.9.0). L plays forward, and each L again goes faster (1×, 1.5×, 2×, 4×); K pauses; J goes backward:
@@ -351,8 +394,37 @@ class PlayerPanel(QWidget):
         self.slider.hovered.connect(self._hovered)
         self.slider.hoverEnded.connect(self.close_preview)
 
+        # nudge row (0.9.2): −10 −5 −1 −½ | +½ +1 +5 +10, relabelled from Settings
+        self.nudge_steps = DEFAULT_NUDGE_STEPS
+        self.nudge_buttons: list[QToolButton] = []
+        nudges = QHBoxLayout()
+        nudges.setSpacing(2)
+        nudges.addStretch(1)
+        for sign in (-1, 1):
+            levels = (3, 2, 1, 0) if sign < 0 else (0, 1, 2, 3)
+            if sign > 0:
+                bar = QFrame()
+                bar.setFrameShape(QFrame.Shape.VLine)
+                bar.setObjectName("NudgeDivider")
+                nudges.addSpacing(4)
+                nudges.addWidget(bar)
+                nudges.addSpacing(4)
+            for level in levels:
+                button = QToolButton()
+                button.setObjectName("NudgeButton")
+                button.setProperty("nudge_sign", sign)
+                button.setProperty("nudge_level", level)
+                button.setAutoRepeat(True)                 # hold to keep going
+                button.setAutoRepeatDelay(400)
+                button.setAutoRepeatInterval(150)
+                button.clicked.connect(lambda _=False, s=sign, lv=level: self.nudge_step(s, lv))
+                nudges.addWidget(button)
+                self.nudge_buttons.append(button)
+        nudges.addStretch(1)
+        self._label_nudges()
+
         for widget in (self.play_button, self.prev_button, self.next_button, self.mute_button, self.volume,
-                       self.capture_button, self.slider, self.speed_button):
+                       self.capture_button, self.slider, self.speed_button, *self.nudge_buttons):
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # Space and arrows stay with the video
         controls = QHBoxLayout()
         controls.setSpacing(4)
@@ -376,7 +448,11 @@ class PlayerPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         layout.addWidget(self.frame, 1)
-        layout.addLayout(controls)
+        transport = QVBoxLayout()
+        transport.setSpacing(2)
+        transport.addLayout(controls)
+        transport.addLayout(nudges)
+        layout.addLayout(transport)
 
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
@@ -445,8 +521,28 @@ class PlayerPanel(QWidget):
 
     def _set_enabled(self, enabled: bool):
         for widget in (self.play_button, self.prev_button, self.next_button, self.slider, self.capture_button,
-                       self.speed_button):
+                       self.speed_button, *self.nudge_buttons):
             widget.setEnabled(enabled)
+
+    # ---------------------------------------------------------------- nudge steps (0.9.2)
+    def set_nudge_steps(self, steps):
+        """The four step sizes (seconds, smallest first) from Settings; the buttons relabel to match."""
+        self.nudge_steps = clean_nudge_steps(steps)
+        self._label_nudges()
+
+    def _label_nudges(self):
+        for button in self.nudge_buttons:
+            sign, level = int(button.property("nudge_sign")), int(button.property("nudge_level"))
+            seconds = self.nudge_steps[level]
+            button.setText(("−" if sign < 0 else "+") + step_label(seconds))
+            unit = "second" if seconds == 1 else "seconds"
+            arrow = "←" if sign < 0 else "→"
+            button.setToolTip(f"{'Back' if sign < 0 else 'Forward'} {step_label(seconds)} {unit} "
+                              f"({NUDGE_MODIFIERS[level]}+{arrow})")
+
+    def nudge_step(self, sign: int, level: int):
+        """A nudge button or key: `level` picks the step size (0 smallest … 3 largest)."""
+        self.nudge((1 if sign > 0 else -1) * self.nudge_steps[level])
 
     # ---------------------------------------------------------------- timeline marks (0.9.0)
     def set_chapter_starts(self, starts: list[float]):
@@ -579,16 +675,61 @@ class PlayerPanel(QWidget):
                 target = self._clock.times[i - 1]
         self._frame_us = int(round(target * 1_000_000))
 
-    def nudge(self, seconds: float):
-        """Jump by `seconds` from the frame on screen (Shift+arrows)."""
+    def duration_seconds(self) -> float:
+        """The video's length: the playback engine's once it knows it, else the file's own."""
+        end = self.player.duration() / 1000
+        if end <= 0 and self.info is not None and self.info.duration:
+            end = float(self.info.duration)
+        return max(0.0, end)
+
+    def nudge_target(self, seconds: float) -> float:
+        """Where a nudge of `seconds` lands: exactly that far from the frame on screen (no snapping to cuts),
+        kept between 0 and the last frame."""
         base = self.current_pts()
         if base is None or self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             base = self.player.position() / 1000
         target = max(0.0, base + seconds)
-        end = self.player.duration() / 1000
+        end = self.duration_seconds()
         if end > 0:
             target = min(target, max(0.0, end - 0.002))   # stop on the last frame, not past it
+        return target
+
+    def nudge(self, seconds: float):
+        """Jump by `seconds` from the frame on screen (the nudge buttons and modified arrows). Works playing or
+        paused, and leaves the J/K/L speed as it is. Nothing happens while no video is loaded (one still saving
+        is shown unloaded)."""
+        if self.path is None or not self.loaded:
+            return
+        target = self.nudge_target(seconds)
         self.seek_seconds(target)
+        self._show_position(target)
+
+    def _show_position(self, seconds: float):
+        """The time label and the timeline show `seconds` straight away, before the new frame arrives."""
+        self.time_label.setText(fmt_duration(seconds, millis=True))
+        if not self._dragging:
+            self.slider.blockSignals(True)
+            self.slider.setValue(int(round(seconds * 1000)))
+            self.slider.blockSignals(False)
+
+    def frame_seconds(self) -> float:
+        """One frame's length from the video's frame rate, or 1/30 s when the rate isn't known."""
+        fps = None
+        stream = self.info.main_video if self.info is not None else None
+        if stream is not None:
+            try:
+                fps = float(stream.fps) if stream.fps else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                fps = None
+        if not fps or not math.isfinite(fps) or fps <= 0:
+            fps = FALLBACK_FPS
+        return 1.0 / fps
+
+    def _step_by_rate(self, steps: int):
+        """Frame stepping when the frame times can't be read: move by the frame rate instead."""
+        if not steps or self.path is None:
+            return
+        self.nudge(steps * self.frame_seconds())
 
     def step(self, direction: int):
         """Move exactly one frame forward or back, using the file's real frame timestamps."""
@@ -640,14 +781,17 @@ class PlayerPanel(QWidget):
             lo, hi, times = result
             self._clock.add(lo, hi, times, duration)
             if not times:
-                self._pending_steps = 0
+                steps, self._pending_steps = self._pending_steps, 0
+                self._step_by_rate(steps)          # no frame times here: one frame by the frame rate (0.9.2)
                 return
             self._run_steps()
 
         def failed(exc, _tb):
             self._step_job = None
-            self._pending_steps = 0
+            steps, self._pending_steps = self._pending_steps, 0
             log.info("frame step lookup failed: %s", exc)
+            if self.path == path:
+                self._step_by_rate(steps)
 
         self._step_job = workers.start(fetch, on_done=done, on_error=failed)
 

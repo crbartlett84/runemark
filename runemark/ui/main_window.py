@@ -31,7 +31,7 @@ from . import theme, workers
 from .dialogs import ConvertDialog, ProgressDialog, SettingsDialog, TextReportDialog
 from .chapters_panel import ChaptersPanel
 from .panels import DetailsPanel, ThumbnailPanel
-from .player import Filmstrip, PlayerPanel, bytes_to_pixmap, pil_to_qimage
+from .player import DEFAULT_NUDGE_STEPS, Filmstrip, PlayerPanel, bytes_to_pixmap, nudge_level, pil_to_qimage
 from .save_queue import SaveJob, SaveQueue
 from .toast import ToastHost
 from .tag_editor import TagEditor
@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self.toasts = ToastHost(self.centralWidget())
 
         self.player.set_volume(settings.volume, settings.muted)
+        self.player.set_nudge_steps(getattr(settings, "nudge_steps", None))
         self.tag_editor.set_db(db)
         if settings.window_geometry:
             self.restoreGeometry(QByteArray.fromBase64(settings.window_geometry.encode()))
@@ -880,6 +881,14 @@ class MainWindow(QMainWindow):
         mods = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
         shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         ctrl = Qt.KeyboardModifier.ControlModifier
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            # nudges (0.9.2): Alt ½ s, Ctrl+Shift 1 s, Shift 5 s, Ctrl 10 s (the sizes are in Settings);
+            # plain ← → stay on frame stepping
+            level = nudge_level(mods)
+            if level is not None:
+                steps = getattr(self.player, "nudge_steps", DEFAULT_NUDGE_STEPS)
+                self.player.nudge((-1 if key == Qt.Key.Key_Left else 1) * steps[level])
+                return True
         if mods & ctrl and not (mods & Qt.KeyboardModifier.AltModifier):
             if key == Qt.Key.Key_Z and not shift:
                 self.undo_chapters()
@@ -897,9 +906,6 @@ class MainWindow(QMainWindow):
                 return True
         if key == Qt.Key.Key_Space:
             self.player.toggle_play()
-            return True
-        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right) and shift:
-            self.player.nudge(-5 if key == Qt.Key.Key_Left else 5)
             return True
         if key in (Qt.Key.Key_Comma, Qt.Key.Key_Left):
             self.player.step(-1)
@@ -2497,6 +2503,7 @@ class MainWindow(QMainWindow):
             writer = "Windows" if explorer.windows_api_available() and self.settings.explorer_writer == "auto" \
                 else "built-in writer"
             self.status_writer.setText(f"Explorer Tags: {writer}")
+            self.player.set_nudge_steps(self.settings.nudge_steps)
             doc = self.doc
             if doc is not None and getattr(doc, "cuts", None) is not None:
                 self.player.set_cuts(doc.cuts if self.settings.show_cut_marks else [])

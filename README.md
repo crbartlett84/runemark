@@ -212,8 +212,11 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Space | Play / pause |
 | J / K / L | Back / pause / forward; press J or L again to go faster (1×, 1.5×, 2×, 4×). Going back steps backward through the video. K also puts the speed back to 1× |
 | [ / ] | Previous / next suggested cut (Chapters → Find cuts) |
-| ← → or , . | Previous / next frame (exact) |
+| ← → or , . | Previous / next frame (exact; by the frame rate, or 1/30 s, if the frame times can't be read) |
+| Alt+← → | Back / forward ½ second |
+| Ctrl+Shift+← → | Back / forward 1 second |
 | Shift+← → | Back / forward 5 seconds |
+| Ctrl+← → | Back / forward 10 seconds |
 | Ctrl+T | Use this frame as the thumbnail |
 | M | Add a chapter at this frame (within a second of a suggested cut, it starts on the cut) |
 | 1–9 | Add a chapter at this frame with that key's name (or the keys a plugin set for this video) |
@@ -231,6 +234,8 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | Ctrl+D | Tag database |
 | Ctrl+Shift+P | People |
 | Ctrl+PgUp / PgDn | Previous / next open file |
+
+The row of buttons under the player (−10 −5 −1 −½ | +½ +1 +5 +10) does the same jumps with the mouse, playing or paused, and keeps the J/K/L speed. Jumps are exact (they don't snap to suggested cuts) and stop at the start and the last frame. Change the four sizes in **Settings → Nudge steps**; the buttons and keys follow.
 
 You can open several files at once (or drop them on the window). Move between them with the arrows next to the file name.
 

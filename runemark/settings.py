@@ -50,6 +50,7 @@ class Settings:
     show_cut_marks: bool = True           # 0.9.0: faint dots under the timeline where the cuts are
     library_maximized: bool = True        # 0.9.0: the Library opens maximised (until you make it smaller)
     smart_filters: list = field(default_factory=list)   # 0.9.0: [{"name", "match": "all"|"any", "rules", "pinned"}]
+    nudge_steps: list = field(default_factory=lambda: [0.5, 1.0, 5.0, 10.0])   # 0.9.2: seconds, smallest first
 
     @classmethod
     def path(cls) -> Path:

@@ -243,6 +243,13 @@ QToolButton#ChipClose:hover {{ background: {_mix(p.text, p.chip, 0.15)}; }}
 #FrameThumb {{ background: {p.video_bg}; color: #c3c9d4; border: 2px solid transparent; border-radius: 6px; padding: 0; }}
 #FrameThumb:hover {{ border-color: {p.accent}; }}
 #FrameTime {{ color: {p.faint}; font-size: 11px; }}
+QToolButton#NudgeButton {{ font-family: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace; font-size: 11px;
+    color: {p.muted}; background: transparent; border: 1px solid transparent; border-radius: 5px;
+    padding: 1px 6px; min-width: 26px; }}
+QToolButton#NudgeButton:hover {{ color: {p.text}; border-color: {p.border}; }}
+QToolButton#NudgeButton:pressed {{ background: {p.accent_soft}; }}
+QToolButton#NudgeButton:disabled {{ color: {p.faint}; }}
+#NudgeDivider {{ color: {p.border}; }}
 #ImageBox {{ background: {p.surface2}; border: 1px dashed {p.border_strong}; border-radius: 8px; color: {p.faint}; }}
 #ImageBox[filled="true"] {{ background: {p.video_bg}; border: 1px solid {p.border}; }}
 #DropOverlay {{ background: {_mix(p.accent, p.bg, 0.12)}; border: 2px dashed {p.accent}; border-radius: 12px; }}

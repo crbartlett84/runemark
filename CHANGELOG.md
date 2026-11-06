@@ -4,6 +4,21 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-06
+
+### Added
+- **Nudge buttons** under the player: −10 −5 −1 −½ | +½ +1 +5 +10 seconds. They work playing or paused, keep the
+  J/K/L speed, never take the keyboard from the window, and their tooltips show the matching key. Jumps are exact
+  (no snapping to suggested cuts), stop at the start and the last frame, and the time shows the new spot at once.
+- **Nudge keys:** Alt+← → ½ second, Ctrl+Shift+← → 1 second, Shift+← → 5 seconds (as before), Ctrl+← → 10 seconds.
+  Like the other player keys, they do nothing while you're typing in a text box. ← → alone and , . still step one
+  frame, so the 1-second step is on Ctrl+Shift+← → rather than the plain arrows.
+- **Settings → Nudge steps:** the four sizes (½, 1, 5 and 10 seconds to start with); the buttons relabel to match.
+
+### Changed
+- Frame stepping (, . and ← →) uses the file's own frame times as before; when they can't be read it now steps by
+  the video's frame rate (1/30 s if that isn't known either) instead of not moving.
+
 ## [0.9.1] - 2026-11-05
 
 ### Fixed
