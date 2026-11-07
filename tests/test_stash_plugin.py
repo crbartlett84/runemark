@@ -81,6 +81,7 @@ class FakeStash:
 
     def __init__(self, scene_path, scene=None):
         self.tags, self.performers, self.markers, self.updates = {}, {}, [], []
+        self.enrich_studios = False          # 0.4.0: no StashDB in these tests
         self.studios = {"50": {"id": "50", "name": "Old Studio", "aliases": ["Sunny"]}}
         self.scene = {"id": "1", "title": "", "details": "", "date": None, "rating100": None,
                       "files": [{"path": str(scene_path)}], "tags": [], "performers": [], "scene_markers": [],
@@ -135,6 +136,8 @@ class FakeStash:
                     self.scene["tags"] = [{"id": t, "name": self.tags.get(t, t)} for t in val]
                 elif k == "studio_id":
                     self.scene["studio"] = {"id": val}
+                elif k == "custom_fields":
+                    self.scene.setdefault("custom_fields", {}).update(val["partial"])
                 elif k == "performer_ids":
                     self.scene["performers"] = [{"id": p, "name": self.performers[p]["name"]} for p in val]
                 elif k != "id":
@@ -198,6 +201,7 @@ def test_plugin_manifest_is_valid_yaml():
     assert manifest["exec"][1] == "{pluginDir}/runemark_import.py" and manifest["interface"] == "raw"
     assert manifest["hooks"][0]["triggeredBy"] == ["Scene.Create.Post"]
     assert set(manifest["settings"]) == set(I.DEFAULTS)
+    assert [t["defaultArgs"]["mode"] for t in manifest["tasks"]] == ["all", "changed", "studios"]
 
 
 def test_chapters_from_the_old_version_are_not_added_again(tagged):
@@ -268,3 +272,134 @@ def test_links_become_urls_and_stash_ids_and_unlinked_people_stay_tags(tmp_path,
     assert sorted(t["name"] for t in s["tags"]) == ["Beach", "Co Star"]   # not a performer here: still a tag
     assert len(stash.performers) == 1
     assert I.import_scene(stash, stash.scene, settings) == ""        # again: nothing new
+
+
+# ------------------------------------------------------------------ 0.4.0: follow Runemark, studios from StashDB
+def _fake(tagged, scene=None):
+    stash = FakeStash(tagged, scene)
+    stash._tags = {}
+    stash.tag_id = I.Stash.tag_id.__get__(stash)
+    return stash
+
+
+def test_a_changed_file_brings_runemarks_values_back(tagged):
+    stash = _fake(tagged)
+    stash.scene["files"] = [{"path": str(tagged), "mod_time": "2026-11-07T10:00:00Z", "size": 100}]
+    I.import_scene(stash, stash.scene, dict(I.DEFAULTS))
+    assert stash.scene["custom_fields"][I.STAMP] == "2026-11-07T10:00:00Z|100"      # the version it imported
+    stash.scene["title"] = "Edited in Stash"
+    extra = I.Stash.tag_id.__get__(stash)("Stash only")
+    stash.scene["tags"].append({"id": extra, "name": "Stash only"})
+    I.import_scene(stash, stash.scene, dict(I.DEFAULTS))                                # same file: blanks only
+    assert stash.scene["title"] == "Edited in Stash"
+    stash.scene["files"][0]["mod_time"] = "2026-11-07T11:00:00Z"                       # edited in Runemark
+    summary = I.import_scene(stash, stash.scene, dict(I.DEFAULTS), follow=True)
+    assert stash.scene["title"] == "Beach Day" and "title" in summary
+    assert "Stash only" not in [t["name"] for t in stash.scene["tags"]]                 # Runemark's tags are the list
+    assert stash.scene["custom_fields"][I.STAMP] == "2026-11-07T11:00:00Z|100"
+
+
+class ChangedStash(FakeStash):
+    """FakeStash plus findScenes / findScene for run_changed."""
+
+    def q(self, query, variables=None):
+        if "findScenes" in query:
+            return {"findScenes": {"count": 1, "scenes": [self.scene]}}
+        if "findScene(" in query:
+            return {"findScene": self.scene}
+        return super().q(query, variables)
+
+
+def test_run_changed_reads_only_files_that_moved(tagged, monkeypatch):
+    stash = ChangedStash(tagged)
+    stash._tags = {}
+    stash.tag_id = I.Stash.tag_id.__get__(stash)
+    stash.scene["files"] = [{"path": str(tagged), "mod_time": "t1", "size": 5}]
+    reads = []
+    real = I.R.read
+    monkeypatch.setattr(I.R, "read", lambda p: (reads.append(p), real(p))[1])
+    assert "1 updated" in I.run_changed(stash, dict(I.DEFAULTS))                       # first time: imported
+    assert stash.scene["title"] == "Beach Day"
+    reads.clear()
+    stash.scene["title"] = "Edited in Stash"
+    assert "0 changed file(s) read" in I.run_changed(stash, dict(I.DEFAULTS))           # unchanged: not even read
+    assert reads == [] and stash.scene["title"] == "Edited in Stash"
+    stash.scene["files"][0]["mod_time"] = "t2"
+    I.run_changed(stash, dict(I.DEFAULTS))
+    assert stash.scene["title"] == "Beach Day"                                          # followed Runemark
+    stash.scene["files"][0]["mod_time"] = "t3"
+    stash.scene["title"] = "Edited again"
+    I.run_changed(stash, {**I.DEFAULTS, "followRunemark": False})
+    assert stash.scene["title"] == "Edited again"                                       # off: blanks only
+
+
+class BoxStash:
+    """StashDB lookups through Stash: one studio, a StashDB match with a parent network."""
+
+    def __init__(self, box=True, name="Sunny Studio"):
+        self.box = box
+        self.studios = {"1": {"id": "1", "name": name, "aliases": [], "urls": [], "details": "",
+                              "image_path": "/studio/1/image?default=true", "stash_ids": [],
+                              "parent_studio": None, "custom_fields": {}}}
+        self.updates, self.scrapes = [], 0
+        self._studios, self._box, self.enrich_studios = {}, None, False
+
+    def q(self, query, variables=None):
+        v = variables or {}
+        if "stashBoxes" in query:
+            boxes = [{"endpoint": "https://stashdb.org/graphql"}] if self.box else []
+            return {"configuration": {"general": {"stashBoxes": boxes}}}
+        if "findStudio(" in query:
+            return {"findStudio": self.studios.get(v["id"])}
+        if "scrapeSingleStudio" in query:
+            self.scrapes += 1
+            return {"scrapeSingleStudio": [
+                {"name": "sunny studio", "urls": ["https://sunny.example"], "image": "https://img/sunny.png",
+                 "details": "A studio.", "aliases": [], "remote_site_id": "abc",
+                 "parent": {"name": "Big Network", "remote_site_id": "net"}},
+                {"name": "Sunny Studios Other", "remote_site_id": "zzz"}] if v["i"]["query"] != "Big Network"
+                else [{"name": "Big Network", "image": "https://img/net.png", "remote_site_id": "net", "urls": []}]}
+        if "findStudios" in query:
+            hits = [{"id": i} for i, st in self.studios.items() if st["name"].casefold() == v["n"].casefold()]
+            return {"findStudios": {"studios": hits if "name:" in query else []}}
+        if "studioCreate" in query:
+            new = str(len(self.studios) + 1)
+            self.studios[new] = {"id": new, "name": v["n"], "aliases": [], "urls": [], "details": "",
+                                 "image_path": "?default=true", "stash_ids": [], "parent_studio": None,
+                                 "custom_fields": {}}
+            return {"studioCreate": {"id": new}}
+        if "studioUpdate" in query:
+            u = dict(v["i"])
+            st = self.studios[u.pop("id")]
+            st["custom_fields"].update(u.pop("custom_fields")["partial"])
+            if "parent_id" in u:
+                st["parent_studio"] = {"id": u.pop("parent_id")}
+            st.update(u)
+            self.updates.append(v["i"])
+            return {"studioUpdate": {"id": st["id"]}}
+        raise AssertionError(query[:80])
+
+    studio_id = I.Stash.studio_id
+    stashdb = I.Stash.stashdb
+
+
+def test_a_studio_is_filled_in_from_stashdb_once():
+    stash = BoxStash()
+    assert I.enrich_studio(stash, "1") == "StashDB id, logo, web address, details, network Big Network"
+    st = stash.studios["1"]
+    assert st["image"] == "https://img/sunny.png" and st["urls"] == ["https://sunny.example"]
+    assert st["stash_ids"] == [{"endpoint": "https://stashdb.org/graphql", "stash_id": "abc"}]
+    parent = stash.studios[st["parent_studio"]["id"]]
+    assert parent["name"] == "Big Network" and parent["image"] == "https://img/net.png"
+    scrapes = stash.scrapes
+    assert I.enrich_studio(stash, "1") == "" and stash.scrapes == scrapes                 # asked once
+
+
+def test_no_exact_match_or_no_stashdb_changes_nothing_but_the_check():
+    stash = BoxStash(name="Sunny")                                                       # only near matches
+    assert I.enrich_studio(stash, "1") == ""
+    st = stash.studios["1"]
+    assert st["stash_ids"] == [] and "image" not in st and st["custom_fields"][I.STUDIO_CHECKED]
+    none = BoxStash(box=False)
+    assert I.enrich_studio(none, "1") == "" and none.updates == []
+    assert "no StashDB" in I.run_studios(none)

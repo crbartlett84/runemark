@@ -1,6 +1,13 @@
 """Runemark → Stash: import the tags, details, people and chapters Runemark wrote into your videos.
 
-Runs as a Stash plugin (task "Import from Runemark", and a hook on new scenes). Standard library only.
+Runs as a Stash plugin (tasks "Import from Runemark", "Import changed videos", "Fill in studios from StashDB", and
+a hook on new scenes). Standard library only.
+
+0.4.0: Stash follows Runemark. Each scene remembers which version of its file it last imported (custom field
+runemark_file = modified time|size); "Import changed videos" re-imports scenes whose file changed since, and Runemark's
+title, details, date, rating, studio, tags, people and cover replace Stash's (setting followRunemark, default on).
+New studios are filled in from StashDB (logo, web address, parent network, StashDB id) when Stash has StashDB as a
+metadata provider (setting studiosFromStashDB, default on).
 What goes where: README.md beside this file. Format of the data: docs/data-format.md in the Runemark repository.
 """
 from __future__ import annotations
@@ -16,7 +23,9 @@ import runemark_read as R  # noqa: E402
 
 PLUGIN_ID = "runemark"
 DEFAULTS = {"overwrite": False, "yearOnlyDates": False, "importCover": True,
-            "createPerformers": True}
+            "createPerformers": True, "followRunemark": True, "studiosFromStashDB": True}
+STAMP = "runemark_file"          # scene custom field: the file version last imported
+STUDIO_CHECKED = "stashdb_checked"   # studio custom field: looked up on StashDB (date), so it's asked once
 # Stash performer fields Runemark attributes can map to, and how to convert a value
 STRING_FIELDS = {"disambiguation", "birthdate", "ethnicity", "country", "eye_color", "hair_color", "measurements",
                  "tattoos", "piercings", "career_length", "details", "death_date"}
@@ -46,6 +55,8 @@ class Stash:
             self.headers["ApiKey"] = conn["ApiKey"]
         self._tags: dict[str, str] = {}
         self._studios: dict[str, str] = {}
+        self._box: str | None = None
+        self.enrich_studios = True
 
     def q(self, query: str, variables: dict | None = None) -> dict:
         body = json.dumps({"query": query, "variables": variables or {}}).encode()
@@ -75,7 +86,21 @@ class Stash:
         studio_id = found[0]["id"] if found else self.q(
             "mutation($n: String!) { studioCreate(input: {name: $n}) { id } }", {"n": name})["studioCreate"]["id"]
         self._studios[key] = studio_id
+        if self.enrich_studios:
+            try:
+                enrich_studio(self, studio_id)
+            except Exception as exc:  # noqa: BLE001
+                log("w", f"Runemark: StashDB lookup for studio {name}: {exc}")
         return studio_id
+
+    def stashdb(self) -> str | None:
+        """The StashDB endpoint Stash is set up with (Settings > Metadata Providers), or None."""
+        if self._box is None:
+            boxes = self.q("{ configuration { general { stashBoxes { endpoint } } } }")
+            boxes = boxes["configuration"]["general"]["stashBoxes"] or []
+            self._box = next((b["endpoint"] for b in boxes if "stashdb.org" in b["endpoint"]),
+                             boxes[0]["endpoint"] if boxes else "")
+        return self._box or None
 
     def tag_id(self, name: str) -> str:
         key = name.casefold()
@@ -92,9 +117,101 @@ class Stash:
         return tag_id
 
 
-SCENE_FIELDS = ("id title details date rating100 urls stash_ids { endpoint stash_id } files { path } tags { id name } "
-                "performers { id name } studio { id } "
+SCENE_FIELDS = ("id title details date rating100 urls stash_ids { endpoint stash_id } files { path mod_time size } "
+                "tags { id name } performers { id name } studio { id } custom_fields "
                 "scene_markers { id seconds end_seconds title primary_tag { id name } } paths { screenshot }")
+
+
+# ------------------------------------------------------------------ studios from StashDB
+STUDIO_FIELDS = "id name urls aliases details image_path stash_ids { endpoint stash_id } parent_studio { id } custom_fields"
+
+
+def _same(a: str, b: str) -> bool:
+    return " ".join((a or "").split()).casefold() == " ".join((b or "").split()).casefold()
+
+
+def enrich_studio(stash: Stash, studio_id: str, depth: int = 0) -> str:
+    """Fill in a studio from StashDB once: logo, web addresses, details, StashDB id and parent network. Only blanks
+    are filled, only on an exact name (or alias) match. Returns what changed ("" = nothing)."""
+    box = stash.stashdb()
+    if not box:
+        return ""
+    studio = stash.q("query($id: ID!) { findStudio(id: $id) { %s } }" % STUDIO_FIELDS, {"id": studio_id})["findStudio"]
+    if not studio or (studio.get("custom_fields") or {}).get(STUDIO_CHECKED) \
+            or any(x["endpoint"] == box for x in studio.get("stash_ids") or []):
+        return ""
+    found = stash.q("query($s: ScraperSourceInput!, $i: ScrapeSingleStudioInput!) { scrapeSingleStudio(source: $s, "
+                    "input: $i) { name urls image details aliases remote_site_id parent { name remote_site_id } } }",
+                    {"s": {"stash_box_endpoint": box}, "i": {"query": studio["name"]}})["scrapeSingleStudio"] or []
+    names = [studio["name"], *(studio.get("aliases") or [])]
+    match = next((f for f in found if any(_same(f.get("name"), n) for n in names)), None)
+    update: dict = {"id": studio_id, "custom_fields": {"partial": {STUDIO_CHECKED: _today()}}}
+    changed = []
+    if match and match.get("remote_site_id"):
+        update["stash_ids"] = _ids(studio) + [{"endpoint": box, "stash_id": match["remote_site_id"]}]
+        changed.append("StashDB id")
+        if match.get("image") and "default=true" in (studio.get("image_path") or "default=true"):
+            update["image"] = match["image"]
+            changed.append("logo")
+        urls = [u for u in match.get("urls") or [] if u not in (studio.get("urls") or [])]
+        if urls:
+            update["urls"] = list(studio.get("urls") or []) + urls
+            changed.append("web address")
+        if match.get("details") and not studio.get("details"):
+            update["details"] = match["details"]
+            changed.append("details")
+        parent = match.get("parent") or {}
+        if parent.get("name") and not studio.get("parent_studio") and depth == 0 and not _same(parent["name"],
+                                                                                             studio["name"]):
+            was = stash.enrich_studios
+            stash.enrich_studios = False                    # the parent is enriched below, once
+            try:
+                update["parent_id"] = stash.studio_id(parent["name"])
+            finally:
+                stash.enrich_studios = was
+            enrich_studio(stash, update["parent_id"], depth + 1)
+            changed.append(f"network {parent['name']}")
+    stash.q("mutation($i: StudioUpdateInput!) { studioUpdate(input: $i) { id } }", {"i": update})
+    if changed:
+        log("i", f"Runemark: studio {studio['name']} from StashDB: {', '.join(changed)}")
+    return ", ".join(changed)
+
+
+def _today() -> str:
+    import datetime
+    return datetime.date.today().isoformat()
+
+
+def run_studios(stash: Stash) -> str:
+    """Fill in every studio not yet looked up on StashDB."""
+    if not stash.stashdb():
+        return "Runemark: Stash has no StashDB metadata provider (Settings > Metadata Providers)"
+    page, done, filled = 1, 0, 0
+    while True:
+        res = stash.q("query($p: Int!) { findStudios(filter: {per_page: 100, page: $p, sort: \"name\"}) "
+                      "{ count studios { id } } }", {"p": page})["findStudios"]
+        for st in res["studios"]:
+            done += 1
+            try:
+                filled += bool(enrich_studio(stash, st["id"]))
+            except Exception as exc:  # noqa: BLE001
+                log("w", f"Runemark: studio {st['id']}: {exc}")
+            log("p", str(done / max(1, res["count"])))
+        if page * 100 >= res["count"]:
+            break
+        page += 1
+    return f"Runemark: {done} studio(s) checked, {filled} filled in from StashDB"
+
+
+# ------------------------------------------------------------------ which file version a scene last imported
+def file_stamp(f: dict) -> str:
+    return f"{f.get('mod_time') or ''}|{f.get('size') or ''}"
+
+
+def scene_stamp(scene: dict) -> str:
+    """The stamp of the scene's first file (Runemark's file when there's one, see import_scene)."""
+    files = scene.get("files") or []
+    return file_stamp(files[0]) if files else ""
 
 
 # ------------------------------------------------------------------ people → performers
@@ -201,19 +318,29 @@ def performer_id(stash: Stash, person: dict, settings: dict) -> str | None:
 
 
 # ------------------------------------------------------------------ one scene
-def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
-    """Bring one scene up to date with what Runemark wrote in its file. Returns a short summary ("" = nothing)."""
-    path = next((f["path"] for f in scene.get("files") or [] if R.read(f["path"]) is not None), None)
-    if not path:
+def import_scene(stash: Stash, scene: dict, settings: dict, follow: bool = False) -> str:
+    """Bring one scene up to date with what Runemark wrote in its file. Returns a short summary ("" = nothing).
+    follow (0.4.0): the file changed since the last import, so Runemark's values replace Stash's."""
+    rm_file = next((f for f in scene.get("files") or [] if R.read(f["path"]) is not None), None)
+    stamp = file_stamp(rm_file) if rm_file else scene_stamp(scene)
+    stamped = (scene.get("custom_fields") or {}).get(STAMP) == stamp
+    if not rm_file:
+        if not stamped:
+            _stamp(stash, scene["id"], stamp)
         return ""
+    path = rm_file["path"]
     info = R.read(path)
     hand, profile = R.hand_and_profile_tags(info)
     people = R.people(info)
     if not (info["keywords"] or info["title"] or info["data"] or info["rating"] or info["description"]
             or info.get("studio") or info.get("links")):
+        if not stamped:
+            _stamp(stash, scene["id"], stamp)
         return ""
-    overwrite = settings["overwrite"]
+    overwrite = settings["overwrite"] or follow
     update: dict = {"id": scene["id"]}
+    if not stamped:
+        update["custom_fields"] = {"partial": {STAMP: stamp}}
     if info["title"] and (overwrite or not scene.get("title")):
         update["title"] = info["title"]
     if info["description"] and (overwrite or not scene.get("details")):
@@ -238,30 +365,42 @@ def import_scene(stash: Stash, scene: dict, settings: dict) -> str:
     # performers" off) keep their name as a tag, so they're still findable. Everything else is a tag.
     current_people = {p["id"] for p in scene.get("performers") or []}
     performer_ids = set(current_people)
+    resolved: set[str] = set()
     names: set[str] = set()
     for person in people:
         pid = performer_id(stash, person, settings)
         if pid:
             performer_ids.add(pid)
+            resolved.add(pid)
             names.add(person["name"].casefold())
             if person.get("aliases_as_tags"):
                 names |= {a.casefold() for a in person.get("aliases", [])}
+    if follow and info["data"]:
+        # Runemark's people are the whole list: performers it no longer has come off (only when its data block is
+        # there, so a file Runemark never curated doesn't empty Stash's list)
+        performer_ids = resolved
     if performer_ids != current_people:
         update["performer_ids"] = sorted(performer_ids)
     wanted = [t for t in dict.fromkeys(hand + profile + info["genre"]) if t.casefold() not in names]
     current = {t["id"] for t in scene.get("tags") or []}
-    tag_ids = list(current | {stash.tag_id(t) for t in wanted})
+    wanted_ids = {stash.tag_id(t) for t in wanted}
+    tag_ids = list(wanted_ids if follow else current | wanted_ids)   # following: Runemark's tags are the list
     if set(tag_ids) != current:
         update["tag_ids"] = tag_ids
     if settings["importCover"] and info["cover"] and (overwrite or not _has_custom_cover(scene)):
         data, mime = info["cover"]
         update["cover_image"] = f"data:{mime};base64," + base64.b64encode(data).decode()
-    changed = [k for k in update if k != "id"]
-    if changed:
+    changed = [k for k in update if k not in ("id", "custom_fields")]
+    if len(update) > 1:
         stash.q("mutation($i: SceneUpdateInput!) { sceneUpdate(input: $i) { id } }", {"i": update})
     markers = import_chapters(stash, scene, path, settings, R.chapter_ends(info))
     bits = changed + ([f"{markers} marker(s)"] if markers else [])
     return ", ".join(bits)
+
+
+def _stamp(stash: Stash, scene_id: str, stamp: str) -> None:
+    stash.q("mutation($i: SceneUpdateInput!) { sceneUpdate(input: $i) { id } }",
+            {"i": {"id": scene_id, "custom_fields": {"partial": {STAMP: stamp}}}})
 
 
 def _has_custom_cover(scene: dict) -> bool:
@@ -344,6 +483,39 @@ def run_all(stash: Stash, settings: dict) -> str:
     return f"Runemark: {done} scene(s) checked, {changed} updated" + (f", {problems} problem(s)" if problems else "")
 
 
+def run_changed(stash: Stash, settings: dict) -> str:
+    """0.4.0: re-import the scenes whose file changed since their last import (a cheap check on Stash's own file
+    records first; the file is only read when its modified time or size moved)."""
+    follow = bool(settings["followRunemark"])
+    page, done, looked, changed, problems = 1, 0, 0, 0, 0
+    while True:
+        result = stash.q("query($p: Int!) { findScenes(filter: {per_page: 100, page: $p, sort: \"path\"}) "
+                         "{ count scenes { id custom_fields files { path mod_time size } } } }",
+                         {"p": page})["findScenes"]
+        for brief in result["scenes"]:
+            done += 1
+            stamps = {file_stamp(f) for f in brief.get("files") or []}
+            if (brief.get("custom_fields") or {}).get(STAMP) in stamps:
+                continue
+            looked += 1
+            try:
+                scene = stash.q("query($id: ID!) { findScene(id: $id) { %s } }" % SCENE_FIELDS,
+                                {"id": brief["id"]})["findScene"]
+                summary = import_scene(stash, scene, settings, follow=follow) if scene else ""
+                if summary:
+                    changed += 1
+                    log("d", f"Runemark: scene {brief['id']}: {summary}")
+            except Exception as exc:  # noqa: BLE001
+                problems += 1
+                log("w", f"Runemark: scene {brief['id']}: {exc}")
+            log("p", str(done / max(1, result["count"])))
+        if page * 100 >= result["count"]:
+            break
+        page += 1
+    return (f"Runemark: {done} scene(s), {looked} changed file(s) read, {changed} updated"
+            + (f", {problems} problem(s)" if problems else ""))
+
+
 def run_hook(stash: Stash, settings: dict, context: dict) -> str:
     scene_id = str(context.get("id") or "")
     if not scene_id:
@@ -360,8 +532,17 @@ def main() -> None:
     args = payload.get("args") or {}
     try:
         settings = stash.settings()
+        stash.enrich_studios = bool(settings["studiosFromStashDB"])
         context = args.get("hookContext")
-        message = run_hook(stash, settings, context) if context else run_all(stash, settings)
+        mode = args.get("mode") or "all"
+        if context:
+            message = run_hook(stash, settings, context)
+        elif mode == "changed":
+            message = run_changed(stash, settings)
+        elif mode == "studios":
+            message = run_studios(stash)
+        else:
+            message = run_all(stash, settings)
         log("i", message)
         print(json.dumps({"output": message}))
     except Exception as exc:  # noqa: BLE001

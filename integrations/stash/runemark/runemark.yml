@@ -1,6 +1,6 @@
 name: Runemark Import
-description: Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos. Fills in blanks only.
-version: 0.3.1
+description: Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos, keeps Stash in step when a video changes in Runemark, and fills in studios from StashDB.
+version: 0.4.0
 url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
 exec:
   - python
@@ -12,6 +12,14 @@ tasks:
     description: Check every scene's file for Runemark's tags, details, people and chapters, and bring Stash up to date. Safe to run again.
     defaultArgs:
       mode: all
+  - name: Import changed videos
+    description: Re-import the videos whose file changed since their last import (after an edit in Runemark). Runemark's details replace Stash's when "Follow Runemark" is on. Runs after each scan.
+    defaultArgs:
+      mode: changed
+  - name: Fill in studios from StashDB
+    description: Look up each studio not yet checked on StashDB and fill in its logo, web address, parent network and StashDB id (blanks only). Needs StashDB under Settings > Metadata Providers.
+    defaultArgs:
+      mode: studios
 hooks:
   - name: Import new scenes from Runemark
     description: When a scan adds a scene, import what Runemark wrote into its file.
@@ -29,6 +37,14 @@ settings:
   importCover:
     displayName: Import Runemark's thumbnail as the cover
     description: Default on (only for scenes nobody has edited yet, unless "Replace details" is on).
+    type: BOOLEAN
+  followRunemark:
+    displayName: Follow Runemark when a video changes
+    description: "On (default): when a video's file changed since its last import (an edit in Runemark), Runemark's title, details, date, rating, studio, tags, people and cover replace Stash's. Off: fill in blanks only."
+    type: BOOLEAN
+  studiosFromStashDB:
+    displayName: Fill in new studios from StashDB
+    description: "On (default): a studio the plugin adds is looked up on StashDB (logo, web address, parent network). Needs StashDB under Settings > Metadata Providers."
     type: BOOLEAN
   createPerformers:
     displayName: Add performers Stash doesn't have yet

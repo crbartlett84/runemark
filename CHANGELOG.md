@@ -4,6 +4,13 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+### Added
+- Stash plugin 0.4.0: "Import changed videos" re-reads only videos whose file changed since the last import, and
+  (with "Follow Runemark", on by default) Runemark's title, details, tags and people replace Stash's, so edits made
+  after a video was first imported reach Stash.
+- Stash plugin 0.4.0: studios are filled in from StashDB (logo, links, details, parent network) when they're made,
+  and "Fill in studios from StashDB" does the ones already there. Only exact name or alias matches; blanks only.
+
 ## [0.11.1] - 2026-11-07
 
 ### Added
