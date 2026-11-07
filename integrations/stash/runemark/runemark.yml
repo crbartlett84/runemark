@@ -1,5 +1,7 @@
 name: Runemark Import
-description: Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos, keeps Stash in step when a video changes in Runemark, and fills in studios from StashDB.
+description: >-
+  Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos,
+  keeps Stash in step when a video changes in Runemark, and fills in studios from StashDB.
 version: 0.4.0
 url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
 exec:
@@ -13,11 +15,15 @@ tasks:
     defaultArgs:
       mode: all
   - name: Import changed videos
-    description: Re-import the videos whose file changed since their last import (after an edit in Runemark). Runemark's details replace Stash's when "Follow Runemark" is on. Runs after each scan.
+    description: >-
+      Re-import the videos whose file changed since their last import (after an edit in Runemark). Runemark's
+      details replace Stash's when "Follow Runemark" is on. Runs after each scan.
     defaultArgs:
       mode: changed
   - name: Fill in studios from StashDB
-    description: Look up each studio not yet checked on StashDB and fill in its logo, web address, parent network and StashDB id (blanks only). Needs StashDB under Settings > Metadata Providers.
+    description: >-
+      Look up each studio not yet checked on StashDB and fill in its logo, web address, parent network and StashDB
+      id (blanks only). Needs StashDB under Settings > Metadata Providers.
     defaultArgs:
       mode: studios
 hooks:
@@ -40,11 +46,15 @@ settings:
     type: BOOLEAN
   followRunemark:
     displayName: Follow Runemark when a video changes
-    description: "On (default): when a video's file changed since its last import (an edit in Runemark), Runemark's title, details, date, rating, studio, tags, people and cover replace Stash's. Off: fill in blanks only."
+    description: >-
+      On (default): when a video's file changed since its last import (an edit in Runemark), Runemark's title,
+      details, date, rating, studio, tags, people and cover replace Stash's. Off: fill in blanks only.
     type: BOOLEAN
   studiosFromStashDB:
     displayName: Fill in new studios from StashDB
-    description: "On (default): a studio the plugin adds is looked up on StashDB (logo, web address, parent network). Needs StashDB under Settings > Metadata Providers."
+    description: >-
+      On (default): a studio the plugin adds is looked up on StashDB (logo, web address, parent network). Needs
+      StashDB under Settings > Metadata Providers.
     type: BOOLEAN
   createPerformers:
     displayName: Add performers Stash doesn't have yet
