@@ -641,8 +641,11 @@ def move_with_sidecars(path: Path, folder: Path, new_name: str | None = None) ->
             dest = folder / (stem + side.name[len(path.stem):])
             if not dest.exists():
                 moves.append((side, dest))
+    from .tagsync import retry
     done: list[tuple[Path, Path]] = []
     for old, new in moves:
-        shutil.move(str(old), str(new))
+        # 0.12.1: Windows refuses to move a file something still has open (WinError 32): a frame grab or cut search
+        # that was just stopped lets go a moment later, so try again a few times
+        retry(lambda o=old, n=new: shutil.move(str(o), str(n)))
         done.append((old, new))
     return target, done

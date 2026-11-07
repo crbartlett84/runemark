@@ -4,6 +4,14 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-11-07
+
+### Fixed
+- **Approve (or any plugin move) failed with "[WinError 32] … being used by another process"** while Runemark
+  itself was still reading the video: the cut search (a whole-video read, when "Look for likely cuts … after it
+  opens" is on) and the chapter pictures weren't stopped before the move. They are now, and a move that still meets
+  a file another program is letting go of tries again for a few seconds.
+
 ## [0.12.1] - 2026-11-07
 
 ### Changed

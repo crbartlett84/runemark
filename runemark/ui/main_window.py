@@ -2229,6 +2229,13 @@ class MainWindow(QMainWindow):
         position = self.player.unload()
         self.filmstrip.clear()
         self._cancel_suggestions()
+        # 0.12.1: the cut search and chapter pictures read the file too (a whole-video read, for cuts): an approve's
+        # move failed with "being used by another process" while they ran
+        self._cancel_cuts()
+        self._cancel_chapter_thumbs()
+        self.player.close_preview()
+        if self.video_cache is not None and self.doc is not None:
+            self.video_cache.cancel(self.doc.path)
         QTimer.singleShot(400, lambda: then(position))
 
     def _fields(self, tags: list[str], original_genre: list[str]) -> tuple[list[str], list[str]]:

@@ -224,3 +224,24 @@ def test_a_copy_gives_up_on_a_slow_link_and_copying_rests(tmp_path, monkeypatch)
     assert isinstance(_try(cache.copy, v), InterruptedError) and cache.fresh_copy(v) is None
     cache.want([v])
     assert cache._queue == []                                   # resting: nothing is copied for a while
+
+
+def test_a_move_tries_again_while_the_file_is_still_held(tmp_path, monkeypatch):
+    """0.12.2: WinError 32 on an approve while a stopped frame grab still had the file open."""
+    from runemark import plugins as P
+    v = tmp_path / "a.mp4"
+    v.write_bytes(b"x")
+    (tmp_path / "a.nfo").write_text("n")
+    real, calls = P.shutil.move, []
+
+    def busy_once(src, dst):
+        calls.append(src)
+        if len(calls) == 1:
+            exc = OSError("being used by another process")
+            exc.winerror = 32
+            raise exc
+        return real(src, dst)
+    monkeypatch.setattr(P.shutil, "move", busy_once)
+    monkeypatch.setattr("runemark.tagsync.time.sleep", lambda s: None)
+    new, done = P.move_with_sidecars(v, tmp_path / "out")
+    assert new.exists() and (tmp_path / "out" / "a.nfo").exists() and len(done) == 2
