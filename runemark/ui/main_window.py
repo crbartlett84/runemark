@@ -1223,9 +1223,14 @@ class MainWindow(QMainWindow):
         from ..media.cache import VideoCache
         if self.video_cache is not None:
             self.video_cache.stop()
-        if not getattr(self.settings, "video_cache", True):
+        if not getattr(self.settings, "local_copies", False):
             self.video_cache = None
             self.player.source_for = None
+            # 0.12.1: off, so the copies 0.12.0 made only take up space: they go, in the background
+            import threading
+            root = VideoCache().root
+            if root.is_dir():
+                threading.Thread(target=lambda: VideoCache(root).clear(), daemon=True).start()
             return
         self.video_cache = VideoCache(limit_bytes=int(getattr(self.settings, "video_cache_gb", 20)) * 1024 ** 3,
                                       ahead=int(getattr(self.settings, "video_cache_ahead", 3)),

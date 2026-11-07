@@ -6,6 +6,10 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [0.12.1] - 2026-11-07
 
+### Changed
+- **The local copy of network videos is off again** (Settings → Copy videos on network drives turns it on). Opening
+  straight from the share, playing and jumping while it plays, worked better. Copies 0.12.0 made are deleted.
+
 ### Fixed
 - **The local copy slowed opening down.** A copy under way carried on after you moved to another video (a big file
   copied to the end, taking the network the next open needed), and copying started at the same moment as the open.

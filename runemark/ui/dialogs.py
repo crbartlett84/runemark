@@ -297,7 +297,7 @@ class SettingsDialog(QDialog):
 
         # 0.12.0: the local copy of videos on network drives
         self.video_cache = QCheckBox("Copy videos on network drives to this computer (faster scrubbing)")
-        self.video_cache.setChecked(getattr(settings, "video_cache", True))
+        self.video_cache.setChecked(getattr(settings, "local_copies", False))
         self.video_cache.setToolTip("The open video and the next ones in the list are copied in the background; the "
                                     "player switches to the copy when it's ready. Saves still go to the original.")
         form.addRow("", self.video_cache)
@@ -516,7 +516,7 @@ class SettingsDialog(QDialog):
         s.preserve_modified_date = self.preserve.isChecked()
         s.read_nfo = self.read_nfo.isChecked()
         s.nfo_people = self.nfo_people.currentData() or "add"
-        s.video_cache = self.video_cache.isChecked()
+        s.local_copies = self.video_cache.isChecked()
         s.video_cache_gb = self.video_cache_gb.value()
         s.video_cache_ahead = self.video_cache_ahead.value()
         s.scan_on_start = self.scan_on_start.isChecked()
