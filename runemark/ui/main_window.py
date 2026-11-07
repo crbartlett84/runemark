@@ -512,6 +512,8 @@ class MainWindow(QMainWindow):
                     self._show_nothing(f"Moved {path.name} to {folder}")
             finish(new_path, "")
 
+        if self.video_cache is not None:
+            self.video_cache.cancel(path)                # 0.12.1: a copy reading it would stop the move
         if reopen:
             if self.doc.dirty() and not discard_changes:
                 QMessageBox.information(self, "Unsaved changes", f"{path.name} has unsaved changes. Save it (or "
@@ -1146,7 +1148,9 @@ class MainWindow(QMainWindow):
         if play:
             self.player.reset_message()
             self.player.load(doc.path, doc.info, position_ms)
-            self._cache_ahead(doc.path)
+            # 0.12.1: copying starts a few seconds after the open, so the open itself has the network to itself
+            QTimer.singleShot(4000, lambda p=doc.path: self._cache_ahead(p) if self.doc is not None
+                              and file_key(self.doc.path) == file_key(p) else None)
             if self.settings.filmstrip_count:
                 self.filmstrip.load(self.player.source or doc.path, doc.info, self.settings.filmstrip_count)
         for widget in self.strip_widgets:
@@ -2252,6 +2256,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(150, lambda: then(0))          # frame grabs for it were cancelled when it closed
             return
         position = self.player.unload() if holding else 0
+        if self.video_cache is not None:
+            self.video_cache.cancel(path)                # 0.12.1: no copy reading it while it's written
         self.filmstrip.clear()
         self._cancel_suggestions()
         self._cancel_chapter_thumbs()

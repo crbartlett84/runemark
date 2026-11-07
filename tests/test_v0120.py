@@ -165,3 +165,49 @@ def test_a_reject_moves_a_video_with_unsaved_changes(tmp_path, media, qapp):
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == b)
     finally:
         _close(win, db, qapp)
+
+
+def test_a_copy_stops_when_the_video_is_no_longer_wanted(tmp_path):
+    """0.12.1: moving on (or saving the video) stopped nothing: the copier finished a big copy first, using the
+    network the next open needed, and kept the file open on the share."""
+    import threading
+    cache, share = _cache(tmp_path)
+    v = share / "big.mp4"
+    v.write_bytes(b"x" * (3 * 1024 * 1024))
+    from runemark.media import cache as C
+    started, go_on = threading.Event(), threading.Event()
+    real_read = open
+
+    class Slow:
+        def __init__(self, f):
+            self.f = f
+        def read(self, n):
+            started.set()
+            go_on.wait(5)
+            return self.f.read(64 * 1024)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            self.f.close()
+    cache.ready = lambda p: None
+    C.open = lambda path, mode="r", *a, **k: Slow(real_read(path, mode)) if mode == "rb" else real_read(path, mode)
+    try:
+        cache._wanted = {C._path_key(v)}
+        out = {}
+        t = threading.Thread(target=lambda: out.setdefault("r", _try(cache.copy, v)))
+        t.start()
+        assert started.wait(5)
+        cache.cancel(v)
+        go_on.set()
+        t.join(5)
+        assert isinstance(out["r"], InterruptedError) and cache.fresh_copy(v) is None
+        assert not any(p.name.endswith(".part") for p in cache.root.iterdir())
+    finally:
+        del C.open
+
+
+def _try(fn, *a):
+    try:
+        return fn(*a)
+    except BaseException as exc:  # noqa: BLE001
+        return exc

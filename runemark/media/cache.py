@@ -68,6 +68,7 @@ class VideoCache:
         self.limit, self.ahead, self.ready, self.is_remote = int(limit_bytes), int(ahead), ready, is_remote
         self.playing: set[str] = set()              # copies in use (never dropped)
         self._queue: list[Path] = []
+        self._wanted: set[str] = set()              # 0.12.1: a copy under way stops when it's no longer wanted
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -139,7 +140,8 @@ class VideoCache:
             if self.is_remote(p) and self.fresh_copy(p) is None and p not in wanted:
                 wanted.append(p)
         with self._lock:
-            self._queue = wanted
+            self._queue = list(wanted)
+            self._wanted = {_path_key(p) for p in wanted}
         if wanted:
             self._start()
             self._wake.set()
@@ -149,6 +151,14 @@ class VideoCache:
             self._stop = False
             self._thread = threading.Thread(target=self._run, name="runemark-video-cache", daemon=True)
             self._thread.start()
+
+    def cancel(self, original: Path) -> None:
+        """0.12.1: don't copy this video (now): it's about to be saved, moved or rejected, and an open read of it on
+        the share would get in the way (Windows can't replace or move a file another program has open)."""
+        key = _path_key(Path(original))
+        with self._lock:
+            self._queue = [p for p in self._queue if _path_key(p) != key]
+            self._wanted.discard(key)
 
     def stop(self):
         self._stop = True
@@ -168,7 +178,7 @@ class VideoCache:
                 continue
             try:
                 local = self.copy(original)
-            except Exception as exc:  # noqa: BLE001
+            except (Exception, InterruptedError) as exc:  # noqa: BLE001
                 log.info("video cache: couldn't copy %s: %s", original.name, exc)
                 continue
             if local is not None and self.ready is not None:
@@ -189,11 +199,16 @@ class VideoCache:
         self.make_room(st.st_size)
         part = local.with_name(local.name + PART)
         self.copying = original
+        key = _path_key(original)
+        started = time.monotonic()
+        log.info("video cache: copying %s (%d MB)", original.name, st.st_size // 2 ** 20)
         try:
             with open(original, "rb") as src, open(part, "wb") as dst:
                 while True:
                     if self._stop:
                         raise InterruptedError("stopped")
+                    if self.ready is not None and key not in self._wanted:
+                        raise InterruptedError("no longer wanted")      # 0.12.1: moved on, or it's being saved
                     block = src.read(CHUNK)
                     if not block:
                         break
@@ -201,7 +216,10 @@ class VideoCache:
             if os.stat(original).st_mtime_ns != st.st_mtime_ns:
                 raise OSError("it changed while it was being copied")
             os.replace(part, local)
-        except BaseException:
+            secs = max(0.001, time.monotonic() - started)
+            log.info("video cache: copied %s in %.0f s (%.0f MB/s)", original.name, secs, st.st_size / 2 ** 20 / secs)
+        except BaseException as exc:
+            log.info("video cache: %s not copied: %s", original.name, exc)
             try:
                 part.unlink()
             except OSError:

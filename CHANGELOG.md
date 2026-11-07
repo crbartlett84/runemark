@@ -4,6 +4,15 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-07
+
+### Fixed
+- **The local copy slowed opening down.** A copy under way carried on after you moved to another video (a big file
+  copied to the end, taking the network the next open needed), and copying started at the same moment as the open.
+  Now a copy stops as soon as its video isn't wanted any more, copying starts a few seconds after a video opens, and
+  a video being saved, moved or rejected isn't being read for a copy at the same time (Windows can't replace or move
+  a file another program has open). The log says what the cache copies, how fast, and why a copy stopped.
+
 ## [0.12.0] - 2026-11-07
 
 ### Added
