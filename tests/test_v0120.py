@@ -211,3 +211,16 @@ def _try(fn, *a):
         return fn(*a)
     except BaseException as exc:  # noqa: BLE001
         return exc
+
+
+def test_a_copy_gives_up_on_a_slow_link_and_copying_rests(tmp_path, monkeypatch):
+    from runemark.media import cache as C
+    cache, share = _cache(tmp_path)
+    v = share / "a.mp4"
+    v.write_bytes(b"x" * (40 * 1024 * 1024))
+    clock = iter(range(0, 10 ** 6, 9))                          # 9 s per tick: 8 MB in 9 s, ~45 s for the rest
+    monkeypatch.setattr(C.time, "monotonic", lambda: float(next(clock)))
+    cache.max_copy_seconds = 20
+    assert isinstance(_try(cache.copy, v), InterruptedError) and cache.fresh_copy(v) is None
+    cache.want([v])
+    assert cache._queue == []                                   # resting: nothing is copied for a while

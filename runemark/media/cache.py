@@ -69,6 +69,10 @@ class VideoCache:
         self.playing: set[str] = set()              # copies in use (never dropped)
         self._queue: list[Path] = []
         self._wanted: set[str] = set()              # 0.12.1: a copy under way stops when it's no longer wanted
+        # 0.12.1: on a slow link (a VPN from outside), a copy that would take longer than this gives up, and copying
+        # rests for a while: it would only take the little bandwidth there is away from playing the video
+        self.max_copy_seconds = 600
+        self.too_slow_until = 0.0
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -135,6 +139,8 @@ class VideoCache:
         """Copy these (the open video first, then the next ones) unless they're copied already. Replaces what was
         waiting; the copy under way carries on when it's one of these."""
         wanted = []
+        if time.monotonic() < self.too_slow_until:
+            paths = []                               # 0.12.1: the link is too slow just now (see copy)
         for p in paths[: 1 + self.ahead]:
             p = Path(p)
             if self.is_remote(p) and self.fresh_copy(p) is None and p not in wanted:
@@ -213,6 +219,14 @@ class VideoCache:
                     if not block:
                         break
                     dst.write(block)
+                    done = dst.tell()
+                    spent = time.monotonic() - started
+                    if spent > 8 and done < st.st_size:
+                        rate = done / spent
+                        if (st.st_size - done) / max(rate, 1) > self.max_copy_seconds:
+                            self.too_slow_until = time.monotonic() + 1800
+                            raise InterruptedError(f"the network is too slow ({rate / 2 ** 20:.1f} MB/s) to copy it "
+                                                   f"in {self.max_copy_seconds // 60} minutes; copying rests 30 min")
             if os.stat(original).st_mtime_ns != st.st_mtime_ns:
                 raise OSError("it changed while it was being copied")
             os.replace(part, local)

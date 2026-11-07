@@ -12,6 +12,8 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
   Now a copy stops as soon as its video isn't wanted any more, copying starts a few seconds after a video opens, and
   a video being saved, moved or rejected isn't being read for a copy at the same time (Windows can't replace or move
   a file another program has open). The log says what the cache copies, how fast, and why a copy stopped.
+- **On a slow link the copy no longer fights the player for it.** A copy that would take more than 10 minutes at the
+  speed it's getting gives up, and copying rests for 30 minutes.
 
 ## [0.12.0] - 2026-11-07
 
