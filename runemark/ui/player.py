@@ -307,6 +307,9 @@ class PlayerPanel(QWidget):
         self._step_job = None
         self._first_frame_pending = False
         self.loaded = False                       # a file is open in the player (it holds the file open)
+        self.source_for = None                    # 0.12.0: path -> the file to play (its local copy, when cached)
+        self.source: Path | None = None
+        self._resume = False
         self.shuttle = Shuttle()
         self._reverse = QTimer(self)               # J: stepping backward, since Qt can't play in reverse
         self._reverse.setInterval(200)
@@ -473,17 +476,36 @@ class PlayerPanel(QWidget):
 
     def load(self, path: Path, info: MediaInfo, position_ms: int = 0):
         self.path, self.info = path, info
+        self.source = Path(self.source_for(path)) if self.source_for is not None else Path(path)   # 0.12.0
+        self._resume = False
         self._frame_us = None
         self._clock.clear()
         self._pending_seek_ms = position_ms or None
         self._first_frame_pending = True
         self._stop_shuttle()
-        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self.player.setSource(QUrl.fromLocalFile(str(self.source)))
         self.player.setPlaybackRate(self.shuttle.rate)
         self.loaded = True
         self.preview.forget()
         self._stack.setCurrentWidget(self.video)
         self._set_enabled(True)
+
+    def switch_source(self, source: Path) -> bool:
+        """0.12.0: play the same video from another file (its local copy, once it's ready), from the same place, still
+        playing if it was. False when nothing is loaded or it's that file already."""
+        if not self.loaded or self.path is None or Path(source) == getattr(self, "source", None):
+            return False
+        position = self.player.position()
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.source = Path(source)
+        self._pending_seek_ms = position or None
+        self._first_frame_pending = True
+        self._resume = playing
+        self.close_preview()
+        self.preview.forget()
+        self.player.setSource(QUrl.fromLocalFile(str(self.source)))
+        self.player.setPlaybackRate(self.shuttle.rate)
+        return True
 
     def unload(self) -> int:
         """Release the file (needed before writing to it on Windows). Returns the position in ms."""
@@ -612,7 +634,7 @@ class PlayerPanel(QWidget):
     def _hovered(self, ms: int, global_pos):
         if not self.loaded or self.info is None or self.info.main_video is None or self._dragging:
             return
-        self.preview.want(self.path, self.info, ms / 1000, global_pos, self.slider)
+        self.preview.want(getattr(self, "source", None) or self.path, self.info, ms / 1000, global_pos, self.slider)
 
     def close_preview(self):
         self.preview.hide_now()
@@ -771,8 +793,10 @@ class PlayerPanel(QWidget):
         path, stream, duration = self.path, self.info.main_video, self.info.duration
         start, end = max(0.0, pts - 8.0), pts + 8.0
 
+        source = self.source or path              # 0.12.0: the local copy, when it's playing
+
         def fetch(job):
-            return start, end, packet_times(path, stream.index, start, end)
+            return start, end, packet_times(source, stream.index, start, end)
 
         def done(result):
             self._step_job = None
@@ -851,6 +875,9 @@ class PlayerPanel(QWidget):
         if self._pending_seek_ms:
             self.player.setPosition(self._pending_seek_ms)
             self._pending_seek_ms = None
+        if getattr(self, "_resume", False):
+            self._resume = False
+            self.player.play()
 
     def _on_state(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState

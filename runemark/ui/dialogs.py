@@ -295,6 +295,34 @@ class SettingsDialog(QDialog):
         self.nfo_people.setEnabled(self.read_nfo.isChecked())
         form.addRow("People in the .nfo", self.nfo_people)
 
+        # 0.12.0: the local copy of videos on network drives
+        self.video_cache = QCheckBox("Copy videos on network drives to this computer (faster scrubbing)")
+        self.video_cache.setChecked(getattr(settings, "video_cache", True))
+        self.video_cache.setToolTip("The open video and the next ones in the list are copied in the background; the "
+                                    "player switches to the copy when it's ready. Saves still go to the original.")
+        form.addRow("", self.video_cache)
+        cache_row = QHBoxLayout()
+        self.video_cache_gb = QSpinBox()
+        self.video_cache_gb.setRange(2, 500)
+        self.video_cache_gb.setSuffix(" GB")
+        self.video_cache_gb.setValue(int(getattr(settings, "video_cache_gb", 20)))
+        self.video_cache_ahead = QSpinBox()
+        self.video_cache_ahead.setRange(0, 10)
+        self.video_cache_ahead.setValue(int(getattr(settings, "video_cache_ahead", 3)))
+        self.video_cache_ahead.setToolTip("How many of the next videos in the list are copied ahead")
+        self.clear_video_cache = QPushButton("Empty it")
+        self.clear_video_cache.setAutoDefault(False)
+        self.clear_video_cache.clicked.connect(self._clear_video_cache)
+        cache_row.addWidget(self.video_cache_gb)
+        cache_row.addWidget(QLabel("next videos copied ahead:"))
+        cache_row.addWidget(self.video_cache_ahead)
+        cache_row.addWidget(self.clear_video_cache)
+        cache_row.addStretch(1)
+        form.addRow("Local copy, at most", cache_row)
+        for w in (self.video_cache_gb, self.video_cache_ahead):
+            self.video_cache.toggled.connect(w.setEnabled)
+            w.setEnabled(self.video_cache.isChecked())
+
         self.scan_on_start = QCheckBox("Look for new videos in the Library folders when Runemark starts")
         self.scan_on_start.setChecked(settings.scan_on_start)
         self.check_updates = QCheckBox("Check for a new version of Runemark once a day")
@@ -467,6 +495,14 @@ class SettingsDialog(QDialog):
                                 "Close Runemark and open it again to start using them.")
         return True
 
+    def _clear_video_cache(self):
+        """0.12.0: empty the local copies (not the one playing)."""
+        from ..media.cache import VideoCache
+        cache = getattr(self.parent(), "video_cache", None) if self.parent() is not None else None
+        freed = (cache or VideoCache()).clear()
+        QMessageBox.information(self, "Local copies", f"Freed {fmt_size(freed)}." if freed else
+                                "The local copy folder is already empty.")
+
     def _save(self):
         s = self.settings
         s.backup_folder = self.backup_folder.text().strip()
@@ -480,6 +516,9 @@ class SettingsDialog(QDialog):
         s.preserve_modified_date = self.preserve.isChecked()
         s.read_nfo = self.read_nfo.isChecked()
         s.nfo_people = self.nfo_people.currentData() or "add"
+        s.video_cache = self.video_cache.isChecked()
+        s.video_cache_gb = self.video_cache_gb.value()
+        s.video_cache_ahead = self.video_cache_ahead.value()
         s.scan_on_start = self.scan_on_start.isChecked()
         s.check_updates = self.check_updates.isChecked()
         s.find_cuts_on_open = self.find_cuts.isChecked()

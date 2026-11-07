@@ -16,7 +16,8 @@ plugins/
 {"name": "My plugin", "version": "1.0", "description": "What it does, in a line.", "api": 1}
 ```
 
-`api` is the plugin API version it was written for (`4` for the calls marked *4* below, Runemark 0.11.0+; `3` for
+`api` is the plugin API version it was written for (`5` for the calls marked *5* below, Runemark 0.12.0+; `4` for
+those marked *4*, Runemark 0.11.0+; `3` for
 those marked *3*, Runemark 0.10.0+; `2` for
 those marked *2*, Runemark 0.9.0+; `1` otherwise). Runemark refuses plugins that need a newer one and says so.
 
@@ -67,6 +68,7 @@ version 3 (Runemark 0.10.0) *3*.
 | `api.add_tags_panel(title, widget, collapsed=False)` *2* | A strip in the **Tags** tab, under the tag editor, that folds down to its title. Returns the strip (`strip.set_open(True)` opens it). |
 | `api.add_header_widget(widget)` *2* | Your widget (buttons, say) in the header just before **Save**. Enable, disable and hide it yourself. |
 | `api.add_library_column(title, cell, fetch=None, tooltip=None, sort_key=None)` *2* | A column in the Library. `cell(path)` returns its text, or `None` when you don't know it yet: then `fetch(paths)` is called (batched, on the window's thread) for the rows on show without a value. Fetch in the background and call `api.library_column_changed()` when the values are in. Keep `cell` quick. |
+| `api.add_library_filter(label, test, prepare=None)` *5* | An entry in the Library's filter list, after Runemark's own. `test(path)` returns `True` (shown), `False`, or `None` (not known yet: not shown). `prepare(paths)` is called with every video in view when the entry is picked (and after a rescan): find out about them in the background and call `api.library_column_changed()`; the filter is applied again then. Keep `test` quick. |
 | `api.on(event, callback)` | `file_opened(path)`, `file_saved(path)` (editor or Library; from 0.10.1 also each video a Library bulk change, a Library undo, **Set details** or a People update wrote), `file_closed(path)` (before `move_file` moves the open video). |
 
 ### The open video
@@ -110,7 +112,7 @@ version 3 (Runemark 0.10.0) *3*.
 | `api.upgrade_copy(curated, better, old_to=None, then=None)` | Put `better` (a sharper or more complete copy of the same video) in `curated`'s place, same folder and name, with all of curated's tags, people, details, links, thumbnail and chapters (moved to the matching moments). Runemark compares the two, shows the user what will happen and asks first; it refuses two different videos. The curated copy goes to the `old_to` folder, or the Recycle Bin. `then(final_path, "")`, or `then(None, reason)`. |
 | `api.video_info(path)` | `{"width", "height", "duration", "bit_rate", "size", "container"}` of any video. |
 | `api.change_file(path, changes, then=None)` *2* | Change a video that needn't be open, then save it, in the background with the same safe write, check and history as the editor (Undo last save works). `changes` are what `apply_details` takes, plus `cover_if_missing` (a thumbnail only if it has none). `then(path, "")` once written, or `then(None, reason)`. |
-| `api.move_file(path, folder, new_name=None, then=None, open_after=True)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. While the video is still being saved, the move waits for the save (and doesn't happen if the save fails). `then(new_path, "")`, or `then(None, reason)`. |
+| `api.move_file(path, folder, new_name=None, then=None, open_after=True, discard_changes=False)` | Move a video, and the files beside it with the same name (`.nfo`, subtitles), into `folder`, optionally renamed. Runemark lets go of it first if it's open (an open video with unsaved changes isn't moved, unless `discard_changes=True` *5*: for a reject, where they're thrown away) and keeps its history and library entry. If it was open, it's reopened from the new place, or with `open_after=False` the next open video is shown. Never overwrites. While the video is still being saved, the move waits for the save (and doesn't happen if the save fails). `then(new_path, "")`, or `then(None, reason)`. |
 
 ### Saves and scans done elsewhere *3*
 For a library on a network share, a plugin can hand the heavy work to a program on the computer that holds the files,

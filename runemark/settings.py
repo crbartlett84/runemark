@@ -40,6 +40,11 @@ class Settings:
     # 0.11.1: the people a .nfo names: "add" (new ones go into People too), "known" (only people already in People,
     # so a plugin such as Lore, which knows who to leave out, adds new ones), "off" (people aren't taken from it)
     nfo_people: str = "add"
+    # 0.12.0: videos on a network drive are copied to a local cache (scrubbing reads the local disk), the open one and
+    # the next ones in the open list
+    video_cache: bool = True
+    video_cache_gb: int = 20
+    video_cache_ahead: int = 3
     chapter_keys: dict = field(default_factory=dict)          # "1".."9" -> the chapter name that key adds
     tag_keys: dict = field(default_factory=dict)              # "1".."9" -> the tag Alt+that key adds or removes
     scan_on_start: bool = True            # look for new and changed videos in the library folders on start

@@ -321,6 +321,9 @@ class LibraryWindow(QDialog):
     # ---------------------------------------------------------------- plugin columns (0.9.0)
     def plugin_columns_changed(self):
         host = getattr(self.host, "plugins", None)
+        self._sync_plugin_filters()
+        if self._plugin_filter() is not None:
+            self._apply()                      # a plugin filter is picked: its answers may have changed
         columns = list(host.library_columns) if host is not None else []
         if [id(c) for c in columns] != [id(c) for c in self.model.plugin_columns]:
             self.model.set_plugin_columns(columns)
@@ -328,6 +331,50 @@ class LibraryWindow(QDialog):
                 self.table.setColumnWidth(len(COLUMNS) + n, 110)
         else:
             self.model.plugin_values_changed()
+
+    # ---------------------------------------------------------------- plugin filters (0.12.0)
+    def _plugin_filters(self) -> list:
+        host = getattr(self.host, "plugins", None)
+        return list(getattr(host, "library_filters", []) or []) if host is not None else []
+
+    def _plugin_filter(self):
+        key = self.search.filter or ""
+        if not key.startswith("plugin:"):
+            return None
+        return next((f for f in self._plugin_filters() if f.key == key), None)
+
+    def _sync_plugin_filters(self):
+        """The filter list: Runemark's own, then a line, then the plugins' (added once each)."""
+        have = {self.filter.itemData(i) for i in range(self.filter.count())}
+        new = [f for f in self._plugin_filters() if f.key not in have]
+        if not new:
+            return
+        self.filter.blockSignals(True)
+        if not any(str(d or "").startswith("plugin:") for d in have):
+            self.filter.insertSeparator(self.filter.count())
+        for f in new:
+            self.filter.addItem(f.label, f.key)
+        at = self.filter.findData(self.search.filter)
+        if at >= 0:
+            self.filter.setCurrentIndex(at)
+        self.filter.blockSignals(False)
+
+    def _prepare_plugin_filter(self):
+        f = self._plugin_filter()
+        if f is None or f.prepare is None:
+            return
+        paths = [str(r.path) for r in self._in_view(self.records)]
+        try:
+            f.prepare(paths)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception("plugin filter %s couldn't prepare", f.label)
+
+    def _plugin_filter_matches(self, f, path: str) -> bool:
+        try:
+            return f.test(path) is True
+        except Exception:  # noqa: BLE001
+            return False
 
     def _want_plugin_value(self, column, path: str):
         if column.fetch is None:
@@ -442,6 +489,7 @@ class LibraryWindow(QDialog):
         self.tag_model.setStringList([t.name for t in self.db.tags()])
         self.records = self.db.library()
         self._fill_library_pick()
+        self._prepare_plugin_filter()
         self._apply()
 
     def _fill_plugin_menu(self):
@@ -529,7 +577,12 @@ class LibraryWindow(QDialog):
         self._search_timer.stop()
         keep = {str(p).casefold() for p in self.selected_paths()}  # still selected after a change or rescan
         in_view = self._in_view(self.records)
-        shown = [r for r in in_view if L.matches(r, self.search)]
+        pf = self._plugin_filter()
+        if pf is not None:                     # 0.12.0: a plugin's filter, with the search's tags and text
+            base = L.Search(self.search.tags, self.search.text, L.FILTER_ALL)
+            shown = [r for r in in_view if L.matches(r, base) and self._plugin_filter_matches(pf, str(r.path))]
+        else:
+            shown = [r for r in in_view if L.matches(r, self.search)]
         active = next((f for f in self._smart_filters() if f.name == self.active_smart), None)
         if active is None:
             self.active_smart = None
@@ -603,6 +656,7 @@ class LibraryWindow(QDialog):
 
     def _filter_changed(self, *_):
         self.search.filter = self.filter.currentData()
+        self._prepare_plugin_filter()
         self._apply()
 
     def _add_search_tag(self):
@@ -635,6 +689,7 @@ class LibraryWindow(QDialog):
         self.filter.setCurrentIndex(max(0, self.filter.findData(search.filter)))
         self.filter.blockSignals(False)
         self._show_search_tags()
+        self._prepare_plugin_filter()
         self._apply()
 
     def _fill_saved(self):

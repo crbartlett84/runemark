@@ -4,7 +4,25 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-07
+
 ### Added
+- **A local copy of videos on network drives** (Settings → Local copy, on by default, 20 GB, 3 ahead). When a video
+  on a network drive or UNC path opens, it's copied to this computer in the background, and the next videos in the
+  list after it too; the player switches to the copy when it's ready, at the same place, so scrubbing, frame steps
+  and the timeline's hover pictures read the local disk. Saves still go to the original; after a save the older copy
+  plays while a fresh one is made. The copies used longest ago go first when the cache is full ("Empty it" in
+  Settings frees it all). It lives in %LOCALAPPDATA%\Runemark\VideoCache, not your roaming profile.
+- **Plugins can add entries to the Library's filter list** (plugin API 5, `add_library_filter`), after Runemark's
+  own: Lore 0.12 adds *In Chris's Stash*, *Not in Chris's Stash*, *On Gen's*, *Not on Gen's*.
+- Plugin API 5: `move_file(..., discard_changes=True)` moves an open video with unsaved changes, throwing them away
+  (a reject: the video is going anyway, so it no longer stops at "unsaved changes").
+
+### Changed
+- Opening a video doesn't list its whole folder any more on Windows (that was a check for a `movie.nfo`), which
+  was slow in big network folders.
+
+### Added (Stash plugin)
 - Stash plugin 0.4.0: "Import changed videos" re-reads only videos whose file changed since the last import, and
   (with "Follow Runemark", on by default) Runemark's title, details, tags and people replace Stash's, so edits made
   after a video was first imported reach Stash.

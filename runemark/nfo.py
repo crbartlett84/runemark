@@ -7,6 +7,7 @@ it (as actors). Runemark reads those into empty fields: what's already filled in
 from __future__ import annotations
 
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -50,7 +51,14 @@ def find_nfo(video: str | Path) -> Path | None:
     if same.is_file():
         return same
     try:
-        movie = next((p for p in video.parent.iterdir() if p.name.casefold() == "movie.nfo" and p.is_file()), None)
+        # 0.12.0: the folder is listed only when there is a movie.nfo (Windows names ignore case), so opening a video
+        # in a big network folder doesn't read the whole folder first
+        if os.name == "nt":
+            movie = video.parent / "movie.nfo"
+            movie = movie if movie.is_file() else None
+        else:
+            movie = next((p for p in video.parent.iterdir() if p.name.casefold() == "movie.nfo" and p.is_file()),
+                         None)
         if movie is not None:
             videos = [p for p in video.parent.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS
                       and ".runemark-" not in p.name]

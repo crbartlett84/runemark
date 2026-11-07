@@ -33,8 +33,9 @@ log = logging.getLogger(__name__)
 # API history:          2 (0.9.0): Tags-tab strips, header buttons, Library columns, keys for one video, toasts,
                          # opening files, names from details, changing a video that isn't open; everything in 1 stays
                          # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
-API_VERSION = 4          # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
+                         # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
                          # person's values read and set, video updates for changed people; everything in 3 stays
+API_VERSION = 5          # 5 (0.12.0): Library filters (entries in the Library's filter list); everything in 4 stays
 EVENTS = ("file_opened", "file_saved", "file_closed")
 
 
@@ -109,6 +110,21 @@ class LibraryColumn:
 
 
 @dataclass
+class LibraryFilter:
+    """An entry a plugin adds to the Library's filter list (0.12.0). test(path) -> True (shown), False, or None (not
+    known yet: not shown). prepare(paths) is called with every video in view when the filter is picked (and after a
+    rescan), so the plugin can find out about all of them; it calls library_column_changed() once it has."""
+    plugin: str
+    label: str
+    test: Callable[[str], bool | None]
+    prepare: Callable[[list[str]], Any] | None = None
+
+    @property
+    def key(self) -> str:
+        return f"plugin:{self.plugin}:{self.label}"
+
+
+@dataclass
 class PluginHost:
     """What the plugins added, for the windows to show. Filled in by load_all()."""
     plugins: list[Plugin] = field(default_factory=list)
@@ -116,6 +132,7 @@ class PluginHost:
     actions: list[_Action] = field(default_factory=list)                    # main window ⋯ → Plugins
     library_actions: list[_Action] = field(default_factory=list)            # Library → More → plugin actions
     library_columns: list[LibraryColumn] = field(default_factory=list)      # extra Library columns (0.9.0)
+    library_filters: list[LibraryFilter] = field(default_factory=list)      # extra Library filters (0.12.0)
     person_actions: list[_Action] = field(default_factory=list)             # buttons in People (0.11.0)
     listeners: dict[str, list[tuple[str, Callable]]] = field(default_factory=lambda: {e: [] for e in EVENTS})
 
@@ -214,7 +231,16 @@ class PluginAPI:
         self._w.library_columns_changed()
 
     def library_column_changed(self) -> None:
-        """Values for a plugin column have arrived: the Library redraws its plugin columns."""
+        """Values for a plugin column (or filter) have arrived: the Library redraws its plugin columns, and a plugin
+        filter that's picked is applied again."""
+        self._w.library_columns_changed()
+
+    def add_library_filter(self, label: str, test: Callable[[str], bool | None],
+                           prepare: Callable[[list[str]], Any] | None = None) -> None:
+        """An entry in the Library's filter list, after Runemark's own (0.12.0): shows the videos test(path) says True
+        for. prepare(paths) is called with every video in view when it's picked; call library_column_changed() when
+        the answers are in. Keep test() quick: it's called for every video each time the list is filtered."""
+        self._host.library_filters.append(LibraryFilter(self._plugin.name, label, test, prepare))
         self._w.library_columns_changed()
 
     def on(self, event: str, callback: Callable) -> None:
@@ -540,13 +566,15 @@ class PluginAPI:
         return json.loads(json.dumps(self._w.settings.libraries))
 
     def move_file(self, path: Path | str, folder: Path | str, new_name: str | None = None,
-                  then: Callable[[Path | None, str], Any] | None = None, open_after: bool = True) -> None:
+                  then: Callable[[Path | None, str], Any] | None = None, open_after: bool = True,
+                  discard_changes: bool = False) -> None:
         """Move a video (and files beside it with the same name: .nfo, subtitles…) into `folder`, optionally
         renamed (new_name without extension). Runemark lets go of it first if it's open (an open video with unsaved
-        changes isn't moved), and keeps its history and library entry. If it was open it's opened from the new
-        place, or with open_after=False the next open video is shown instead. then(new_path, "") when done, or
-        then(None, reason) if it couldn't."""
-        self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after)
+        changes isn't moved, unless discard_changes: 0.12.0, for a reject, where they'd be thrown away anyway), and
+        keeps its history and library entry. If it was open it's opened from the new place, or with
+        open_after=False the next open video is shown instead. then(new_path, "") when done, or then(None, reason)
+        if it couldn't."""
+        self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after, discard_changes)
 
     def upgrade_copy(self, curated: Path | str, better: Path | str, old_to: Path | str | None = None,
                      then: Callable[[Path | None, str], Any] | None = None) -> None:

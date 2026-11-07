@@ -8,7 +8,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
@@ -163,6 +163,8 @@ def people_key(people) -> list[tuple[str, tuple]]:
 
 
 class MainWindow(QMainWindow):
+    cacheReady = Signal(str)            # 0.12.0: a local copy is complete (from the copier's thread)
+
     def __init__(self, db: TagDB, settings: Settings):
         super().__init__()
         self.db = db
@@ -461,7 +463,8 @@ class MainWindow(QMainWindow):
             self.tag_editor.set_tags(self.doc.tags)
         return result
 
-    def plugin_move(self, path: Path, folder: Path, new_name: str | None, then, open_after: bool = True):
+    def plugin_move(self, path: Path, folder: Path, new_name: str | None, then, open_after: bool = True,
+                    discard_changes: bool = False):
         """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it.
         open_after=False: if it was open, go on to the next open file (or none) instead of reopening it."""
         from ..plugins import move_with_sidecars
@@ -469,7 +472,7 @@ class MainWindow(QMainWindow):
             # 0.9.0: still being saved: move it once the save is written (or not at all if it failed)
             def after_save(ok):
                 if ok:
-                    self.plugin_move(path, folder, new_name, then, open_after)
+                    self.plugin_move(path, folder, new_name, then, open_after, discard_changes)
                 elif then:
                     self._run_plugin(then, None, "it couldn't be saved")
             self.saves.when_done(path, after_save)
@@ -510,7 +513,7 @@ class MainWindow(QMainWindow):
             finish(new_path, "")
 
         if reopen:
-            if self.doc.dirty():
+            if self.doc.dirty() and not discard_changes:
                 QMessageBox.information(self, "Unsaved changes", f"{path.name} has unsaved changes. Save it (or "
                                         "undo the changes) first.")
                 finish(None, "unsaved changes")
@@ -686,6 +689,9 @@ class MainWindow(QMainWindow):
         self.player = PlayerPanel()
         self.player.captureRequested.connect(self.capture_frame)
         self.player.loadFailed.connect(self._player_failed)
+        self.video_cache = None
+        self.cacheReady.connect(self._cache_ready)
+        self._setup_video_cache()
         self.player.frame.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         left_layout.addWidget(self.player, 1)
         self.session_keys = QLabel("")          # 0.9.0: a plugin's number keys for this video
@@ -1140,8 +1146,9 @@ class MainWindow(QMainWindow):
         if play:
             self.player.reset_message()
             self.player.load(doc.path, doc.info, position_ms)
+            self._cache_ahead(doc.path)
             if self.settings.filmstrip_count:
-                self.filmstrip.load(doc.path, doc.info, self.settings.filmstrip_count)
+                self.filmstrip.load(self.player.source or doc.path, doc.info, self.settings.filmstrip_count)
         for widget in self.strip_widgets:
             widget.setVisible(bool(self.settings.filmstrip_count))
         self.details.show_sections(describe(doc.info))
@@ -1206,6 +1213,41 @@ class MainWindow(QMainWindow):
             if self.doc is None or file_key(target) != file_key(self.doc.path):
                 self.open_file(target)
             self._fill_combo()
+
+    # ================================================================ local copies of network videos (0.12.0)
+    def _setup_video_cache(self):
+        from ..media.cache import VideoCache
+        if self.video_cache is not None:
+            self.video_cache.stop()
+        if not getattr(self.settings, "video_cache", True):
+            self.video_cache = None
+            self.player.source_for = None
+            return
+        self.video_cache = VideoCache(limit_bytes=int(getattr(self.settings, "video_cache_gb", 20)) * 1024 ** 3,
+                                      ahead=int(getattr(self.settings, "video_cache_ahead", 3)),
+                                      ready=lambda p: self.cacheReady.emit(str(p)))
+        self.player.source_for = self.video_cache.source_for
+
+    def _cache_ahead(self, path: Path):
+        """Copy the open video (when it's on a network drive and not copied yet) and the next ones in the list."""
+        cache = self.video_cache
+        if cache is None:
+            return
+        cache.playing = {str(self.player.source)} if self.player.source is not None else set()
+        current = next((i for i, p in enumerate(self.queue) if file_key(p) == file_key(path)), None)
+        following = self.queue[current + 1:current + 1 + cache.ahead] if current is not None else []
+        cache.want([Path(path), *following])
+
+    def _cache_ready(self, original: str):
+        cache, doc = self.video_cache, self.doc
+        if cache is None or doc is None or not self.player.loaded or file_key(doc.path) != file_key(Path(original)):
+            return
+        if self.saves.pending(doc.path) is not None:
+            return                                   # it's being saved: the reopen after it picks the copy up
+        local = cache.fresh_copy(doc.path)
+        if local is not None and self.player.switch_source(local):
+            cache.playing = {str(local)}
+            self.set_status(f"Playing the local copy of {doc.path.name} (faster scrubbing)")
 
     def _move_in_queue(self, step: int):
         if len(self.queue) < 2:
@@ -2561,6 +2603,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self, db=self.db)
         dialog.databaseRestored.connect(self._database_restored)
         if dialog.exec():
+            self._setup_video_cache()
             if self.settings.theme != old_theme:
                 QMessageBox.information(self, "Appearance", "The new appearance applies the next time you start Runemark.")
             writer = "Windows" if explorer.windows_api_available() and self.settings.explorer_writer == "auto" \
