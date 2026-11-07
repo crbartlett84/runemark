@@ -403,3 +403,26 @@ def test_no_exact_match_or_no_stashdb_changes_nothing_but_the_check():
     none = BoxStash(box=False)
     assert I.enrich_studio(none, "1") == "" and none.updates == []
     assert "no StashDB" in I.run_studios(none)
+
+
+def test_career_spans_are_written_as_stash_parses_them():
+    """0.4.1: StashDB's "2019–" (an en dash) made Stash refuse the performer, and the whole scene with it."""
+    plug = I
+    assert plug.career("2019–") == "2019-" and plug.career("2013 – 2021") == "2013-2021"
+    assert plug.career("2015-present") == "2015-" and plug.career("2010") == "2010" and plug.career("a while") == ""
+
+
+def test_a_performer_stash_refuses_doesnt_fail_the_scene():
+    plug = I
+
+    class Picky(FakeStash):
+        def q(self, query, variables=None):
+            if "performerCreate" in query and "tattoos" in (variables or {}).get("i", {}):
+                raise RuntimeError('could not parse tattoos "x"')
+            return super().q(query, variables)
+    s = Picky("/v.mp4")
+    person = {"name": "Person One", "values": [
+        {"attribute": {"stash_field": "tattoos"}, "value": "x"},
+        {"attribute": {"stash_field": "career_length"}, "value": "2019–"}]}
+    pid = plug.performer_id(s, person, {"overwrite": True, "createPerformers": True})
+    assert pid and s.performers[pid].get("career_length") == "2019-" and "tattoos" not in s.performers[pid]

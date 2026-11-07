@@ -2,7 +2,7 @@ name: Runemark Import
 description: >-
   Imports the tags, details, studio, links, people and chapters (with ends) Runemark wrote into your videos,
   keeps Stash in step when a video changes in Runemark, and fills in studios from StashDB.
-version: 0.4.0
+version: 0.4.1
 url: https://github.com/crbartlett84/runemark/tree/main/integrations/stash
 exec:
   - python

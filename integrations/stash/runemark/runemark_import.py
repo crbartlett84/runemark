@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import os
 import sys
 import urllib.request
@@ -276,6 +277,10 @@ def performer_fields(person: dict, existing: dict | None, overwrite: bool) -> di
                 continue
         elif field not in STRING_FIELDS:
             continue
+        elif field == "career_length":
+            value = career(values[0])
+            if not value:
+                continue
         if overwrite or not have.get(field):
             if have.get(field) != value:
                 out[field] = value
@@ -295,6 +300,39 @@ def performer_fields(person: dict, existing: dict | None, overwrite: bool) -> di
     return out
 
 
+def career(text: str) -> str:
+    """A career span as Stash parses it: "2013-2021" or "2019-" (StashDB writes an en dash, "2019–", which
+    Stash refuses: the whole performer, and so the scene, failed). "" when it isn't a year span."""
+    t = re.sub(r"\s*[‐-―−-]\s*", "-", (text or "").strip())
+    t = re.sub(r"(?i)\s*(present|now|today)$", "", t)
+    m = re.fullmatch(r"(\d{4})(?:-(\d{4})?)?", t)
+    if not m:
+        return ""
+    return m.group(1) + ("-" + (m.group(2) or "") if "-" in t else "")
+
+
+def _refused_field(exc: Exception, fields: dict) -> str | None:
+    """The performer field Stash's error names (it says "could not parse career_length ..."), if it's one we sent."""
+    text = str(exc)
+    return next((f for f in fields if f in text), None)
+
+
+def _performer_write(stash: Stash, query: str, base: dict, fields: dict, name: str) -> dict | None:
+    """performerUpdate/Create, leaving out a field Stash refuses (logged) rather than failing the scene."""
+    fields = dict(fields)
+    for _ in range(len(fields) + 1):
+        try:
+            return stash.q(query, {"i": {**base, **fields}})
+        except RuntimeError as exc:
+            bad = _refused_field(exc, fields)
+            if not bad:
+                log("w", f"Runemark: performer {name}: {exc}")
+                return None
+            log("w", f"Runemark: performer {name}: left out {bad} (Stash refused {fields[bad]!r})")
+            fields.pop(bad)
+    return None
+
+
 def _ids(record: dict) -> list[dict]:
     return [{"endpoint": x["endpoint"], "stash_id": x["stash_id"]} for x in record.get("stash_ids") or []]
 
@@ -306,13 +344,16 @@ def performer_id(stash: Stash, person: dict, settings: dict) -> str | None:
         if fields:
             if "custom_fields" in fields:
                 fields["custom_fields"] = {"partial": fields["custom_fields"]}
-            stash.q("mutation($i: PerformerUpdateInput!) { performerUpdate(input: $i) { id } }",
-                    {"i": {"id": existing["id"], **fields}})
+            _performer_write(stash, "mutation($i: PerformerUpdateInput!) { performerUpdate(input: $i) { id } }",
+                             {"id": existing["id"]}, fields, person["name"])
         return existing["id"]
     if not settings["createPerformers"]:
         return None
-    created = stash.q("mutation($i: PerformerCreateInput!) { performerCreate(input: $i) { id } }",
-                      {"i": {"name": person["name"], **fields}})["performerCreate"]["id"]
+    done = _performer_write(stash, "mutation($i: PerformerCreateInput!) { performerCreate(input: $i) { id } }",
+                            {"name": person["name"]}, fields, person["name"])
+    if not done:
+        return None
+    created = done["performerCreate"]["id"]
     log("i", f"Runemark: added performer {person['name']}")
     return created
 

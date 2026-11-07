@@ -11,6 +11,11 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 - Stash plugin 0.4.0: studios are filled in from StashDB (logo, links, details, parent network) when they're made,
   and "Fill in studios from StashDB" does the ones already there. Only exact name or alias matches; blanks only.
 
+### Fixed
+- Stash plugin 0.4.1: a performer's career span from StashDB ("2019–", with an en dash) made Stash refuse the
+  performer, and the scene's whole import failed with it (no tags, cover or details). Spans are now written as Stash
+  reads them ("2019-"), and a field Stash still refuses is left out (and logged) instead of failing the scene.
+
 ## [0.11.1] - 2026-11-07
 
 ### Added
