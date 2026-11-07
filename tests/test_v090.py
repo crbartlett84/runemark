@@ -403,12 +403,11 @@ def test_save_and_next_goes_on_while_the_save_runs(tmp_path, media, qapp):
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == a)
         assert win.doc.read_only and not win.tags_tab.isEnabled() and not win.save_button.isEnabled()
         win.add_chapter()                                         # nothing changes
-        assert len(win.doc.chapters) == 2
+        assert len(win.doc.chapters) == 1                         # 0.11.0: no extra chapter at 0:00
         gate.set()
         assert wait_until(qapp, lambda: win.saves.idle() and win.doc is not None and not win.doc.read_only
                           and win.doc.path == a and win.tags_tab.isEnabled(), 30)
-        assert read_state(a).keywords == ["Lake"] and [c.title for c in probe(a).chapters] == ["Chapter 1",
-                                                                                               "Chapter 2"]
+        assert read_state(a).keywords == ["Lake"] and [c.title for c in probe(a).chapters] == ["Start", "Chapter 1"]
         assert db.history(a)[0].chapters == []                     # chapters are part of the undo history now
     finally:
         _close(win, db, qapp)
@@ -480,15 +479,15 @@ def test_chapter_undo_redo_and_snapping_and_session_keys(tmp_path, media, qapp):
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == a)
         win.chapters.add_at(1.0)
         win.chapters.add_at(3.0)
-        assert [m.start for m in win.doc.chapters] == [0.0, 1.0, 3.0]
-        assert win.player.slider.chapter_starts == [0.0, 1.0, 3.0]
+        assert [m.start for m in win.doc.chapters] == [1.0, 3.0]          # 0.11.0: no chapter at 0:00 as well
+        assert win.player.slider.chapter_starts == [1.0, 3.0]
         win.undo_chapters()
-        assert [m.start for m in win.doc.chapters] == [0.0, 1.0] and win.player.slider.chapter_starts == [0.0, 1.0]
+        assert [m.start for m in win.doc.chapters] == [1.0] and win.player.slider.chapter_starts == [1.0]
         win.undo_chapters()
         assert win.doc.chapters == [] and not win.doc.dirty()
         win.redo_chapters()
         win.redo_chapters()
-        assert [m.start for m in win.doc.chapters] == [0.0, 1.0, 3.0]
+        assert [m.start for m in win.doc.chapters] == [1.0, 3.0]
 
         win.doc.cuts = [2.0, 4.0]                                 # as Find cuts leaves them
         win.player.seek_seconds(4.6)

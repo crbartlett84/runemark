@@ -67,9 +67,9 @@ def test_renamed_chapter_survives_save(tmp_path, media, qapp, pick):
         win.open_paths([path])
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == path)
         win.chapters.add_at(1.0)                          # what M does, at a known time
-        assert [m.name for m in win.doc.chapters] == ["Chapter 1", "Chapter 2"]
-        rename_in_table(qapp, win.chapters, 1, "lak" if pick else "lake", pick)   # an existing tag
-        assert [m.name for m in win.doc.chapters] == ["Chapter 1", "Lake"]
+        assert [m.name for m in win.doc.chapters] == ["Chapter 1"]          # 0.11.0: no extra one at 0:00
+        rename_in_table(qapp, win.chapters, 0, "lak" if pick else "lake", pick)   # an existing tag
+        assert [m.name for m in win.doc.chapters] == ["Lake"]
         assert "Lake" in win.doc.tags
         win.activateWindow()
         QTest.keyClick(win, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
@@ -78,9 +78,9 @@ def test_renamed_chapter_survives_save(tmp_path, media, qapp, pick):
             win.save()                                    # no keyboard focus on a test desktop
         assert wait_until(qapp, lambda: not win._busy and win.saves.idle() and win.doc is not None and not win.doc.dirty()
                           and win.doc.path == path and win.player.path is not None)
-        assert [c.title for c in probe(path).chapters] == ["Chapter 1", "Lake"]
-        assert [m.name for m in win.chapters.marks] == ["Chapter 1", "Lake"]
-        assert [m.name for m in win.doc.chapters] == ["Chapter 1", "Lake"]
+        assert [c.title for c in probe(path).chapters] == ["Start", "Lake"]   # the hidden lead-in, then Lake
+        assert [m.name for m in win.chapters.marks] == ["Lake"]
+        assert [m.name for m in win.doc.chapters] == ["Lake"]
     finally:
         if win.doc is not None:
             win.doc.discard()
@@ -101,18 +101,18 @@ def test_rename_made_while_saving_is_kept(tmp_path, media, qapp):
         win.open_paths([path])
         assert wait_until(qapp, lambda: win.doc is not None and win.doc.path == path)
         win.chapters.add_at(1.0)
-        win.save()                                        # writes "Chapter 2"...
-        rename_in_table(qapp, win.chapters, 1, "Lake")    # ...while the name is changed
+        win.save()                                        # writes "Chapter 1"...
+        rename_in_table(qapp, win.chapters, 0, "Lake")    # ...while the name is changed
         assert wait_until(qapp, lambda: not win._busy and win.saves.idle() and win.player.path is not None
                           and win.doc is not None and win.doc.state is not None
-                          and [c.title for c in probe(path).chapters] == ["Chapter 1", "Chapter 2"]
+                          and [c.title for c in probe(path).chapters] == ["Start", "Chapter 1"]
                           and "kept" in win.status_text.text())
-        assert [m.name for m in win.doc.chapters] == ["Chapter 1", "Lake"] and win.doc.dirty()
-        assert [m.name for m in win.chapters.marks] == ["Chapter 1", "Lake"]
+        assert [m.name for m in win.doc.chapters] == ["Lake"] and win.doc.dirty()
+        assert [m.name for m in win.chapters.marks] == ["Lake"]
         win.save()
         assert wait_until(qapp, lambda: not win._busy and win.saves.idle() and win.doc is not None and not win.doc.dirty()
                           and win.player.path is not None)
-        assert [c.title for c in probe(path).chapters] == ["Chapter 1", "Lake"]
+        assert [c.title for c in probe(path).chapters] == ["Start", "Lake"]
     finally:
         if win.doc is not None:
             win.doc.discard()

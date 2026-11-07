@@ -398,7 +398,7 @@ def test_plugin_api_3_save_handler_in_the_editor_with_history_and_undo(tmp_path,
         assert state["remote"] == (True, "") and state["old"] == (True, "")
         assert not state["future"][0] and "needs a newer Runemark" in state["future"][1]
         api = plugins.PluginAPI(win, host, next(p for p in host.plugins if p.key == "remote"))
-        assert api.api_version == 3 and api.SaveResult is saving.SaveResult and api.ScanListing is L.ScanListing
+        assert api.api_version >= 3 and api.SaveResult is saving.SaveResult and api.ScanListing is L.ScanListing
         calls = []
         api.add_save_handler(elsewhere(calls))
 
@@ -415,9 +415,8 @@ def test_plugin_api_3_save_handler_in_the_editor_with_history_and_undo(tmp_path,
         assert calls[0]["kind"] == "save" and calls[0]["expected"] == {"size": opened_stamp[0],
                                                                        "mtime": opened_stamp[1],
                                                                        "fp": opened_stamp[2]}
-        assert [c["name"] for c in calls[0]["changes"]["chapters"]] == ["Chapter 1", "Chapter 2"]
-        assert read_state(a).keywords == ["Lake"] and [c.title for c in probe(a).chapters] == ["Chapter 1",
-                                                                                               "Chapter 2"]
+        assert [c["name"] for c in calls[0]["changes"]["chapters"]] == ["Chapter 1"]     # 0.11.0: no 0:00 one
+        assert read_state(a).keywords == ["Lake"] and [c.title for c in probe(a).chapters] == ["Start", "Chapter 1"]
         assert db.history(a)[0].chapters == []                 # the history (and so Undo) works as for local saves
         assert not win.toasts.toasts or win.toasts.toasts[-1].kind != "error"
 
