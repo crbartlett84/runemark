@@ -282,6 +282,18 @@ class SettingsDialog(QDialog):
         nfo_note.setWordWrap(True)
         form.addRow("", self.read_nfo)
         form.addRow("", nfo_note)
+        self.nfo_people = QComboBox()              # 0.11.1
+        for label, value in (("Add them (new names go into People too)", "add"),
+                             ("Only people already in People", "known"),
+                             ("Don't take people from it", "off")):
+            self.nfo_people.addItem(label, value)
+        self.nfo_people.setCurrentIndex(max(0, self.nfo_people.findData(getattr(settings, "nfo_people", "add"))))
+        self.nfo_people.setToolTip("A .nfo lists everyone in the video. \"Only people already in People\" puts the "
+                                   "ones you know on the video and creates nobody new, so a plugin that knows who "
+                                   "to leave out (Lore leaves out male performers) adds the new ones.")
+        self.read_nfo.toggled.connect(self.nfo_people.setEnabled)
+        self.nfo_people.setEnabled(self.read_nfo.isChecked())
+        form.addRow("People in the .nfo", self.nfo_people)
 
         self.scan_on_start = QCheckBox("Look for new videos in the Library folders when Runemark starts")
         self.scan_on_start.setChecked(settings.scan_on_start)
@@ -467,6 +479,7 @@ class SettingsDialog(QDialog):
         s.nudge_steps = list(clean_nudge_steps([spin.value() for spin in self.nudge_spins]))
         s.preserve_modified_date = self.preserve.isChecked()
         s.read_nfo = self.read_nfo.isChecked()
+        s.nfo_people = self.nfo_people.currentData() or "add"
         s.scan_on_start = self.scan_on_start.isChecked()
         s.check_updates = self.check_updates.isChecked()
         s.find_cuts_on_open = self.find_cuts.isChecked()

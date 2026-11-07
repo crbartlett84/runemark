@@ -165,3 +165,43 @@ def test_main_window_people_changed_waits_for_people_or_offers_when_asked(tmp_pa
     MainWindow.people_changed(w, [], now=True)                 # ...until asked
     assert W.offered == [([str(tmp_path / "a.mp4")], "People: changed Ana Lee", [])]
     db.close()
+
+
+def test_people_from_an_nfo_follow_the_setting(tmp_path):
+    """0.11.1: "add" (as before), "known" (only people already in People; nobody new), "off"."""
+    from types import SimpleNamespace
+    from runemark.nfo import NfoDetails
+    from runemark.ui.main_window import MainWindow
+    from runemark.media import mp4meta
+    db = TagDB(tmp_path / "t.db")
+    known = db.add_person("Known One")
+    details = NfoDetails(path=tmp_path / "v.nfo", people=["Known One", "New One"])
+
+    def fill(mode):
+        doc = SimpleNamespace(meta=mp4meta.VideoMeta("", None), people=[])
+        w = SimpleNamespace(db=db, settings=SimpleNamespace(nfo_people=mode),
+                            tag_editor=SimpleNamespace(refresh_database=lambda: None))
+        MainWindow._fill_from_nfo(w, doc, details)
+        return [p.name for p, _s in doc.people]
+
+    assert fill("off") == [] and db.find_person("New One") is None
+    assert fill("known") == ["Known One"] and db.find_person("New One") is None
+    assert fill("add") == ["Known One", "New One"] and db.find_person("New One") is not None
+    assert known.uid == db.find_person("Known One").uid
+    db.close()
+
+
+def test_settings_offer_the_nfo_people_choice(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    monkeypatch.setenv("RUNEMARK_HOME", str(tmp_path))
+    from runemark.settings import Settings
+    from runemark.ui.dialogs import SettingsDialog
+    settings = Settings()
+    assert settings.nfo_people == "add"
+    dialog = SettingsDialog(settings, None, db=None)
+    dialog.nfo_people.setCurrentIndex(dialog.nfo_people.findData("known"))
+    dialog._save()
+    assert settings.nfo_people == "known" and Settings.load().nfo_people == "known"
+    dialog.read_nfo.setChecked(False)
+    assert not dialog.nfo_people.isEnabled()

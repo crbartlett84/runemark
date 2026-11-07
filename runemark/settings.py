@@ -37,6 +37,9 @@ class Settings:
     name_patterns: dict = field(default_factory=dict)         # "read" / "rename" -> the last pattern used
     suggestions_count: int = 8
     read_nfo: bool = True                 # fill empty details from a .nfo beside a video the first time it opens
+    # 0.11.1: the people a .nfo names: "add" (new ones go into People too), "known" (only people already in People,
+    # so a plugin such as Lore, which knows who to leave out, adds new ones), "off" (people aren't taken from it)
+    nfo_people: str = "add"
     chapter_keys: dict = field(default_factory=dict)          # "1".."9" -> the chapter name that key adds
     tag_keys: dict = field(default_factory=dict)              # "1".."9" -> the tag Alt+that key adds or removes
     scan_on_start: bool = True            # look for new and changed videos in the library folders on start

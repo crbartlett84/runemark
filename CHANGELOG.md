@@ -4,6 +4,14 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-07
+
+### Added
+- **Settings → People in the .nfo**: *Add them* (as before: new names go into People too), *Only people already
+  in People* (the ones you know go on the video; nobody new is created, so a plugin that knows who to leave out adds
+  the new ones: Lore leaves out male performers), or *Don't take people from it*. A .nfo has only names, so Runemark
+  can't tell who to leave out by itself.
+
 ## [0.11.0] - 2026-11-06
 
 ### Changed

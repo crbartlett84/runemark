@@ -1081,9 +1081,13 @@ class MainWindow(QMainWindow):
             got.append("links")
         have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _s in doc.people}
         added = 0
-        for name in details.people:
+        mode = getattr(self.settings, "nfo_people", "add")                       # 0.11.1
+        for name in details.people if mode != "off" else []:
             try:
-                person = self.db.find_person(name) or self.db.add_person(name)
+                person = self.db.find_person(name)
+                if person is None and mode == "known":
+                    continue                       # not in People: left for a plugin (Lore knows who to leave out)
+                person = person or self.db.add_person(name)
             except Exception as exc:  # noqa: BLE001
                 log.info("couldn't add %s from the .nfo: %s", name, exc)
                 continue
