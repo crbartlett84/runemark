@@ -35,8 +35,8 @@ log = logging.getLogger(__name__)
                          # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
                          # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
                          # person's values read and set, video updates for changed people; everything in 3 stays
-API_VERSION = 5          # 5 (0.12.0): Library filters (entries in the Library's filter list); everything in 4 stays
-EVENTS = ("file_opened", "file_saved", "file_closed")
+API_VERSION = 6          # 6 (0.13.0): person checks (who may join People) and removing people; everything in 5 stays
+EVENTS = ("file_opened", "file_saved", "file_closed", "people_unchecked")   # people_unchecked: 0.13.0
 
 
 def plugins_dir() -> Path:
@@ -134,7 +134,24 @@ class PluginHost:
     library_columns: list[LibraryColumn] = field(default_factory=list)      # extra Library columns (0.9.0)
     library_filters: list[LibraryFilter] = field(default_factory=list)      # extra Library filters (0.12.0)
     person_actions: list[_Action] = field(default_factory=list)             # buttons in People (0.11.0)
+    person_checks: list[tuple[str, Callable[[str], Any]]] = field(default_factory=list)   # who may join People (0.13.0)
     listeners: dict[str, list[tuple[str, Callable]]] = field(default_factory=lambda: {e: [] for e in EVENTS})
+
+    def person_verdict(self, name: str) -> bool | None:
+        """0.13.0: may this person join People? False when any plugin's check says no, True when one says yes and
+        none says no, None when no plugin knows (or none checks)."""
+        verdict = None
+        for plugin, check in list(self.person_checks):
+            try:
+                said = check(name)
+            except Exception:  # noqa: BLE001
+                log.exception("plugin %s failed checking a person", plugin)
+                continue
+            if said is False:
+                return False
+            if said is True:
+                verdict = True
+        return verdict
 
     def emit(self, event: str, *args) -> None:
         """Tell the plugins something happened. A plugin that raises is logged; the others still hear about it."""
@@ -503,6 +520,33 @@ class PluginAPI:
         if ids:
             self._w.people_changed(ids, now=True)
 
+    def add_person_check(self, check: Callable[[str], Any]) -> None:
+        """Decide who may join People (0.13.0). check(name) -> True (yes), False (never: not added from a .nfo nor by
+        add_person) or None (doesn't know). While any plugin checks, a .nfo's names nobody vouches for aren't
+        created; they're passed to the "people_unchecked" event (names, path) for the plugin to look up."""
+        self._host.person_checks.append((self._plugin.name, check))
+
+    def remove_people(self, names: list[str]) -> list[str]:
+        """Take people out of People (0.13.0), as Delete in People does: their videos are then offered the update
+        that takes them (and the tags their profile added) out. Returns the names removed."""
+        db = self._w.db
+        files: dict[str, str] = {}
+        drop, gone = [], []
+        for name in names:
+            person = db.find_person(name)
+            if person is None:
+                continue
+            for f in db.files_with_person(person.id):
+                files.setdefault(f.casefold(), f)
+            drop.append(person.uid)
+            gone.append(person.name)
+            db.delete_person(person.id)
+        if gone:
+            self._w.tag_editor.refresh_database()
+            if files:
+                self._w._update_people_files(list(files.values()), "People: removed " + ", ".join(gone), drop)
+        return gone
+
     def add_person(self, name: str, aliases: list[str] = (), links: list[str] = (), photo: bytes | None = None,
                    values: dict | None = None) -> str:
         """Add someone to People, or fill in what an existing profile lacks (new aliases, links, a photo when they
@@ -510,6 +554,8 @@ class PluginAPI:
         to choose the tag the value becomes (attributes are created if missing). Returns their main name."""
         db = self._w.db
         person = db.find_person(name)
+        if person is None and self._host.person_verdict(name) is False:
+            raise ValueError(f"{name} is left out of People (a plugin's check)")
         if person is None:
             free = [a for a in aliases if db.find_person(a) is None and a.casefold() != name.casefold()]
             person = db.add_person(name, free)
@@ -567,14 +613,16 @@ class PluginAPI:
 
     def move_file(self, path: Path | str, folder: Path | str, new_name: str | None = None,
                   then: Callable[[Path | None, str], Any] | None = None, open_after: bool = True,
-                  discard_changes: bool = False) -> None:
+                  discard_changes: bool = False, mover: Callable | None = None) -> None:
         """Move a video (and files beside it with the same name: .nfo, subtitles…) into `folder`, optionally
         renamed (new_name without extension). Runemark lets go of it first if it's open (an open video with unsaved
         changes isn't moved, unless discard_changes: 0.12.0, for a reject, where they'd be thrown away anyway), and
         keeps its history and library entry. If it was open it's opened from the new place, or with
         open_after=False the next open video is shown instead. then(new_path, "") when done, or then(None, reason)
-        if it couldn't."""
-        self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after, discard_changes)
+        if it couldn't. 0.13.0: mover(path, folder, new_name) -> (new_path, [(old, new)...]) does the move instead
+        (off the window's thread, as Runemark's own move now is), e.g. on a server next to the files; it raises
+        when it can't, and nothing is changed here then."""
+        self._w.plugin_move(Path(path), Path(folder), new_name, then, open_after, discard_changes, mover)
 
     def upgrade_copy(self, curated: Path | str, better: Path | str, old_to: Path | str | None = None,
                      then: Callable[[Path | None, str], Any] | None = None) -> None:

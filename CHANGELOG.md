@@ -4,6 +4,22 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-08
+
+### Added
+- **Plugins can decide who joins People** (plugin API 6, `add_person_check`): a person a plugin rules out is never
+  created, whether from a `.nfo`, a plugin or a plugin's details. While a plugin checks, new names in a `.nfo` that
+  no plugin vouches for wait for the plugin to look them up (the `people_unchecked` event) instead of being added
+  as they are. Runemark Lore uses it so male performers never join People.
+- **Plugins can remove people** (`remove_people`), as Delete in People does, with the same offer to update their
+  videos.
+- **A plugin can do a move itself** (`move_file(..., mover=...)`), on a server next to the files, while Runemark
+  keeps its records with the video as before.
+
+### Changed
+- **Moving a video for a plugin (Approve, Reject) no longer holds up the window**: the move, which lists the folder
+  over the network to find the files that go with the video, runs in the background.
+
 ## [0.12.2] - 2026-11-07
 
 ### Fixed

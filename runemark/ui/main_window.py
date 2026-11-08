@@ -325,8 +325,12 @@ class MainWindow(QMainWindow):
                 doc.tags = tags
                 done.append("tags")
         added = 0
+        host = getattr(self, "plugins", None)
         for name in changes.get("people") or []:
-            person = self.db.find_person(name) or self.db.add_person(name)
+            person = self.db.find_person(name)
+            if person is None and host is not None and host.person_verdict(name) is False:
+                continue                           # 0.13.0: a plugin's check rules them out of People
+            person = person or self.db.add_person(name)
             if not any((p["id"] if isinstance(p, dict) else p.uid) == person.uid for p, _s in doc.people):
                 doc.people = doc.people + [(person, [])]
                 added += 1
@@ -464,15 +468,18 @@ class MainWindow(QMainWindow):
         return result
 
     def plugin_move(self, path: Path, folder: Path, new_name: str | None, then, open_after: bool = True,
-                    discard_changes: bool = False):
+                    discard_changes: bool = False, mover=None):
         """Move a video (and its same-named files beside it) for a plugin, keeping Runemark's records with it.
-        open_after=False: if it was open, go on to the next open file (or none) instead of reopening it."""
+        open_after=False: if it was open, go on to the next open file (or none) instead of reopening it.
+        0.13.0: the move itself runs off the window's thread (a folder listing over the network doesn't freeze the
+        window), and mover(path, folder, new_name) -> (new_path, [(old, new)...]) can do it instead (Lore: on
+        RuneGrab, next to the files)."""
         from ..plugins import move_with_sidecars
         if self.saves.pending(path) is not None:
             # 0.9.0: still being saved: move it once the save is written (or not at all if it failed)
             def after_save(ok):
                 if ok:
-                    self.plugin_move(path, folder, new_name, then, open_after, discard_changes)
+                    self.plugin_move(path, folder, new_name, then, open_after, discard_changes, mover)
                 elif then:
                     self._run_plugin(then, None, "it couldn't be saved")
             self.saves.when_done(path, after_save)
@@ -485,24 +492,30 @@ class MainWindow(QMainWindow):
                 self._run_plugin(then, new_path, reason)
 
         def go():
-            try:
-                new_path, moved = move_with_sidecars(path, folder, new_name)
-            except Exception as exc:  # noqa: BLE001
-                if reopen:
-                    self._load(path, 0)
-                finish(None, str(exc))
-                return
+            move = mover or move_with_sidecars
+            workers.start(lambda _job: move(path, folder, new_name), on_done=lambda result: moved(*result),
+                          on_error=lambda exc, _tb: not_moved(exc))
+
+        def not_moved(exc):
+            if reopen:
+                self._load(path, 0)
+            finish(None, str(exc))
+
+        def moved(new_path, _files):
+            new_path = Path(new_path)
             self.db.move_file(path, new_path)
-            if was_open:
+            # 0.13.0: the move ran in the background: another video may have been opened meanwhile (it stays)
+            still_open = was_open and self.doc is not None and file_key(self.doc.path) == file_key(path)
+            if still_open:
                 self._emit("file_closed", path)
                 self.doc = None
             self.files_moved([(str(path), str(new_path))])
             library.reindex(self.db, new_path)
             if self.library_window is not None:
                 self.library_window.refresh()
-            if was_open and open_after:
+            if still_open and open_after:
                 self._load(new_path, 0, status=f"Moved to {folder}")
-            elif was_open:
+            elif still_open:
                 index = next((i for i, p in enumerate(self.queue) if file_key(p) == file_key(new_path)), None)
                 if index is not None:
                     self.queue.pop(index)
@@ -510,6 +523,8 @@ class MainWindow(QMainWindow):
                     self.open_file(self.queue[min(index or 0, len(self.queue) - 1)])
                 else:
                     self._show_nothing(f"Moved {path.name} to {folder}")
+            elif was_open and not open_after:              # 0.13.0: moved on already: it leaves the list too
+                self.queue = [p for p in self.queue if file_key(p) != file_key(new_path)]
             finish(new_path, "")
 
         if self.video_cache is not None:
@@ -1090,9 +1105,18 @@ class MainWindow(QMainWindow):
         have = {(p["id"] if isinstance(p, dict) else p.uid) for p, _s in doc.people}
         added = 0
         mode = getattr(self.settings, "nfo_people", "add")                       # 0.11.1
+        host = getattr(self, "plugins", None)
+        checking = bool(host is not None and host.person_checks)                # 0.13.0
+        unchecked = []
         for name in details.people if mode != "off" else []:
             try:
                 person = self.db.find_person(name)
+                if person is None and checking:
+                    verdict = host.person_verdict(name)
+                    if verdict is not True:        # never a person a plugin rules out; unknown: the plugin looks
+                        if verdict is None and mode == "add":
+                            unchecked.append(name)
+                        continue
                 if person is None and mode == "known":
                     continue                       # not in People: left for a plugin (Lore knows who to leave out)
                 person = person or self.db.add_person(name)
@@ -1106,6 +1130,8 @@ class MainWindow(QMainWindow):
         if added:
             got.append(f"{added} {'person' if added == 1 else 'people'}")
             self.tag_editor.refresh_database()
+        if unchecked:
+            host.emit("people_unchecked", list(unchecked), doc.path)
         if not got:
             return ""
         return f"Filled in {', '.join(got)} from {details.path.name}: check them, then save"
