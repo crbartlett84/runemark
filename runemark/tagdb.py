@@ -159,6 +159,8 @@ LIBRARY_COLUMNS = {
     "missing": "INTEGER NOT NULL DEFAULT 0",
     # 0.5.0: studio; how many chapters; when the file was first seen; and "done" for the inbox without saving
     "studio": "TEXT", "chapters": "INTEGER", "first_seen": "TEXT", "inbox_done": "INTEGER NOT NULL DEFAULT 0",
+    # 0.13.1: when a scan first found it missing (it's forgotten after a while: library.scan's forget_after_days)
+    "missing_since": "TEXT",
 }
 
 
@@ -667,7 +669,7 @@ class TagDB:
         if row:
             file_id = row["id"]
             self.conn.execute("UPDATE files SET path = ?, size = ?, mtime = ?, saved_at = ?, indexed_mtime = NULL, "
-                              "missing = 0 WHERE id = ?", (str(path), size, mtime, _now(), file_id))
+                              "missing = 0, missing_since = NULL WHERE id = ?", (str(path), size, mtime, _now(), file_id))
             self.conn.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
         else:
             cur = self.conn.execute("INSERT INTO files(key, path, size, mtime, saved_at) VALUES(?, ?, ?, ?, ?)",
@@ -841,7 +843,7 @@ class TagDB:
             file_id = row["id"]
             self.conn.execute("UPDATE files SET path = ?, size = ?, mtime = ?, container = ?, title = ?, year = ?, "
                               "rating = ?, has_cover = ?, duration = ?, genre = ?, indexed_size = ?, "
-                              "indexed_mtime = ?, studio = ?, chapters = ?, missing = 0 WHERE id = ?",
+                              "indexed_mtime = ?, studio = ?, chapters = ?, missing = 0, missing_since = NULL WHERE id = ?",
                               values + (file_id,))
             self.conn.execute("DELETE FROM file_tags WHERE file_id = ?", (file_id,))
         else:
@@ -862,9 +864,20 @@ class TagDB:
             self.conn.commit()
 
     def mark_missing(self, path: str | os.PathLike, missing: bool = True, commit: bool = True) -> None:
-        self.conn.execute("UPDATE files SET missing = ? WHERE key = ?", (int(missing), file_key(path)))
+        if missing:                                # 0.13.1: the first time it's found missing is kept
+            self.conn.execute("UPDATE files SET missing = 1, missing_since = COALESCE(missing_since, ?) WHERE key = ?",
+                              (_now(), file_key(path)))
+        else:
+            self.conn.execute("UPDATE files SET missing = 0, missing_since = NULL WHERE key = ?", (file_key(path),))
         if commit:
             self.conn.commit()
+
+    def missing_longer_than(self, days: float) -> list[str]:
+        """0.13.1: the paths of files that have been missing (in every scan) for more than `days` days."""
+        cutoff = (_dt.datetime.now() - _dt.timedelta(days=days)).isoformat(timespec="seconds")
+        rows = self.conn.execute("SELECT path FROM files WHERE missing = 1 AND missing_since IS NOT NULL "
+                                 "AND missing_since < ?", (cutoff,)).fetchall()
+        return [r["path"] for r in rows]
 
     def commit(self) -> None:
         self.conn.commit()

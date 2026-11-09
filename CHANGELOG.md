@@ -4,6 +4,14 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-09
+
+### Changed
+- **The library forgets files that are gone for good.** A file every scan has found missing for more than 14 days
+  (deleted, or moved outside Runemark) is taken out of the library. It never happens to a folder that can't be
+  reached (a share that's offline), nor when one scan finds most of the library missing at once. The scan line says
+  how many were taken out. `library_forget_missing_days` in the settings file changes the 14 (0 turns it off).
+
 ## [0.13.0] - 2026-11-08
 
 ### Added

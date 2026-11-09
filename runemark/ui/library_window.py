@@ -875,6 +875,8 @@ class LibraryWindow(QDialog):
             note = f"{result.found} videos · {result.read} read"
             if result.missing:
                 note += f" · {result.missing} missing"
+            if getattr(result, "forgotten", 0):
+                note += f" · {result.forgotten} gone for over {self.settings.library_forget_missing_days} days, taken out"
             if result.stopped:
                 note += " · stopped early: scan again to finish"
             self.count.setText(self.count.text() + f"   (scan: {note})")
@@ -894,7 +896,8 @@ class LibraryWindow(QDialog):
         def work(job):
             db = self.db_for_thread()
             try:
-                return L.scan(db, folders, progress=job.report, cancel=job.cancel, rescan_all=rescan_all, skip=skip)
+                return L.scan(db, folders, progress=job.report, cancel=job.cancel, rescan_all=rescan_all, skip=skip,
+                              forget_after_days=getattr(self.settings, "library_forget_missing_days", 14))
             finally:
                 db.close()
 

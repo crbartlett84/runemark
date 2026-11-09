@@ -341,6 +341,7 @@ class ScanResult:
     found: int = 0
     read: int = 0
     missing: int = 0
+    forgotten: int = 0           # 0.13.1: missing longer than forget_after_days, so taken out of the library
     problems: list[str] = field(default_factory=list)
     stopped: bool = False        # cancelled partway; files already read are kept
 
@@ -529,7 +530,8 @@ def provider_matches(record: dict, size: int, mtime: float) -> bool:
 
 
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
-         cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = ()) -> ScanResult:
+         cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = (),
+         forget_after_days: float = 14) -> ScanResult:
     """Bring the library's index of these folders up to date. 0.10.1: every folder is listed here (names, sizes and
     times only, which is cheap even over a network); a file a scan provider describes with the same size and time
     is imported from its record, any other new or changed file is read here, and only files that aren't there any
@@ -627,7 +629,35 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
             db.commit()                             # batches keep a stopped or crashed scan's work, cheaply
             pending = 0
     db.commit()
+    if forget_after_days and not result.stopped:
+        result.forgotten = forget_long_missing(db, folders, forget_after_days, result)
     return result
+
+
+def forget_long_missing(db: TagDB, folders: list[str], days: float, result: ScanResult | None = None) -> int:
+    """0.13.1: take files out of the library that every scan for `days` days found missing (deleted or moved outside
+    Runemark). Only under a library folder that's reachable now: a share that's offline (VPN down, NAS asleep)
+    never makes its files look gone. And not when this scan found most of the library missing at once."""
+    if result is not None and result.missing > max(20, result.found // 2):
+        log.info("library: %d of %d missing in one scan: not forgetting any (is a folder offline?)",
+                 result.missing, result.found)
+        return 0
+    reachable = [f for f in folders if f and os.path.isdir(f)]
+    gone = 0
+    for path in db.missing_longer_than(days):
+        if not any(_inside(path, f) for f in reachable):
+            continue
+        try:
+            if os.path.exists(path):
+                db.mark_missing(path, False)
+                continue
+        except OSError:
+            continue
+        db.forget_file(path)
+        gone += 1
+    if gone:
+        log.info("library: forgot %d file(s) missing for over %g days", gone, days)
+    return gone
 
 
 def reindex(db: TagDB, path: str | os.PathLike) -> None:

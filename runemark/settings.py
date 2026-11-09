@@ -58,6 +58,7 @@ class Settings:
     find_cuts_on_open: bool = False       # 0.9.0: look for cuts a few seconds after a video opens
     show_cut_marks: bool = True           # 0.9.0: faint dots under the timeline where the cuts are
     library_maximized: bool = True        # 0.9.0: the Library opens maximised (until you make it smaller)
+    library_forget_missing_days: int = 14  # 0.13.1: a file missing this many days is taken out of the library (0 never)
     smart_filters: list = field(default_factory=list)   # 0.9.0: [{"name", "match": "all"|"any", "rules", "pinned"}]
     nudge_steps: list = field(default_factory=lambda: [0.5, 1.0, 5.0, 10.0])   # 0.9.2: seconds, smallest first
 

@@ -2869,11 +2869,12 @@ class MainWindow(QMainWindow):
             return
         db_path, folders = self.db.path, list(self.settings.library_folders)
         skip = library.scan_skips(self.settings)
+        forget = getattr(self.settings, "library_forget_missing_days", 14)
 
         def work(job):
             db = TagDB(db_path)
             try:
-                result = library.scan(db, folders, cancel=job.cancel, skip=skip)
+                result = library.scan(db, folders, cancel=job.cancel, skip=skip, forget_after_days=forget)
                 inbox = sum(1 for r in db.library() if r.in_inbox)
                 return result, inbox
             finally:
