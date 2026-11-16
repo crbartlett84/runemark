@@ -432,6 +432,7 @@ class MainWindow(QMainWindow):
         self.tag_editor.set_enabled(False)
         self._refresh_people()
         self.details.meta.set_meta(None)
+        self.chapters.clear_suggestions()
         self.chapters.set_marks([])
         self.chapters.set_enabled(False)
         self._refresh_thumbs()
@@ -1196,6 +1197,8 @@ class MainWindow(QMainWindow):
         self._refresh_tag_names()
         self.chapters.set_enabled(True, doc.container)
         self.chapters.clear_thumbs()
+        self.chapters.duration = (doc.info.duration or None) if doc.info is not None else None
+        self.chapters.clear_suggestions()             # suggestions belong to one video (0.14.0)
         self.chapters.set_marks(doc.chapters)
         self.player.set_chapter_starts([m.start for m in doc.chapters])
         if play:
@@ -2152,6 +2155,17 @@ class MainWindow(QMainWindow):
             self._thumb_job_busy = False
 
         self._thumb_job = workers.start(work, on_done=done, on_error=failed)
+
+    def suggest_chapters(self, items: list, source: str = "", path=None) -> int:
+        """Plugins (API 7): offer chapters for the open video. Nothing when `path` is given and isn't the open one."""
+        doc = self.doc
+        if doc is None or doc.read_only or path is not None and Path(path) != doc.path:
+            return 0
+        count = self.chapters.suggest(items, source)
+        if count:
+            self.set_status(f"{count} suggested chapter{'s' if count != 1 else ''} in the Chapters tab"
+                            + (f" ({source})" if source else ""))
+        return count
 
     def _chapter_named(self, name: str):
         if self.doc is not None and name.casefold() not in {t.casefold() for t in self.doc.tags}:

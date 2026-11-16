@@ -16,7 +16,7 @@ plugins/
 {"name": "My plugin", "version": "1.0", "description": "What it does, in a line.", "api": 1}
 ```
 
-`api` is the plugin API version it was written for (`6` for the calls marked *6* below, Runemark 0.13.0+; `5` for
+`api` is the plugin API version it was written for (`7` for the calls marked *7* below, Runemark 0.14.0+; `6` for the calls marked *6*, Runemark 0.13.0+; `5` for
 those marked *5*, Runemark 0.12.0+; `4` for
 those marked *4*, Runemark 0.11.0+; `3` for
 those marked *3*, Runemark 0.10.0+; `2` for
@@ -80,6 +80,7 @@ version 3 (Runemark 0.10.0) *3*.
 | `api.apply_details(**changes)` | Any of `title`, `year`, `date` (`"YYYY-MM-DD"`, sets the year too), `studio`, `description`, `rating` (0–5), `links` (replaces), `add_links`, `add_tags` (names; spelled as in the database when they exist there), `people` (names or aliases; new names are added to People), `cover` (JPEG or PNG bytes). Returns what changed. |
 | `api.save(then=None)` | Save, like Ctrl+S, then call `then()`. From 0.9.0 MP4s are saved in the background: `then` runs once the file is written, while the window carries on. |
 | `api.saving(path)` *2* | True while a save of that video is waiting or being written. (`move_file` and `change_file` wait for it by themselves.) |
+| `api.suggest_chapters(items, source="", path=None)` *7* | Offer chapters for the open video: `[{"start": seconds, "name": "Name", "end": seconds or None, "note": "…"}, …]` (`name` may be empty: the chapter is numbered; `note` is shown beside it and never added). They show under the chapter list as suggestions from `source` (default: your plugin's name); the user adds them one by one, at the frame on screen, or all at once, and nothing is written until then. A new call replaces your earlier suggestions; they go when another video opens. Times within a second of an existing chapter are left out. Pass `path` when your answer arrives late (a lookup in the background): nothing happens if another video is open by then. Returns how many are on offer. |
 | `api.set_chapter_keys(keys, label="")` *2* | Number keys 1–9 for the open video only, `{"1": "Name", …}`: each adds a chapter with that name. Shown under the player (with `label`) and in the Chapters tab; they go when another video opens, or with `None`. |
 | `api.name_from_details(details=None)` *2* | The file name (no extension) **Rename from details** would give the open video (or these details), using the pattern last used there. Folders in the pattern are left out; `""` when it gives nothing. |
 | `api.open_file(path)` / `api.open_next()` / `api.open_list()` *2* | Open a video (added to the open-file list); open the next one in the list (`False` if there isn't one); the list itself. |

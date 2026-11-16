@@ -4,6 +4,16 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-16
+
+### Added
+- **Suggested chapters.** The Chapters tab can now hold suggestions under the chapter list: click one to see its
+  frame, then **Add** it at its own time, **Add at this frame** after stepping to the exact frame, **Add all**, or
+  **Dismiss**. Nothing is added to the video until you add it, and suggestions go when another video opens.
+- **Paste times…** turns a pasted list of times (`0:00 Intro`, `4:32 - The interview`, `[12:05] Credits`, as many
+  videos have in their description) into suggested chapters.
+- **Plugins can suggest chapters** (plugin API 7, `suggest_chapters`), with a name, a start and optionally an end.
+
 ## [0.13.1] - 2026-11-09
 
 ### Changed

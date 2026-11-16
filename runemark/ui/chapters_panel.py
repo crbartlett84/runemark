@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogButtonBox, QFormLayout,
-                               QHeaderView, QLabel, QLineEdit, QMenu, QStyledItemDelegate, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QStyledItemDelegate,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..media.chapters import ChapterMark, add_mark, copy_marks, end_at, renumber
 from ..media.probe import fmt_duration
@@ -93,6 +93,36 @@ class ChapterKeysDialog(QDialog):
         return out
 
 
+class PasteTimesDialog(QDialog):
+    """0.14.0: paste a list of times ("0:00 Intro", one per line); they become suggested chapters."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Paste times")
+        self.resize(460, 360)
+        layout = QVBoxLayout(self)
+        intro = QLabel("Paste a list with one time per line, as many videos have in their description:<br>"
+                       "<tt>0:00 Intro</tt><br><tt>4:32 - The interview</tt><br><tt>1:02:10 Credits</tt><br>"
+                       "They show as suggested chapters; nothing is added until you add it.")
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.edit = QPlainTextEdit()
+        self.edit.setPlaceholderText("0:00 Intro\n4:32 The interview")
+        layout.addWidget(self.edit, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Suggest chapters")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def text(self) -> str:
+        return self.edit.toPlainText()
+
+
+SUG_TIME, SUG_NAME, SUG_FROM = 0, 1, 2
+
+
 class ChaptersPanel(QWidget):
     addRequested = Signal()                 # "Add chapter here": the window supplies the frame time
     seekRequested = Signal(float)
@@ -110,6 +140,11 @@ class ChaptersPanel(QWidget):
         self.names = QStringListModel(self)
         self.chapter_keys: dict = {}
         self.thumbs: dict[float, object] = {}       # round(start, 3) -> QIcon of the chapter's first frame
+        # 0.14.0: suggested chapters (a pasted list, a plugin): [{"start", "name", "end", "source"}], never saved;
+        # they become chapters only when added
+        self.suggestions: list[dict] = []
+        self._pending: dict | None = None            # the suggestion "Add at this frame" is adding
+        self.duration: float | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 10, 8, 10)
@@ -154,8 +189,11 @@ class ChaptersPanel(QWidget):
         self.cuts_button.setToolTip("Look through the video for likely cut points (in the background). Then [ and ] "
                                     "jump between them, and a chapter added within a second of one starts on it.")
         self.cuts_button.clicked.connect(self.findCutsRequested)
+        self.paste_button = text_button("Paste times…", "edit")
+        self.paste_button.setToolTip("Paste a list of times (0:00 Intro, 4:32 Interview…) to get suggested chapters")
+        self.paste_button.clicked.connect(self.paste_times)
         for b in (self.add_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
-                  self.delete_button, self.keys_button, self.cuts_button):
+                  self.delete_button, self.keys_button, self.cuts_button, self.paste_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.ensurePolished()                        # the style sheet's padding counts in the width
             b.setMinimumWidth(b.sizeHint().width())
@@ -188,6 +226,52 @@ class ChaptersPanel(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
+
+        # Suggested chapters (0.14.0): shown only when there are some
+        self.sug_box = QWidget()
+        sug = QVBoxLayout(self.sug_box)
+        sug.setContentsMargins(0, 0, 0, 0)
+        sug.setSpacing(6)
+        self.sug_title = QLabel("")
+        self.sug_title.setObjectName("Muted")
+        self.sug_title.setWordWrap(True)
+        sug.addWidget(self.sug_title)
+        sug_row = QWidget()
+        sug_buttons = FlowLayout(sug_row, spacing=6)
+        self.sug_add = text_button("Add", "plus")
+        self.sug_add.setToolTip("Add the selected suggestions as chapters, at their own times")
+        self.sug_add.clicked.connect(lambda: self.accept_suggestions(self._selected_suggestions()))
+        self.sug_here = text_button("Add at this frame", "plus")
+        self.sug_here.setToolTip("Add the selected suggestion at the frame on screen instead of its own time: click "
+                                 "it to go there, step to the exact frame, then press this")
+        self.sug_here.clicked.connect(self._add_here)
+        self.sug_all = text_button("Add all", "plus")
+        self.sug_all.clicked.connect(lambda: self.accept_suggestions(list(self.suggestions)))
+        self.sug_dismiss = text_button("Dismiss", "trash")
+        self.sug_dismiss.setToolTip("Drop the selected suggestions (all of them when none is selected)")
+        self.sug_dismiss.clicked.connect(self._dismiss)
+        for b in (self.sug_add, self.sug_here, self.sug_all, self.sug_dismiss):
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.ensurePolished()
+            b.setMinimumWidth(b.sizeHint().width())
+            sug_buttons.addWidget(b)
+        sug.addWidget(sug_row)
+        self.sug_table = QTableWidget(0, 3)
+        self.sug_table.setHorizontalHeaderLabels(["Starts at", "Suggested name", "From"])
+        self.sug_table.verticalHeader().setVisible(False)
+        self.sug_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.sug_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.sug_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.sug_table.horizontalHeader().setSectionResizeMode(SUG_TIME, QHeaderView.ResizeMode.ResizeToContents)
+        self.sug_table.horizontalHeader().setSectionResizeMode(SUG_NAME, QHeaderView.ResizeMode.Stretch)
+        self.sug_table.horizontalHeader().setSectionResizeMode(SUG_FROM, QHeaderView.ResizeMode.ResizeToContents)
+        self.sug_table.setMaximumHeight(190)
+        self.sug_table.cellClicked.connect(self._suggestion_clicked)
+        self.sug_table.cellDoubleClicked.connect(lambda row, _c: self.accept_suggestions(self.suggestions[row:row + 1]))
+        self.sug_table.itemSelectionChanged.connect(self._update_buttons)
+        sug.addWidget(self.sug_table)
+        self.sug_box.hide()
+        layout.addWidget(self.sug_box)
 
         self.note = QLabel("")
         self.note.setObjectName("Faint")
@@ -261,6 +345,7 @@ class ChaptersPanel(QWidget):
     def set_enabled(self, enabled: bool, container: str | None = None):
         self._enabled = enabled
         self.add_button.setEnabled(enabled)
+        self.paste_button.setEnabled(enabled)
         self.table.setEnabled(enabled)
         if getattr(self, "cuts_state", "idle") == "idle":
             self.cuts_button.setEnabled(enabled)
@@ -310,7 +395,14 @@ class ChaptersPanel(QWidget):
     # ---------------------------------------------------------------- editing
     def add_at(self, pts: float, name: str | None = None):
         """Start a chapter at pts, numbered, or named `name` (which also tags the file)."""
+        pending, self._pending = self._pending, None
+        if name is None and pending is not None:        # "Add at this frame": the suggestion's name, this frame
+            name = pending.get("name") or None
         self.marks, mark = add_mark(self.marks, pts)
+        if pending is not None:
+            self._take_end(mark, pending)
+            self.suggestions = [s for s in self.suggestions if s is not pending]
+            self._fill_suggestions()
         if name:
             match = next((n for n in self.names.stringList() if n.casefold() == name.casefold()), None)
             mark.name, mark.auto = (match or name), False
@@ -320,6 +412,126 @@ class ChaptersPanel(QWidget):
         if name:
             self.nameTagged.emit(mark.name)
         return mark
+
+    # ---------------------------------------------------------------- suggestions (0.14.0)
+    def paste_times(self):
+        from ..media.timestamps import parse_timestamps
+        dialog = PasteTimesDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        found = parse_timestamps(dialog.text(), self.duration)
+        if not found:
+            self.note.setText("No times found in what was pasted. One per line, like 4:32 The interview.")
+            return
+        self.suggest([{"start": at, "name": name} for at, name in found], "Pasted list")
+
+    def suggest(self, items: list[dict], source: str = "") -> int:
+        """Offer chapters: [{"start": seconds, "name": str, "end": seconds or None, "note": str}]. Those from the same source
+        are replaced; ones that match a chapter already there (within a second) are left out. Returns how many
+        are on offer from this source."""
+        source = " ".join(str(source or "").split()) or "Suggested"
+        kept = [s for s in self.suggestions if s["source"] != source]
+        new = []
+        for item in items or []:
+            try:
+                start = round(float(item["start"]), 3)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start < 0 or self.duration is not None and start > self.duration:
+                continue
+            if any(abs(m.start - start) < 1.0 for m in self.marks) or any(abs(n["start"] - start) < 0.0005 for n in new):
+                continue
+            end = item.get("end")
+            try:
+                end = round(float(end), 3) if end is not None else None
+            except (TypeError, ValueError):
+                end = None
+            name = " ".join(str(item.get("name") or "").split()).replace(";", ",")
+            note = " ".join(str(item.get("note") or "").split())[:60]
+            new.append({"start": start, "name": name, "end": end if end is not None and end > start else None,
+                        "source": source, "note": note})
+        self.suggestions = sorted(kept + new, key=lambda s: s["start"])
+        self._fill_suggestions()
+        return len(new)
+
+    def clear_suggestions(self):
+        self.suggestions, self._pending = [], None
+        self._fill_suggestions()
+
+    def _selected_suggestions(self) -> list[dict]:
+        rows = sorted({i.row() for i in self.sug_table.selectedIndexes()})
+        return [self.suggestions[r] for r in rows if 0 <= r < len(self.suggestions)]
+
+    def _take_end(self, mark: ChapterMark, suggestion: dict):
+        """The suggestion's end, when it stops before the next chapter starts (else it runs on as usual)."""
+        end = suggestion.get("end")
+        if end is None or end <= mark.start:
+            return
+        later = [m.start for m in self.marks if m.start > mark.start]
+        if not later or end < min(later) - 0.0005:
+            mark.end = end
+
+    def accept_suggestions(self, chosen: list[dict]):
+        """Add these suggestions as chapters at their own times; a named one tags the file too, as naming does."""
+        if not self._enabled or not chosen:
+            return
+        named, last = [], None
+        for sug in chosen:
+            if any(abs(m.start - sug["start"]) < 0.0005 for m in self.marks):
+                continue
+            self.marks, mark = add_mark(self.marks, sug["start"])
+            if sug["name"]:
+                match = next((n for n in self.names.stringList() if n.casefold() == sug["name"].casefold()), None)
+                mark.name, mark.auto = (match or sug["name"]), False
+                named.append(mark.name)
+            last = mark
+        self.marks = renumber(self.marks)
+        for sug in chosen:                                # ends once every chosen chapter is in place
+            mark = next((m for m in self.marks if abs(m.start - sug["start"]) < 0.0005), None)
+            if mark is not None and mark.end is None:
+                self._take_end(mark, sug)
+        self.suggestions = [s for s in self.suggestions if all(s is not c for c in chosen)]
+        self._fill_suggestions()
+        self._fill(select=last)
+        if last is not None:
+            self.changed.emit()
+        for name in dict.fromkeys(named):
+            self.nameTagged.emit(name)
+
+    def _add_here(self):
+        chosen = self._selected_suggestions()
+        if len(chosen) == 1 and self._enabled:
+            self._pending = chosen[0]
+            self.addRequested.emit()                      # the window supplies the frame; add_at() takes the name
+            self._pending = None
+
+    def _dismiss(self):
+        chosen = self._selected_suggestions() or list(self.suggestions)
+        self.suggestions = [s for s in self.suggestions if all(s is not c for c in chosen)]
+        self._fill_suggestions()
+
+    def _suggestion_clicked(self, row: int, _column: int):
+        if 0 <= row < len(self.suggestions):
+            self.seekRequested.emit(self.suggestions[row]["start"])
+
+    def _fill_suggestions(self):
+        self.sug_table.setRowCount(len(self.suggestions))
+        for row, sug in enumerate(self.suggestions):
+            when = QTableWidgetItem(fmt_duration(sug["start"], millis=True))
+            when.setToolTip("Click to show this frame")
+            note = sug.get("note") or ""
+            name = QTableWidgetItem((sug["name"] or "(no name: numbered)") + (f"  · {note}" if note else ""))
+            if note:
+                name.setToolTip(f"{note}: shown for you to judge by; it isn't added to the video")
+            self.sug_table.setItem(row, SUG_TIME, when)
+            self.sug_table.setItem(row, SUG_NAME, name)
+            self.sug_table.setItem(row, SUG_FROM, QTableWidgetItem(sug["source"]))
+        count = len(self.suggestions)
+        sources = list(dict.fromkeys(s["source"] for s in self.suggestions))
+        self.sug_title.setText(f"<b>{count} suggested chapter{'s' if count != 1 else ''}</b> "
+                               f"({', '.join(sources)}). Click one to see its frame; nothing is added until you add it.")
+        self.sug_box.setVisible(bool(count))
+        self._update_buttons()
 
     def _selected(self) -> list[ChapterMark]:
         rows = sorted({i.row() for i in self.table.selectedIndexes()})
@@ -410,3 +622,8 @@ class ChaptersPanel(QWidget):
         self.delete_button.setEnabled(bool(chosen))
         self.clear_end_button.setEnabled(any(m.end is not None for m in chosen))
         self.end_button.setEnabled(self._enabled and bool(self.marks))
+        picked = self._selected_suggestions() if self._enabled else []
+        self.sug_add.setEnabled(bool(picked))
+        self.sug_here.setEnabled(len(picked) == 1)
+        self.sug_all.setEnabled(self._enabled and bool(self.suggestions))
+        self.sug_dismiss.setEnabled(bool(self.suggestions))

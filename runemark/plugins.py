@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
                          # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
                          # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
                          # person's values read and set, video updates for changed people; everything in 3 stays
-API_VERSION = 6          # 6 (0.13.0): person checks (who may join People) and removing people; everything in 5 stays
+API_VERSION = 7          # 7 (0.14.0): suggest_chapters; 6 (0.13.0): person checks and removing people; all of 6 stays
 EVENTS = ("file_opened", "file_saved", "file_closed", "people_unchecked")   # people_unchecked: 0.13.0
 
 
@@ -309,6 +309,15 @@ class PluginAPI:
         chapter keys do. Shown under the player (with `label`) and in the Chapters tab. They go when another video
         opens; None or {} gives back the usual chapter keys now (0.9.0)."""
         self._w.set_session_chapter_keys(keys, label)
+
+    def suggest_chapters(self, items: list[dict], source: str = "", path: Path | str | None = None) -> int:
+        """Offer chapters for the open video (0.14.0): [{"start": seconds, "name": "Name", "end": seconds or None,
+        "note": "shown beside the name, never added"}].
+        They show under the chapter list as suggestions from `source` (default: the plugin's name); nothing is
+        written or added until the user adds them. A new call replaces this source's earlier suggestions; they go
+        when another video opens. Times within a second of an existing chapter are left out. `path`: only if that
+        video is (still) the open one, for answers that arrive late. Returns how many are on offer."""
+        return self._w.suggest_chapters(items, source or self._plugin.name, path)
 
     def toast(self, text: str, action: str | None = None, callback: Callable[[], Any] | None = None,
               kind: str = "info", seconds: float | None = None) -> None:
