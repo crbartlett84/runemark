@@ -143,9 +143,12 @@ def test_plugin_suggestions_in_the_window(tmp_path, media, qapp):
         assert win.doc.chapters == [] or [m.start for m in win.doc.chapters] == []           # nothing added yet
         win.chapters.accept_suggestions(win.chapters.suggestions[:1])
         assert [m.name for m in win.doc.chapters] == ["Lake"] and "Lake" in win.doc.tags
+        win._confirm_leave = lambda then: True            # no "Unsaved changes" box on a test desktop
         win.open_paths([b])
         assert wait_until(lambda: win.doc is not None and win.doc.path == b)
         assert win.chapters.suggestions == []                                                # they went with the video
     finally:
+        if win.doc is not None:
+            win.doc.discard()
         win.close()
         db.close()
