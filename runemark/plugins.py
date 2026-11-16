@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
                          # 3 (0.10.0): save handlers and scan providers; everything in 2 stays
                          # 4 (0.11.0): attribute choices (allowed values with their tags), People buttons, a
                          # person's values read and set, video updates for changed people; everything in 3 stays
-API_VERSION = 7          # 7 (0.14.0): suggest_chapters; 6 (0.13.0): person checks and removing people; all of 6 stays
+API_VERSION = 8          # 8 (0.15.0): backup_database; 7 (0.14.0): suggest_chapters; 6 (0.13.0): person checks and removing people; all of 6 stays
 EVENTS = ("file_opened", "file_saved", "file_closed", "people_unchecked")   # people_unchecked: 0.13.0
 
 
@@ -374,6 +374,11 @@ class PluginAPI:
         """[{"name", "category": ["Parent", "Child"]}] for every tag."""
         db = self._w.db
         return [{"name": t.name, "category": db.category_path(t.category_id)} for t in db.tags()]
+
+    def backup_database(self, target: Path | str) -> Path:
+        """Write a complete, closed copy of the tag database (tags, categories, People with their photos) to
+        `target`, replacing a file already there (0.15.0). Safe while Runemark is running. Returns the path."""
+        return self._w.db.backup_to(Path(target))
 
     def find_tag(self, name: str) -> str | None:
         """The tag's name as spelled in the database (matching ignores case), or None."""

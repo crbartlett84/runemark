@@ -293,58 +293,14 @@ class MainWindow(QMainWindow):
         return done
 
     def _apply_changes(self, doc: Document, changes: dict) -> list[str]:
-        """Plugin changes to a document (open or not): details, links, tags, people, a thumbnail. Unsaved."""
-        from ..media.mp4meta import clean_links, parse_date
-        done: list[str] = []
-        meta = VideoMeta(**vars(doc.meta))
-        for key in ("title", "studio", "description"):
-            if key in changes and changes[key] is not None:
-                setattr(meta, key, " ".join(str(changes[key]).split()) if key != "description"
-                        else str(changes[key]).strip())
-                done.append(key)
-        if changes.get("date") and parse_date(changes["date"]):
-            meta.date = parse_date(changes["date"])
-            meta.year = int(meta.date[:4])
-            done.append("date")
-        elif changes.get("year"):
-            meta.year = int(changes["year"])
-            done.append("year")
-        if changes.get("rating") is not None:
-            meta.rating = max(0, min(5, int(changes["rating"])))
-            done.append("rating")
-        if changes.get("links") is not None:
-            meta.links = clean_links(changes["links"])
-            done.append("links")
-        if changes.get("add_links"):
-            meta.links = clean_links(list(meta.links or []) + list(changes["add_links"]))
-            done.append("links")
-        doc.meta = meta
-        if changes.get("add_tags"):
-            tags = merge_unique(doc.tags, [self.db.canonical(t) for t in changes["add_tags"]])
-            if tags != doc.tags:
-                doc.tags = tags
-                done.append("tags")
-        added = 0
+        """Plugin changes to a document (open or not): details, links, tags, people, a thumbnail. Unsaved.
+        0.15.0: the work is headless.apply_changes, shared with saves worked out without a window."""
+        from .. import headless
         host = getattr(self, "plugins", None)
-        for name in changes.get("people") or []:
-            person = self.db.find_person(name)
-            if person is None and host is not None and host.person_verdict(name) is False:
-                continue                           # 0.13.0: a plugin's check rules them out of People
-            person = person or self.db.add_person(name)
-            if not any((p["id"] if isinstance(p, dict) else p.uid) == person.uid for p, _s in doc.people):
-                doc.people = doc.people + [(person, [])]
-                added += 1
-        if added:
-            done.append("people")
-        data = changes.get("cover")
-        if not data and changes.get("cover_if_missing") and not doc.whole_cover():
-            data = changes["cover_if_missing"]
-        if data:
-            doc.cover = data if data[:3] == b"\xff\xd8\xff" else frames.image_bytes_to_jpeg(
-                data, max_edge=self.settings.thumbnail_max_edge or None, quality=self.settings.jpeg_quality)
-            doc.cover_note = "From a plugin"
-            done.append("thumbnail")
-        return done
+        return headless.apply_changes(doc, self.db, changes,
+                                      person_ok=host.person_verdict if host is not None else None,
+                                      max_edge=self.settings.thumbnail_max_edge or None,
+                                      quality=self.settings.jpeg_quality)
 
     def open_next_in_list(self) -> bool:
         if len(self.queue) < 2 and not (self.queue and self.doc is None):

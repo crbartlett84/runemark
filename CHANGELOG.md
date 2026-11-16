@@ -4,6 +4,14 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
+### Added
+- **A video can be changed with no window** (`runemark.headless`): what a plugin's `change_file` does (details,
+  links, tags, people, a thumbnail), as plain functions without Qt, giving a save request any Runemark code can
+  write. For services that fill videos in beside the files. The app's own plugin changes run through the same code.
+- **Plugins can copy the tag database** (plugin API 8, `backup_database`).
+
 ## [0.14.0] - 2026-11-16
 
 ### Added
