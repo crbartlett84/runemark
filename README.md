@@ -82,6 +82,8 @@ Open the **Chapters** tab, pause on the frame where a chapter starts (step with 
 
 **Chapter ends.** When a chapter's action stops and filler follows, press **E** (or **End here**) at that frame. The end isn't a chapter: players' timelines and chapter lists don't show it. It goes to Stash as the marker's end, so RuneStash's moments stop there.
 
+**Fixing a start.** Select the chapter, step to the frame it should start on and press **S** (or **Start here**). The name, tags and end stay. Click a chapter's end time, or press **Shift+E**, to see where it stops.
+
 **Chapter keys.** Press **1**–**9** to add a chapter at the frame on screen with a name you chose for that key (for chapters you add all the time). Set them up with **Keys…** on the Chapters tab, or right-click a chapter's name → **Put on a key**. The keys in use are listed under the buttons.
 
 **Thumbnails.** Each chapter in the list shows its first frame, so a wrong start is easy to spot.

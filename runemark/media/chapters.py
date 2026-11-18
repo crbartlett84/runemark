@@ -114,6 +114,29 @@ def end_at(marks: list[ChapterMark], pts: float) -> ChapterMark | None:
     return mark
 
 
+def move_start(marks: list[ChapterMark], mark: ChapterMark, pts: float) -> str | None:
+    """0.16.0: move a chapter's start to pts, keeping its name and end (and so its tags). Returns why it can't
+    (another chapter already starts there, or pts is at or after the chapter's own end); None when it moved."""
+    pts = round(max(0.0, pts), 3)
+    if mark.end is not None and pts >= mark.end - 0.0005:
+        return "after_end"
+    if any(m is not mark and abs(m.start - pts) < 0.0005 for m in marks):
+        return "taken"
+    mark.start = pts
+    return None
+
+
+def effective_end(marks: list[ChapterMark], mark: ChapterMark, duration: float | None = None) -> float | None:
+    """0.16.0: where a chapter actually stops: its own end, else where the next chapter starts, else the end of
+    the video (None when that isn't known)."""
+    if mark.end is not None:
+        return mark.end
+    later = [m.start for m in marks if m is not mark and m.start > mark.start + 0.0005]
+    if later:
+        return min(later)
+    return duration if duration and duration > mark.start else None
+
+
 def is_auto_name(name: str) -> bool:
     return bool(AUTO_NAME.match(name.strip()))
 

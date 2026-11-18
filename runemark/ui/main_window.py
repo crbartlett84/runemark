@@ -722,6 +722,7 @@ class MainWindow(QMainWindow):
         self.chapters = ChaptersPanel()
         self.chapters.addRequested.connect(self.add_chapter)
         self.chapters.endRequested.connect(self.end_chapter)
+        self.chapters.startRequested.connect(self.start_chapter_here)
         self.chapters.seekRequested.connect(self._seek_paused)
         self.chapters.changed.connect(self._chapters_edited)
         self.chapters.nameTagged.connect(self._chapter_named)
@@ -901,13 +902,19 @@ class MainWindow(QMainWindow):
             self.player.seek_seconds(0)
             return True
         read_only = getattr(self.doc, "read_only", False)
-        if read_only and (key in (Qt.Key.Key_M, Qt.Key.Key_E) or Qt.Key.Key_1 <= key <= Qt.Key.Key_9):
+        if key == Qt.Key.Key_E and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+            self.jump_to_chapter_end()           # 0.16.0: only looks, so it works while saving too
+            return True
+        if read_only and (key in (Qt.Key.Key_M, Qt.Key.Key_E, Qt.Key.Key_S) or Qt.Key.Key_1 <= key <= Qt.Key.Key_9):
             return True                          # nothing can change while it's saving
         if key == Qt.Key.Key_M and not event.modifiers():
             self.add_chapter()
             return True
         if key == Qt.Key.Key_E and not event.modifiers():
             self.end_chapter()
+            return True
+        if key == Qt.Key.Key_S and not event.modifiers():
+            self.start_chapter_here()
             return True
         if Qt.Key.Key_1 <= key <= Qt.Key.Key_9 and not (event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier):
             self.add_chapter(key=str(key - Qt.Key.Key_0))
@@ -2002,6 +2009,45 @@ class MainWindow(QMainWindow):
                        if here is not None else "There's no chapter playing here to end: add one first (M).")
             return
         self.set_status(f"“{mark.name}” ends at {fmt_duration(pts, millis=True)}")
+
+    def start_chapter_here(self):
+        """0.16.0: move the selected chapter's start to the frame on screen (S), keeping its name, tags and end:
+        for a chapter that came in a little early or late, without deleting it and adding it again."""
+        doc = self.doc
+        if doc is None or doc.read_only:
+            return
+        self.player.stop_moving()
+        pts = self.player.current_pts()
+        if pts is None:
+            pts = self.player.player.position() / 1000
+        if self.tabs.currentWidget() is not self.chapters:
+            self.tabs.setCurrentWidget(self.chapters)
+        mark, why = self.chapters.move_start_to(pts)
+        if why == "none":
+            self.toast("Select the chapter to move in the Chapters list first, then press S on its new first frame.")
+        elif why == "after_end":
+            self.toast(f"That's at or after where “{mark.name}” ends: move back, or Clear end first.")
+        elif why == "taken":
+            self.toast("Another chapter already starts on this frame.")
+        elif mark is not None:
+            self.set_status(f"“{mark.name}” now starts at {fmt_duration(mark.start, millis=True)}")
+
+    def jump_to_chapter_end(self):
+        """0.16.0: show where a chapter stops (Shift+E): the selected one, or else the one playing now."""
+        if self.doc is None:
+            return
+        mark = self.chapters.selected_mark()
+        if mark is None:
+            pts = self.player.current_pts()
+            if pts is None:
+                pts = self.player.player.position() / 1000
+            mark = chapter_io.chapter_at(self.chapters.marks, pts)
+        end = self.chapters.end_of(mark) if mark is not None else None
+        if end is None:
+            self.toast("There's no chapter here to jump to the end of.")
+            return
+        self._seek_paused(end)
+        self.set_status(f"End of “{mark.name}”: {fmt_duration(end, millis=True)}")
 
     def show_palette(self):
         from .palette import CommandPalette, Entry

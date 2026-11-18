@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QDialog, QDialogBu
                                QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QStyledItemDelegate,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ..media.chapters import ChapterMark, add_mark, copy_marks, end_at, renumber
+from ..media.chapters import ChapterMark, add_mark, copy_marks, effective_end, end_at, move_start, renumber
 from ..media.probe import fmt_duration
 from .widgets import Banner, FlowLayout, text_button
 
@@ -130,6 +130,7 @@ class ChaptersPanel(QWidget):
     nameTagged = Signal(str)                # a chapter was named: tag the file with that name
     keysChanged = Signal(dict)              # the chapter keys were set up: {"1": "name", ...}
     endRequested = Signal()                 # "End here": the window supplies the frame time (E)
+    startRequested = Signal()               # 0.16.0 "Start here": the window supplies the frame time (S)
     findCutsRequested = Signal()            # 0.9.0: look through the video for likely cut points
 
     def __init__(self, parent=None):
@@ -156,7 +157,9 @@ class ChaptersPanel(QWidget):
                        "press a number key to add a named one. New chapters are numbered automatically. "
                        "Double-click a name to change it: pick a tag (the file gets that tag too) or type any name. "
                        "<b>End here</b> (E) marks where the chapter you're in stops, when filler follows it; the "
-                       "end is kept with the video's details, not added as a chapter.")
+                       "end is kept with the video's details, not added as a chapter. To fix where a chapter starts, "
+                       "select it, find the right frame and press <b>Start here</b> (S). Click an end time, or "
+                       "press Shift+E, to see where a chapter stops.")
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -179,6 +182,10 @@ class ChaptersPanel(QWidget):
         self.end_button.setToolTip("End the chapter you're in at the frame on screen (E). Moments stop here; the "
                                    "timeline and chapter list don't change.")
         self.end_button.clicked.connect(self.endRequested)
+        self.start_button = text_button("Start here", "edit")
+        self.start_button.setToolTip("Move the selected chapter's start to the frame on screen (S). Its name, tags "
+                                     "and end stay as they are.")
+        self.start_button.clicked.connect(self.startRequested)
         self.clear_end_button = text_button("Clear end", "revert")
         self.clear_end_button.setToolTip("The chapter runs until the next one starts again")
         self.clear_end_button.clicked.connect(self._clear_end)
@@ -192,7 +199,7 @@ class ChaptersPanel(QWidget):
         self.paste_button = text_button("Paste times…", "edit")
         self.paste_button.setToolTip("Paste a list of times (0:00 Intro, 4:32 Interview…) to get suggested chapters")
         self.paste_button.clicked.connect(self.paste_times)
-        for b in (self.add_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
+        for b in (self.add_button, self.start_button, self.end_button, self.rename_button, self.number_button, self.clear_end_button,
                   self.delete_button, self.keys_button, self.cuts_button, self.paste_button):
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.ensurePolished()                        # the style sheet's padding counts in the width
@@ -383,6 +390,31 @@ class ChaptersPanel(QWidget):
             self._fill(select=mark)
             self.changed.emit()
         return mark
+
+    def move_start_to(self, pts: float) -> tuple[ChapterMark | None, str | None]:
+        """0.16.0: move the selected chapter's start to pts. (chapter, None) when it moved; (chapter or None, why)
+        when it didn't: "none" (no single chapter selected), "after_end" or "taken"."""
+        chosen = self._selected()
+        if len(chosen) != 1:
+            return None, "none"
+        mark = chosen[0]
+        old = round(mark.start, 3)
+        why = move_start(self.marks, mark, pts)
+        if why is not None:
+            return mark, why
+        self.thumbs.pop(old, None)                      # the old first frame; the new one is fetched
+        self.marks = renumber(self.marks)
+        self._fill(select=mark)
+        self.changed.emit()
+        return mark, None
+
+    def end_of(self, mark: ChapterMark) -> float | None:
+        """0.16.0: where this chapter actually stops (its end, the next chapter, or the end of the video)."""
+        return effective_end(self.marks, mark, self.duration)
+
+    def selected_mark(self) -> ChapterMark | None:
+        chosen = self._selected()
+        return chosen[0] if len(chosen) == 1 else None
 
     def _clear_end(self):
         chosen = [m for m in self._selected() if m.end is not None]
@@ -579,7 +611,8 @@ class ChaptersPanel(QWidget):
     def _clicked(self, row: int, column: int):
         if 0 <= row < len(self.marks):
             mark = self.marks[row]
-            self.seekRequested.emit(mark.end if column == COL_END and mark.end is not None else mark.start)
+            end = self.end_of(mark) if column == COL_END else None
+            self.seekRequested.emit(end if end is not None else mark.start)
 
     # ---------------------------------------------------------------- view
     def _fill(self, select: ChapterMark | None = None):
@@ -598,9 +631,15 @@ class ChaptersPanel(QWidget):
                 font = name.font()
                 font.setItalic(True)
                 name.setFont(font)
-            ends = QTableWidgetItem(fmt_duration(mark.end, millis=True) if mark.end is not None else "—")
+            # 0.16.0: always where it stops: its own end, or (greyed) the next chapter's start or the video's end
+            stop = self.end_of(mark)
+            ends = QTableWidgetItem(fmt_duration(stop, millis=True) if stop is not None else "—")
             ends.setFlags(ends.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            ends.setToolTip("Click to show this frame" if mark.end is not None else
+            if mark.end is None and stop is not None:
+                ends.setForeground(self.palette().color(self.palette().ColorRole.PlaceholderText))
+            ends.setToolTip("Click to show this frame (Shift+E)" if mark.end is not None else
+                            "Runs until the next chapter (or the end of the video). Click to show where it stops "
+                            "(Shift+E); End here (E) ends it sooner." if stop is not None else
                             "Runs until the next chapter. End here (E) ends it sooner.")
             self.table.setItem(row, COL_TIME, when)
             self.table.setItem(row, COL_NAME, name)
@@ -618,6 +657,7 @@ class ChaptersPanel(QWidget):
     def _update_buttons(self):
         chosen = self._selected() if self._enabled else []
         self.rename_button.setEnabled(len(chosen) == 1)
+        self.start_button.setEnabled(len(chosen) == 1)
         self.number_button.setEnabled(any(not m.auto for m in chosen))
         self.delete_button.setEnabled(bool(chosen))
         self.clear_end_button.setEnabled(any(m.end is not None for m in chosen))

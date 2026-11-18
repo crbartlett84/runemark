@@ -4,6 +4,15 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-18
+
+### Added
+- **Start here (S)** moves the selected chapter's start to the frame on screen. Its name, its tags and any end stay
+  as they are, so a chapter that came in a little early or late (a suggestion, a plugin) is fixed in place instead
+  of being deleted and added again. It won't move a start onto another chapter or past the chapter's own end.
+- **Jump to a chapter's end.** The End column always shows where a chapter stops: its own end, or (greyed) where
+  the next chapter starts or the video ends. Click it, or press **Shift+E**, to go straight to that frame.
+
 ## [0.15.0] - 2026-11-16
 
 ### Added
