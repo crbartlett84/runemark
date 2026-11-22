@@ -1163,7 +1163,7 @@ class MainWindow(QMainWindow):
         self.chapters.duration = (doc.info.duration or None) if doc.info is not None else None
         self.chapters.clear_suggestions()             # suggestions belong to one video (0.14.0)
         self.chapters.set_marks(doc.chapters)
-        self.player.set_chapter_starts([m.start for m in doc.chapters])
+        self.player.set_chapters(doc.chapters)
         if play:
             self._load_chapter_thumbs()
             self._load_cuts(doc)
@@ -1962,7 +1962,7 @@ class MainWindow(QMainWindow):
     def _set_chapters(self, marks):
         self.doc.chapters = chapter_io.copy_marks(marks)
         self.chapters.set_marks(self.doc.chapters)
-        self.player.set_chapter_starts([m.start for m in self.doc.chapters])
+        self.player.set_chapters(self.doc.chapters)
         self._refresh_ui()
         self._load_chapter_thumbs()
 
@@ -2118,7 +2118,7 @@ class MainWindow(QMainWindow):
                     chapter_io.ends_block(self.doc.chapters) != chapter_io.ends_block(self.chapters.marks):
                 self._remember_chapters(self.doc.chapters)
             self.doc.chapters = chapter_io.copy_marks(self.chapters.marks)
-            self.player.set_chapter_starts([m.start for m in self.doc.chapters])
+            self.player.set_chapters(self.doc.chapters)
             self._refresh_ui()
             self._load_chapter_thumbs()
 

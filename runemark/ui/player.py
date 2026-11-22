@@ -130,32 +130,112 @@ class Shuttle:
 
 
 def chapter_ticks(marks) -> list[float]:
-    """Where chapter ticks go on the timeline: each chapter's start. Never its end (ends stay in the Chapters tab)."""
+    """Where the blue chapter ticks go on the timeline: each chapter's start (seconds)."""
     return sorted({round(float(getattr(m, "start", m)), 3) for m in marks})
+
+
+class ChapterSpan:
+    """A chapter that has an end of its own, as the timeline draws it (0.17.0): a yellow tick at its end and a
+    faint yellow band from its start to its end. `lane` is 0 unless it overlaps an earlier chapter's span."""
+
+    __slots__ = ("end", "lane", "name", "start")
+
+    def __init__(self, start: float, end: float, name: str = "", lane: int = 0):
+        self.start, self.end, self.name, self.lane = start, end, name, lane
+
+    def __repr__(self):
+        return f"ChapterSpan({self.start!r}, {self.end!r}, {self.name!r}, lane={self.lane})"
+
+    def contains(self, seconds: float) -> bool:
+        return self.start <= seconds < self.end
+
+
+def chapter_spans(marks, duration: float | None = None) -> list[ChapterSpan]:
+    """The chapters with an end of their own (start → end), for the yellow marks on the timeline. A chapter with no
+    end, or an end at or before its start, has none (its start tick is all it gets). An end past the video's end is
+    drawn at the end. Overlapping spans get lanes (0, 1, …), so each one can be told apart."""
+    spans = []
+    for m in marks:
+        end = getattr(m, "end", None)
+        if end is None:
+            continue
+        start = float(getattr(m, "start", 0.0))
+        end = float(end)
+        if duration:
+            end = min(end, float(duration))
+        if end <= start + 1e-6:
+            continue
+        spans.append(ChapterSpan(round(start, 3), round(end, 3), str(getattr(m, "name", "") or "")))
+    spans.sort(key=lambda s: (s.start, s.end))
+    lane_ends: list[float] = []                  # where each lane is free again
+    for span in spans:
+        for lane, free_at in enumerate(lane_ends):
+            if span.start >= free_at - 1e-6:     # touching (one ends where the next starts) shares a lane
+                span.lane = lane
+                lane_ends[lane] = span.end
+                break
+        else:
+            span.lane = len(lane_ends)
+            lane_ends.append(span.end)
+    return spans
 
 
 class JumpSlider(QSlider):
     """The timeline: a click anywhere on the line jumps there (0.8.1; a plain slider only moves a page towards the
     click), and the press carries straight on into a drag, so click-and-slide scrubs from that spot.
-    0.9.0: chapter starts are drawn as ticks on it (never their ends), suggested cuts as faint dots under it, and
-    hovering reports the time under the mouse (for the preview frame)."""
+    0.9.0: chapter starts are drawn as blue ticks on it, suggested cuts as faint dots under it, and hovering reports
+    the time under the mouse (for the preview frame).
+    0.17.0: a chapter with an end also gets a yellow tick there and a faint yellow band from its start to its end
+    (a little stronger for the chapter that's playing). The band sits behind the line, and the ticks under the
+    handle, so the played part and the playhead always show on top."""
 
     hovered = Signal(int, object)      # ms under the mouse, global QPoint
     hoverEnded = Signal()
 
+    BAND_ALPHA = 60                    # the yellow band behind the line
+    BAND_ALPHA_CURRENT = 115           # … for the chapter the playhead is in
+    BAND_HALF = 5                      # px above and below the line's centre
+    LANE_STEP = 2                      # px each overlapping span's band reaches further down
+    TICK_HALF = 6                      # px: start and end ticks are the same size
+    MIN_SPAN_PX = 4                    # a very short chapter still shows a band and a separate end tick
+
     def __init__(self, *args):
         super().__init__(*args)
         self.chapter_starts: list[float] = []      # seconds
+        self.chapter_spans: list[ChapterSpan] = []
         self.cuts: list[float] = []
         self.setMouseTracking(True)
 
-    def set_chapter_starts(self, starts: list[float]):
-        self.chapter_starts = chapter_ticks(starts)
+    def set_chapters(self, marks):
+        """Chapter marks (anything with .start, and optionally .end and .name): blue start ticks, and for those with
+        an end, a yellow end tick and band."""
+        marks = list(marks or [])
+        self.chapter_starts = chapter_ticks(marks)
+        duration = self.maximum() / 1000 if self.maximum() > self.minimum() else None
+        self.chapter_spans = chapter_spans(marks, duration)
+        self._marks = marks
         self.update()
+
+    def set_chapter_starts(self, starts):
+        """Starts only (seconds or marks); marks with an end also get their end drawn."""
+        self.set_chapters(starts)
+
+    def setRange(self, low, high):  # noqa: N802
+        super().setRange(low, high)
+        if getattr(self, "_marks", None):
+            self.set_chapters(self._marks)        # an end past the (new) video end is drawn at the end
+
+    def setMaximum(self, value):  # noqa: N802
+        self.setRange(self.minimum(), value)
 
     def set_cuts(self, cuts: list[float]):
         self.cuts = sorted(cuts or [])
         self.update()
+
+    def spans_at(self, ms: float) -> list[ChapterSpan]:
+        """The chapters (with an end) that the time `ms` falls in."""
+        seconds = ms / 1000
+        return [s for s in self.chapter_spans if s.contains(seconds)]
 
     def _geometry(self):
         from PySide6.QtWidgets import QStyle, QStyleOptionSlider
@@ -181,15 +261,51 @@ class JumpSlider(QSlider):
         return QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
                                               max(0, int(x) - groove.x() - handle.width() // 2), span, opt.upsideDown)
 
+    def end_tick_xs(self) -> list[tuple[ChapterSpan, int, int]]:
+        """(span, band's right edge, end tick's x) for each span, in pixels. A very short chapter still gets a band
+        of a few pixels; an end on another chapter's start sits just left of that blue tick, so both show."""
+        if self.maximum() <= self.minimum():
+            return []
+        start_xs = {self.x_for_ms(s * 1000) for s in self.chapter_starts}
+        out = []
+        for span in self.chapter_spans:
+            xs = self.x_for_ms(span.start * 1000)
+            xe = max(self.x_for_ms(span.end * 1000), xs + self.MIN_SPAN_PX)
+            tick = xe
+            if any(abs(tick - x) < 3 for x in start_xs):
+                tick = min(x for x in start_xs if abs(tick - x) < 3) - 2
+                tick = max(tick, xs + 2)
+            out.append((span, xe, tick))
+        return out
+
     def paintEvent(self, event):  # noqa: N802
-        super().paintEvent(event)
         if self.maximum() <= self.minimum() or not (self.chapter_starts or self.cuts):
+            super().paintEvent(event)
             return
         from PySide6.QtGui import QColor, QPainter, QPen
-        painter = QPainter(self)
+        from PySide6.QtWidgets import QStyle
         t = theme.current()
-        _opt, groove, _handle = self._geometry()
+        opt, groove, handle = self._geometry()
         mid = groove.center().y()
+        painter = QPainter(self)
+        ends = self.end_tick_xs()
+        now = self.value() / 1000
+
+        # 1. the yellow bands, behind the line (the line and its played part are drawn over them)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for span, xe, _tick in ends:
+            colour = QColor(t.warning)
+            colour.setAlpha(self.BAND_ALPHA_CURRENT if span.contains(now) else self.BAND_ALPHA)
+            xs = self.x_for_ms(span.start * 1000)
+            top = mid - self.BAND_HALF
+            bottom = mid + self.BAND_HALF + min(span.lane, 3) * self.LANE_STEP
+            painter.fillRect(xs, top, xe - xs, bottom - top + 1, colour)
+
+        # 2. the line itself, the played part and the handle, as a plain slider draws them
+        opt.subControls = QStyle.SubControl.SC_SliderGroove | QStyle.SubControl.SC_SliderHandle
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_Slider, opt, painter, self)
+
+        # 3. cuts, end ticks (yellow), start ticks (blue)
         if self.cuts:
             painter.setPen(Qt.PenStyle.NoPen)
             faint = QColor(t.faint)
@@ -197,13 +313,25 @@ class JumpSlider(QSlider):
             painter.setBrush(faint)
             for cut in self.cuts:
                 painter.drawEllipse(QPoint(self.x_for_ms(cut * 1000), min(self.height() - 3, mid + 7)), 1, 1)
+        if ends:
+            pen = QPen(QColor(t.warning))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            for span, _xe, tick in ends:
+                drop = min(span.lane, 3) * self.LANE_STEP
+                painter.drawLine(tick, mid - self.TICK_HALF, tick, mid + self.TICK_HALF + drop)
         if self.chapter_starts:
             pen = QPen(QColor(t.accent))
             pen.setWidth(2)
             painter.setPen(pen)
             for start in self.chapter_starts:
                 x = self.x_for_ms(start * 1000)
-                painter.drawLine(x, mid - 6, x, mid + 6)
+                painter.drawLine(x, mid - self.TICK_HALF, x, mid + self.TICK_HALF)
+
+        # 4. the handle again, on top of the ticks (only its own square, so the ticks stay over the played part)
+        painter.setClipRect(handle)
+        opt.subControls = QStyle.SubControl.SC_SliderGroove | QStyle.SubControl.SC_SliderHandle
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_Slider, opt, painter, self)
         painter.end()
 
     def leaveEvent(self, event):  # noqa: N802
@@ -567,9 +695,13 @@ class PlayerPanel(QWidget):
         self.nudge((1 if sign > 0 else -1) * self.nudge_steps[level])
 
     # ---------------------------------------------------------------- timeline marks (0.9.0)
-    def set_chapter_starts(self, starts: list[float]):
-        """Ticks on the timeline where chapters start. Their ends are never drawn there."""
-        self.slider.set_chapter_starts(starts)
+    def set_chapters(self, marks):
+        """The chapters on the timeline: a blue tick at each start, and for a chapter with an end, a yellow tick at
+        its end and a faint yellow band in between (0.17.0)."""
+        self.slider.set_chapters(marks)
+
+    def set_chapter_starts(self, starts):
+        self.slider.set_chapters(starts)
 
     def set_cuts(self, cuts: list[float]):
         self.slider.set_cuts(cuts)
@@ -634,7 +766,16 @@ class PlayerPanel(QWidget):
     def _hovered(self, ms: int, global_pos):
         if not self.loaded or self.info is None or self.info.main_video is None or self._dragging:
             return
-        self.preview.want(getattr(self, "source", None) or self.path, self.info, ms / 1000, global_pos, self.slider)
+        self.preview.want(getattr(self, "source", None) or self.path, self.info, ms / 1000, global_pos, self.slider,
+                          caption=self.chapter_caption(ms))
+
+    def chapter_caption(self, ms: float) -> str:
+        """Under the hover picture: the chapter(s) with an end that this spot is in, with their start and end."""
+        lines = []
+        for span in self.slider.spans_at(ms)[:3]:
+            name = span.name or "Chapter"
+            lines.append(f"{name}  {fmt_duration(span.start)}–{fmt_duration(span.end)}")
+        return "\n".join(lines)
 
     def close_preview(self):
         self.preview.hide_now()
@@ -912,11 +1053,17 @@ class HoverPreview(QFrame):
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time = QLabel("")
         self.time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chapter = QLabel("")                # 0.17.0: the chapter this spot is in, start–end
+        self.chapter.setObjectName("HoverChapter")
+        self.chapter.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chapter.setFixedWidth(self.WIDTH)
+        self.chapter.hide()
         layout.addWidget(self.picture)
         layout.addWidget(self.time)
+        layout.addWidget(self.chapter)
         t = theme.current()
         self.setStyleSheet(f"#HoverPreview {{ background: {t.surface}; border: 1px solid {t.border}; }}"
-                           f" QLabel {{ color: {t.text}; }}")
+                           f" QLabel {{ color: {t.text}; }} #HoverChapter {{ color: {t.warning}; }}")
         self.cache: dict[float, QPixmap] = {}
         self._path = None
         self._info = None
@@ -936,11 +1083,16 @@ class HoverPreview(QFrame):
         self._wanted = None
         self._path = None
 
-    def want(self, path, info, seconds: float, global_pos, slider):
+    def want(self, path, info, seconds: float, global_pos, slider, caption: str = ""):
         if self._path != path:
             self.forget()
             self._path, self._info = path, info
         self.time.setText(fmt_duration(seconds))
+        if caption:
+            metrics = self.chapter.fontMetrics()
+            self.chapter.setText("\n".join(metrics.elidedText(line, Qt.TextElideMode.ElideMiddle, self.WIDTH)
+                                           for line in caption.splitlines()))
+        self.chapter.setVisible(bool(caption))
         key = self.key(seconds)
         self._wanted = key
         pix = self.cache.get(key)

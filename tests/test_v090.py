@@ -133,15 +133,14 @@ def test_toasts_stack_and_problems_stay(qapp):
 
 
 # ---------------------------------------------------------------- timeline
-def test_timeline_ticks_are_chapter_starts_never_ends():
+def test_timeline_blue_ticks_are_chapter_starts():
     from runemark.ui.player import chapter_ticks
     marks = [chapter_io.ChapterMark(0.0, "A"), chapter_io.ChapterMark(10.0, "B", end=14.0),
              chapter_io.ChapterMark(20.0, "C", end=25.5)]
-    assert chapter_ticks(marks) == [0.0, 10.0, 20.0]
-    assert 14.0 not in chapter_ticks(marks) and 25.5 not in chapter_ticks(marks)
+    assert chapter_ticks(marks) == [0.0, 10.0, 20.0]       # ends get their own yellow ticks since 0.17.0
 
 
-def test_ticks_are_drawn_at_starts_and_nothing_at_ends(qapp):
+def test_ticks_are_drawn_at_starts(qapp):
     from runemark.ui.player import JumpSlider
     slider = JumpSlider(Qt.Orientation.Horizontal)
     slider.resize(600, 30)
@@ -154,7 +153,7 @@ def test_ticks_are_drawn_at_starts_and_nothing_at_ends(qapp):
     for start in (10.0, 30.0):
         x = slider.x_for_ms(start * 1000)
         assert any(ticked.pixel(x + dx, y) != plain.pixel(x + dx, y) for dx in (-1, 0, 1))
-    end_x = slider.x_for_ms(20_000)               # where chapter 1's end would be: nothing drawn
+    end_x = slider.x_for_ms(20_000)               # no end given: nothing drawn between the starts
     assert ticked.pixel(end_x, y) == plain.pixel(end_x, y)
 
 

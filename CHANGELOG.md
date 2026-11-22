@@ -4,6 +4,16 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-22
+
+### Added
+- **Chapter ends on the timeline.** A chapter with an end now shows a yellow tick where it ends, beside the blue tick
+  where it starts, and a faint yellow band between them, so you can see at a glance where each chapter runs. The
+  chapter that's playing has a slightly brighter band. Overlapping chapters' bands reach a little lower, one under
+  the other; an end on the next chapter's start sits just left of its blue tick; a very short chapter still shows.
+  Chapters without an end look as before. The played part of the line and the handle stay on top.
+- **Hovering the timeline names the chapter** under the mouse, with its start and end, below the picture.
+
 ## [0.16.0] - 2026-11-18
 
 ### Added

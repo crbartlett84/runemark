@@ -228,7 +228,7 @@ Tags that a file already has but your database doesn't are shown dashed. Click o
 | M | Add a chapter at this frame (within a second of a suggested cut, it starts on the cut) |
 | 1–9 | Add a chapter at this frame with that key's name (or the keys a plugin set for this video) |
 | Ctrl+Z / Ctrl+Y | Undo / redo a chapter change (outside text boxes) |
-| E | End the chapter you're in at this frame (kept off the timeline; moments stop there) |
+| E | End the chapter you're in at this frame (a yellow tick on the timeline; moments stop there) |
 | Alt+1–9 | Add (or remove) that key's tag |
 | Ctrl+K | Go to anything: actions, tags, people, videos |
 | Ctrl+B | Library |
@@ -258,8 +258,10 @@ read-back check as always, while you carry on: **Ctrl+Enter** opens the next vid
 changes nothing in the file and comes back as a message with **Retry**. A video opened again while it's still saving
 shows read-only until it's written. Closing Runemark with saves still running says so and waits for them.
 
-**Timeline.** Chapter starts are marked on the timeline (their ends aren't: those stay in the Chapters tab). Hover over
-the timeline for a small picture of that moment. **Chapters → Find cuts** looks through the video in the background
+**Timeline.** Chapter starts are marked on the timeline with blue ticks. A chapter with an end also gets a yellow
+tick there and a faint yellow band from its start to its end (a little brighter for the chapter that's playing;
+overlapping chapters' bands reach a little lower, one under the other). Hover over the timeline for a small picture of
+that moment, with the chapter it's in and its start and end. **Chapters → Find cuts** looks through the video in the background
 for likely cut points (remembered for each video; Settings can make it look as each video opens): faint dots under
 the timeline, **[** and **]** jump between them, and a chapter added within a second of one starts on it.
 
