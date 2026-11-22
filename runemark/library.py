@@ -5,6 +5,7 @@ Scanning only reads files that are new or changed since the last scan.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 import re
@@ -342,6 +343,7 @@ class ScanResult:
     read: int = 0
     missing: int = 0
     forgotten: int = 0           # 0.13.1: missing longer than forget_after_days, so taken out of the library
+    relinked: int = 0            # 0.17.1: moved (or renamed) outside Runemark and found again at the new path
     problems: list[str] = field(default_factory=list)
     stopped: bool = False        # cancelled partway; files already read are kept
 
@@ -382,6 +384,8 @@ INDEX_FIELDS = ("container", "tags", "title", "year", "rating", "has_cover", "du
                 "chapters", "chapter_names")
 STAMP_SLACK = 0.01                 # the same modified time read through two routes can differ in the last digits
 PROVIDER_SLACK = 2.0               # a provider's time (another computer, another protocol) may be rounded (0.10.1)
+MOVE_DURATION_SLACK = 0.1          # a moved file's length, read again (or by a provider), to tell it's the same video
+MOVE_WINDOW = _dt.timedelta(days=1)  # a record a scan made for a moved file: first seen about when the old one went
 
 
 @dataclass
@@ -529,13 +533,127 @@ def provider_matches(record: dict, size: int, mtime: float) -> bool:
         return False
 
 
+def _same_content(old: dict, info: dict) -> bool:
+    """0.17.1: what the library last read from a file that's gone matches what a file found elsewhere holds (its
+    length, title, chapters, container), on top of the same size and modified time."""
+    def near(a, b, slack):
+        if a is None or b is None:
+            return a is None and b is None
+        try:
+            return abs(float(a) - float(b)) <= slack
+        except (TypeError, ValueError):
+            return False
+
+    if not near(old.get("duration"), info.get("duration"), MOVE_DURATION_SLACK):
+        return False
+    if (old.get("title") or "") != (info.get("title") or ""):
+        return False
+    if old.get("container") and info.get("container") and old["container"] != info["container"]:
+        return False
+    if old.get("chapters") is not None and info.get("chapters") is not None \
+            and int(old["chapters"]) != int(info["chapters"]):
+        return False
+    return True
+
+
+def _appeared_as_it_went(old: dict, new: dict) -> bool:
+    """A file a scan already has a record for is only taken for the moved copy of a saved one (one with history)
+    when that record was first seen about when the old file went missing: a copy that was there all along, beside
+    the one now gone, keeps its own record."""
+    if not (old.get("saved") or old.get("history")) or not old.get("missing"):
+        return False
+    since, first = old.get("missing_since"), new.get("first_seen")
+    if not since or not first:
+        return False
+    try:
+        return _dt.datetime.fromisoformat(first) >= _dt.datetime.fromisoformat(since) - MOVE_WINDOW
+    except (TypeError, ValueError):
+        return False
+
+
+def _gone(path: str) -> bool:
+    """The file isn't there and the drive or share it was on is (an offline share never makes a file look moved)."""
+    try:
+        if os.path.exists(path):
+            return False
+        anchor = Path(path).anchor
+        return bool(anchor) and os.path.isdir(anchor)
+    except (OSError, ValueError):
+        return False
+
+
+def find_moves(db: TagDB, on_disk: dict[str, tuple[Path, int, float]], provided: dict[str, dict],
+               known: dict[str, dict] | None = None,
+               read: Callable[[Path], dict] | None = None) -> list[tuple[str, Path, dict | None]]:
+    """0.17.1: files moved (or renamed) outside Runemark: [(old path, new path, what the new file holds when it was
+    read here to check, or None)]. A file on disk with no record of its own, or only one a scan made (never saved,
+    no history; first seen about when a saved file went missing: _appeared_as_it_went), is the moved copy of a
+    record whose file is gone when: they have the same size and modified time,
+    the same length, title, chapters and container, the same fingerprint when both have one, and nothing else
+    matches either of them. Anything ambiguous (copies of one video) is left alone."""
+    known = db.move_candidates() if known is None else known
+    read = read or read_for_index
+    lost: dict[int, list[str]] = {}                # size -> keys of records whose file isn't in the folders
+    for key, rec in known.items():
+        if key not in on_disk and rec["size"] is not None and rec["mtime"] is not None:
+            lost.setdefault(int(rec["size"]), []).append(key)
+    if not lost:
+        return []
+    pairs: list[tuple[str, str, dict | None]] = []
+    gone: dict[str, bool] = {}
+    for key, (path, size, mtime) in on_disk.items():
+        olds = [k for k in lost.get(int(size), ()) if abs(float(known[k]["mtime"]) - float(mtime)) <= STAMP_SLACK]
+        if not olds:
+            continue
+        mine = known.get(key)
+        if mine is not None and (mine["saved"] or mine["history"] or mine["missing"]):
+            continue                                # a file with a life of its own here: never replaced
+        olds = [k for k in olds if gone.setdefault(k, _gone(known[k]["path"]))]
+        if not olds:
+            continue
+        info, fresh = None, None
+        if mine is not None and mine["indexed"]:
+            info = mine                             # read by an earlier scan already
+        elif key in provided and provider_matches(provided[key], size, mtime):
+            info = index_fields(provided[key])
+        else:
+            try:
+                info = fresh = read(path)
+            except Exception as exc:  # noqa: BLE001
+                log.info("library: couldn't read %s to see whether it was moved: %s", path, exc)
+                continue
+        for old in olds:
+            if mine is not None and not _appeared_as_it_went(known[old], mine):
+                continue
+            if not _same_content(known[old], info):
+                continue
+            a, b = db.fingerprint_data(known[old]["path"]), db.fingerprint_data(path)
+            if a is not None and b is not None and a[0] == b[0] and a[1] != b[1]:
+                continue                            # the pictures differ: not the same video
+            pairs.append((old, key, fresh))
+    by_old: dict[str, int] = {}
+    by_new: dict[str, int] = {}
+    for old, new, _ in pairs:
+        by_old[old] = by_old.get(old, 0) + 1
+        by_new[new] = by_new.get(new, 0) + 1
+    moves = []
+    for old, new, fresh in pairs:
+        if by_old[old] == 1 and by_new[new] == 1:
+            moves.append((known[old]["path"], on_disk[new][0], fresh))
+        else:
+            log.info("library: %s may have moved, but more than one file matches it: left as it is",
+                     known[old]["path"])
+    return moves
+
+
 def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
          cancel: threading.Event | None = None, rescan_all: bool = False, skip: list[str] = (),
          forget_after_days: float = 14) -> ScanResult:
     """Bring the library's index of these folders up to date. 0.10.1: every folder is listed here (names, sizes and
     times only, which is cheap even over a network); a file a scan provider describes with the same size and time
     is imported from its record, any other new or changed file is read here, and only files that aren't there any
-    more are marked missing. A provider's records for files that aren't on disk are ignored."""
+    more are marked missing. A provider's records for files that aren't on disk are ignored. 0.17.1: a file moved or
+    renamed outside Runemark keeps its record (when it was saved, its history) at its new path: see find_moves()."""
     result = ScanResult()
     if progress:
         progress(-1, "Looking for videos…")
@@ -558,6 +676,20 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
     if cancel is not None and cancel.is_set():
         result.stopped = True
         return result
+    relinked: set[str] = set()                      # 0.17.1: moved outside Runemark, found again: re-read
+    preread: dict[str, dict] = {}
+    try:
+        moves = find_moves(db, on_disk, provided)
+    except Exception:  # noqa: BLE001
+        log.exception("library: couldn't look for moved files")
+        moves = []
+    for old, new, fresh in moves:
+        db.relink_file(old, new)
+        log.info("library: %s was moved to %s outside Runemark: its record follows it", old, new)
+        relinked.add(file_key(new))
+        if fresh is not None:
+            preread[file_key(new)] = fresh
+    result.relinked = len(moves)
     was_missing: set[str] = set()
     elsewhere: dict[str, Path] = {}
     for record in db.library():                     # files saved by Runemark outside the folders, or gone
@@ -573,7 +705,7 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
     for key, (path, size, mtime) in on_disk.items():
         known = indexed.get(key)
         if not rescan_all and known is not None and known[0] == size and known[1] is not None \
-                and abs(known[1] - mtime) <= STAMP_SLACK and key not in was_missing:
+                and abs(known[1] - mtime) <= STAMP_SLACK and key not in was_missing and key not in relinked:
             continue                                # unchanged since it was last read
         record = provided.get(key)
         if record is not None and provider_matches(record, size, mtime):
@@ -616,10 +748,11 @@ def scan(db: TagDB, folders: list[str], *, progress: Progress | None = None,
         key = file_key(path)
         known = indexed.get(key)
         if not rescan_all and known is not None and known[0] == stat.st_size and known[1] == stat.st_mtime \
-                and key not in was_missing:
+                and key not in was_missing and key not in relinked:
             continue
         try:
-            _index(db, path, stat, read_for_index(path), commit=False)
+            data = preread.pop(key, None)
+            _index(db, path, stat, data if data is not None else read_for_index(path), commit=False)
             result.read += 1
             pending += 1
         except Exception as exc:  # noqa: BLE001

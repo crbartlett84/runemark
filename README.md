@@ -108,6 +108,7 @@ They're at the top of the **Details** tab. Click a star to rate, and click the s
 - **Saved searches** keep a search under a name.
 - Select several videos and use **Add tag…** (type several, separated by commas), **Remove tag…** or **Rate…**. Each file is saved and checked like a normal save. MKVs are skipped, since they need converting first.
 - The Library reopens with the search and filter you last used. A scan can be stopped with **Stop scan**; what it has read so far is kept.
+- **Moved or renamed outside Runemark** (in Explorer, on the NAS): the next scan finds the file at its new path and it keeps its place in the library: saved in Runemark, its undo history, done in the inbox. It's recognised by the same size and modified time and the same length, title and chapters (and the same fingerprint when there is one); when two or more files match, as with copies of one video, nothing is guessed and the old path shows as missing.
 - **More → Export for Jellyfin / Kodi (.nfo)** writes a `.nfo` file beside each video with the title, year, studio, description, rating, genres and tags, and optionally a collection name ("set"). Kodi turns sets into movie collections. Jellyfin and Emby read `.nfo` files when NFO metadata is turned on for the library.
 - **Details…** sets the studio or year of the selected videos, and adds people, in one undoable change. Blank boxes are left as they are.
 - **Grid** shows the videos as thumbnails (their covers, cached after the first look); **List** goes back. The selection and keys work the same in both.

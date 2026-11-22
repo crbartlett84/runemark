@@ -195,9 +195,12 @@ def test_library_scan_search_bulk_and_nfo(tmp_path, media):
     assert len([r for r in db.library() if L.matches(r, L.Search(text="b.mp"))]) == 1
 
     (folder / "a.mp4").rename(folder / "renamed.mp4")
+    assert L.scan(db, [str(folder)]).relinked == 1                # 0.17.1: renamed outside Runemark, still saved
+    assert [r.path.endswith("renamed.mp4") for r in db.library() if r.saved_at and r.tags == ["Comedy"]] == [True]
+    (folder / "renamed.mp4").unlink()
     L.scan(db, [str(folder)])
     missing = [r for r in db.library() if L.matches(r, L.Search(filter=L.FILTER_MISSING))]
-    assert [r.path.endswith("a.mp4") for r in missing] == [True]
+    assert [r.path.endswith("renamed.mp4") for r in missing] == [True]
 
     record = next(r for r in db.library() if r.path.endswith("b.mp4"))
     nfo = L.write_nfo(record, "Trips & Travel")

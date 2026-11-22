@@ -873,6 +873,8 @@ class LibraryWindow(QDialog):
             self._scan_finished_ui()
             self.refresh()
             note = f"{result.found} videos · {result.read} read"
+            if getattr(result, "relinked", 0):
+                note += f" · {result.relinked} moved, kept their history"
             if result.missing:
                 note += f" · {result.missing} missing"
             if getattr(result, "forgotten", 0):

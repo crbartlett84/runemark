@@ -4,6 +4,19 @@ All notable changes to Runemark. Versions follow [semantic versioning](https://s
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-22
+
+### Fixed
+- **Files moved or renamed outside Runemark keep their record.** A video moved to another folder (or renamed) in
+  Explorer or on the NAS used to show up as a new, never-saved video while its old path went missing, so it dropped
+  out of "Saved in Runemark", lost its undo history and came back into the inbox. A scan now recognises the move and
+  carries the record over to the new path. A file counts as moved only when its old path is gone (on a drive or share
+  that's reachable), and it has the same size and modified time, the same length, title, chapters and container, and
+  the same fingerprint when both have one; when more than one file matches either way (copies of one video), or the
+  file at the new path was saved in Runemark itself, nothing is guessed. Records already split by an earlier scan are
+  joined again by the next one, as long as the old one hasn't been taken out of the library yet (missing for over
+  14 days, by default). The scan's summary says how many moved files it found; each is listed in the Activity window.
+
 ## [0.17.0] - 2026-11-22
 
 ### Added

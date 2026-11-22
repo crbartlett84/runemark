@@ -796,6 +796,40 @@ class TagDB:
         self.conn.execute("UPDATE files SET key = ?, path = ? WHERE id = ?", (file_key(new), str(new), row["id"]))
         self.conn.commit()
 
+    def relink_file(self, old: str | os.PathLike, new: str | os.PathLike) -> None:
+        """0.17.1: a file moved outside Runemark (Explorer, the NAS) and found again by a scan at its new path: its
+        record (when it was saved, its history, fingerprint and "done") follows it, replacing the record a scan may
+        already have made for the new path, and it isn't missing any more."""
+        row = self.conn.execute("SELECT inbox_done FROM files WHERE key = ?", (file_key(new),)).fetchone()
+        done = int(bool(row and row["inbox_done"]))
+        self.move_file(old, new)
+        self.conn.execute("UPDATE files SET missing = 0, missing_since = NULL, inbox_done = MAX(inbox_done, ?) "
+                          "WHERE key = ?", (done, file_key(new)))
+        self.log_activity("Found again after being moved outside Runemark", new, commit=False)
+        self.conn.commit()
+
+    def move_candidates(self) -> dict[str, dict]:
+        """0.17.1: {file key: what a scan needs to tell whether a file moved} for every file in the library: its
+        path, the size and modified time it had when last read (or saved), what it held, whether it was saved or
+        has history, whether it's missing (and since when) and when it was first seen."""
+        history = {r[0] for r in self.conn.execute("SELECT DISTINCT key FROM file_history")}
+        out = {}
+        for r in self.conn.execute("SELECT key, path, size, mtime, indexed_size, indexed_mtime, container, title, "
+                                   "duration, chapters, saved_at, missing, missing_since, first_seen FROM files"):
+            indexed = r["indexed_mtime"] is not None
+            out[r["key"]] = {"path": r["path"], "size": r["indexed_size"] if indexed else r["size"],
+                             "mtime": r["indexed_mtime"] if indexed else r["mtime"], "indexed": indexed,
+                             "container": r["container"], "title": r["title"] or "", "duration": r["duration"],
+                             "chapters": r["chapters"], "saved": bool(r["saved_at"]),
+                             "history": r["key"] in history, "missing": bool(r["missing"]),
+                             "missing_since": r["missing_since"], "first_seen": r["first_seen"]}
+        return out
+
+    def fingerprint_data(self, path: str | os.PathLike) -> tuple[int, bytes] | None:
+        """(hash version, stored hashes) of a file's fingerprint, whatever file it was for."""
+        row = self.conn.execute("SELECT version, data FROM fingerprints WHERE key = ?", (file_key(path),)).fetchone()
+        return (row["version"], bytes(row["data"])) if row else None
+
     def remembered_files(self) -> list[str]:
         return [r["path"] for r in self.conn.execute("SELECT path FROM files ORDER BY path").fetchall()]
 
