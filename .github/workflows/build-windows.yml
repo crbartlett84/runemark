@@ -78,4 +78,12 @@ jobs:
           $tag = "${{ github.ref_name }}"
           if ($tag -ne "v$env:VERSION") { throw "Tag $tag doesn't match the app version $env:VERSION (runemark/__init__.py)" }
           python packaging/release_notes.py $env:VERSION > release-notes.md
-          gh release create $tag $env:ZIP --title "Runemark $env:VERSION" --notes-file release-notes.md
+          # A release made by hand on github.com (which also creates the tag) already exists: attach the zip to it
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $env:ZIP --clobber
+            gh release edit $tag --title "Runemark $env:VERSION" --notes-file release-notes.md
+          } else {
+            gh release create $tag $env:ZIP --title "Runemark $env:VERSION" --notes-file release-notes.md
+          }
+          if ($LASTEXITCODE -ne 0) { throw "publishing the release failed" }
